@@ -2,15 +2,17 @@
 
 ## Project language
 
-- English is the authoritative language for all repository content.
-- Write documentation, source code, comments, identifiers, configuration keys,
-  test names, commit messages, and user-facing program output in English.
+- Write project files in English, including documentation, source code,
+  comments, identifiers, configuration keys, and test names.
 - Preserve standardized GNSS terminology, protocol field names, receiver
   message names, filenames, and externally defined identifiers exactly as
   specified by their source standards.
 - Existing non-English text should be translated when the surrounding file is
   modified, unless it is quoted source material or test data whose exact bytes
   are significant.
+- This language policy applies only to files in the repository. It does not
+  constrain communication with users; use the language appropriate for the
+  current conversation.
 
 ## Data handling
 
