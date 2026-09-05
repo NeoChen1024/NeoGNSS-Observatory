@@ -1,0 +1,90 @@
+# Copy to work/products.toml and customize the date range and local snapshot.
+description = "Golden-week CODE MGEX Final products and TEC reference inputs"
+start = "2025-04-06"
+end = "2025-04-12"
+# Omit end to discover the latest available directories and freeze their inventory.
+guard_days = 1
+
+[network]
+workers = 2
+requests_per_second = 2.0
+connect_timeout = 15
+read_timeout = 120
+retries = 5
+
+# Optional: import a previously downloaded snapshot. Never used as an index.
+# Paths with ~ expand to the current user's home. Relative paths use the current
+# working directory, including when the configuration is stored elsewhere.
+# [checksum]
+# source_url = "https://cddis.nasa.gov/archive/gnss/products/SHA512SUMS"
+# local_file = "/path/to/SHA512SUMS"
+# algorithm = "sha512"
+
+[[products]]
+id = "orbit"
+layout = "week"
+base = "gnss/products"
+pattern = "COD0MGXFIN_{yyyy}{doy}0000_01D_05M_ORB.SP3.gz"
+family = "COD0MGXFIN"
+format = "sp3"
+required = true
+
+[[products]]
+id = "clock"
+layout = "week"
+base = "gnss/products"
+pattern = "COD0MGXFIN_{yyyy}{doy}0000_01D_30S_CLK.CLK.gz"
+family = "COD0MGXFIN"
+format = "clk"
+required = true
+
+[[products]]
+id = "erp"
+layout = "week"
+base = "gnss/products"
+pattern = "COD0MGXFIN_{yyyy}{doy}0000_01D_12H_ERP.ERP.gz"
+family = "COD0MGXFIN"
+format = "erp"
+required = true
+
+[[products]]
+id = "bias"
+layout = "week"
+base = "gnss/products"
+pattern = "COD0MGXFIN_{yyyy}{doy}0000_01D_01D_OSB.BIA.gz"
+family = "COD0MGXFIN"
+format = "bias"
+required = true
+
+[[products]]
+id = "navigation"
+layout = "year"
+base = "gnss/data/daily"
+pattern = "BRDC00IGS_R_{yyyy}{doy}0000_01D_MN.rnx.gz"
+family = "BRDC00IGS"
+format = "rinex-nav"
+required = true
+
+[[products]]
+id = "ionosphere"
+layout = "day"
+base = "gnss/products/ionex"
+pattern = "COD0OPSFIN_{yyyy}{doy}0000_01D_01H_GIM.INX.gz"
+family = "COD0OPSFIN"
+format = "ionex"
+required = true
+
+[[products]]
+id = "antenna"
+layout = "static"
+# Explicit IGS20 revision, not the mutable igs20.atx alias. This downloads a
+# model for inspection; solver-side antenna/frame compatibility remains a gate.
+url = "https://files.igs.org/pub/station/general/igs20_2425.atx.gz"
+family = "IGS20"
+format = "antex"
+required = true
+
+[[external_inputs]]
+id = "ocean-loading"
+required = false
+reason = "Station-specific BLQ must be supplied during PPP setup; it is not a weekly archive product."

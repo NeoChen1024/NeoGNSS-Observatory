@@ -1,0 +1,7 @@
+[submodule "contrib/RTKLIB"]
+	path = contrib/RTKLIB
+	url = https://github.com/rtklibexplorer/RTKLIB.git
+	branch = main
+[submodule "contrib/pyubx2"]
+	path = contrib/pyubx2
+	url = https://github.com/semuconsulting/pyubx2.git

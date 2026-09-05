@@ -66,21 +66,38 @@ Additional verified facts:
 
 ## 3. Data ownership and canonical layout
 
+The active processing input root is `~/net/DATA_SSD/datasets/GNSS`, using
+already expanded files. The compressed preservation inventory in section 2
+remains historical provenance, not the default processing read path.
+
+| Era | Path relative to the expanded input root | Processing files |
+|---|---|---|
+| A | `archive/ubx24h` | `*.ubx` |
+| B | `archive/ubx` | `**/*.ubx` |
+| C | `gnss/mosaic-x5/BX4ACP` | `**/*.25_`, `**/*.25o`, `**/*.25p` |
+
+Read these files directly. Do not add a per-run XZ decompression stage, use
+retained `.xz` copies as processing inputs, or silently fall back to `/hdd`.
+Missing expanded peers are inventory gaps that must be reported.
+
+Expansion of this dataset may still be in progress. Re-inventory after it
+finishes; temporary missing peers are not evidence of missing preservation data.
+
 Raw archives are always read-only. Every output must be reproducible from raw
 data, a pinned toolchain, and versioned configuration, with a provenance record
 for each artifact.
 
 ```text
 /hdd/...                         immutable preservation masters
+~/net/DATA_SSD/datasets/GNSS/    read-only expanded processing inputs
 
 repo/
   config/                        converter, QC, PPP, and TEC policies
   manifests/                     source inventories and run manifests
-  src/                           parsers and processing code
+  python-src/neognss_observatory/ parsers and processing code
   docs/
 
 work/                            disposable, outside Git
-  unpacked/                      temporary UBX and SBF
   rinex/<era>/<yyyy>/<doy>/      canonical 1 Hz RINEX 3.04
   sbas/<era>/<yyyy>/<doy>/       packet logs and decoded state
   qc/<era>/<yyyy>/<doy>/         daily QC tables
@@ -92,7 +109,8 @@ work/                            disposable, outside Git
 Each run manifest must record at least:
 
 ```text
-source path, compressed size and hash, XZ integrity
+expanded source path, byte size and hash
+preservation source path/hash and expansion provenance, when available
 receiver and firmware, first and last GNSS time, cadence histogram
 tool name, version, Git SHA, full command, and configuration hash
 output path and hash, epoch count, warnings, and completion status
@@ -149,8 +167,8 @@ codes must not be collapsed prematurely into abstract L1 and L2 labels.
 ## 5. Normalization and QC pipeline
 
 ```text
-raw XZ
-  -> XZ integrity and compressed SHA-256
+expanded UBX or SBF
+  -> expanded-file size and hash inventory
   -> packet framing and checksum inventory
   -> era-specific normalization
   -> UTC-day canonical RINEX 3.04 at native 1 Hz
@@ -189,7 +207,7 @@ of guessing which one is correct.
 
 ### Era C: 1 Hz SBF master
 
-1. Regenerate 1 Hz OBS and NAV from `*.25_.xz`.
+1. Regenerate 1 Hz OBS and NAV directly from expanded `*.25_` files.
 2. Extract the regenerated RINEX at the exact epochs present in the existing
    30 s RINEX, then compare satellite sets, observable codes, phase, code, LLI,
    SNR, and numerical tolerances.

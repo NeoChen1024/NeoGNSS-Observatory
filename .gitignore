@@ -1,5 +1,6 @@
 # Large or reproducible processing products belong outside Git.
-work/
+# Match the workspace directory or a symlink to external storage.
+/work
 data/
 products/
 *.ubx
@@ -22,3 +23,7 @@ products/
 __pycache__/
 .pytest_cache/
 *.pyc
+venv/
+*.egg-info/
+build/
+dist/

@@ -1,0 +1,33 @@
+[project]
+name = "neognss-observatory"
+version = "0.0.0a0"
+description = "Reproducible offline GNSS observation and processing tools"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "Neo_Chen", email = "chenkolei@gmail.com" }]
+dynamic = ["dependencies"]
+
+[project.scripts]
+cddis-download = "neognss_observatory.cddis_download:cli"
+
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["python-src"]
+
+[tool.black]
+line-length = 132
+target-version = ['py311']
+extend-exclude = '/contrib/'
+
+[tool.isort]
+profile = "black"
+extend_skip = ["contrib"]
+known_first_party = ["neognss_observatory"]

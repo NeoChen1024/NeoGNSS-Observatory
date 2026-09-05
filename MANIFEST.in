@@ -1,0 +1,4 @@
+include config/products.example.toml
+include docs/cddis-downloader.md
+include docs/offline-processing-plan.md
+include AGENTS.md
