@@ -25,6 +25,9 @@
 ## Data handling
 
 - Treat GNSS archives under `/hdd` as read-only preservation masters.
+- The user-authorized Era A reconstruction output is
+  `~/net/DATA_SSD/datasets/GNSS/era-a`. Only this derived-output directory
+  may be written; the expanded source directories remain read-only.
 - Read Era A-C processing inputs from `~/net/DATA_SSD/datasets/GNSS`:
   Era A uses `archive/ubx24h`, Era B uses `archive/ubx`, and Era C uses
   `gnss/mosaic-x5/BX4ACP`. Treat this expanded dataset as read-only too.

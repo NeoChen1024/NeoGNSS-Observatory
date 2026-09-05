@@ -52,6 +52,9 @@ library and the original logger as `examples/ubxlogger.cpp`. CMake exposes
 `contrib/pyubx2` schema. The compiled library has no Python runtime dependency.
 See the library guide for build, testing, API, and logger compatibility details.
 
+The [UBX reconstruction tool](docs/ubx-restitch.md) inventories expanded archives,
+proves cross-file overlaps, and writes UTC segments without modifying inputs.
+
 ## Submodules
 
 Initialize the recorded revision after cloning:

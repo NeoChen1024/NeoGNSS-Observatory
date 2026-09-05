@@ -42,7 +42,7 @@ add_custom_command(
     COMMENT "Generating UBX parsers from the pinned pyubx2 schema"
     VERBATIM)
 add_custom_target(cppubx2_codegen DEPENDS ${generated_sources} ${generated_headers})
-add_library(cppubx2 src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp
+add_library(cppubx2 src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/ubx_archive.cpp
     ${generated_sources} ${generated_headers})
 add_library(cppubx2::cppubx2 ALIAS cppubx2)
 add_dependencies(cppubx2 cppubx2_codegen)
@@ -56,6 +56,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(CPPUBX2_BUILD_EXAMPLES)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    add_executable(cppubx2_archive_index examples/archive_index.cpp)
+    target_link_libraries(cppubx2_archive_index PRIVATE cppubx2::cppubx2 OpenSSL::Crypto)
     if(NOT UNIX)
         message(FATAL_ERROR "neoubxlogger requires POSIX; use -DCPPUBX2_BUILD_EXAMPLES=OFF")
     endif()
@@ -87,6 +90,12 @@ if(BUILD_TESTING)
         "CPPUBX2_LIBRARY=$<TARGET_FILE:cppubx2>"
         "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_codegen.py)
     if(CPPUBX2_BUILD_EXAMPLES)
+        add_test(NAME cppubx2.archive COMMAND "${CMAKE_COMMAND}" -E env
+            PYTHONDONTWRITEBYTECODE=1
+            "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/../python-src"
+            "CPPUBX2_ARCHIVE_INDEX=$<TARGET_FILE:cppubx2_archive_index>"
+            "${Python3_EXECUTABLE}" -m unittest discover
+            -s "${CMAKE_CURRENT_SOURCE_DIR}/../tests" -p test_restitch.py)
         add_test(NAME cppubx2.example COMMAND cppubx2_inspect_frame)
         add_test(NAME cppubx2.reader_smoke COMMAND sh
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke_reader.sh" "$<TARGET_FILE:neoubxlogger>")

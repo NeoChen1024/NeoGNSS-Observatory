@@ -26,6 +26,11 @@ CMake generates parsers in the build directory; it never installs dependencies
 or fetches schemas implicitly. Python is not required by the compiled library
 or logger at runtime.
 
+The archive-index application also requires OpenSSL Crypto development files.
+Its library scanner API is in `<cppubx2/ubx_archive.hpp>`; the
+[reconstruction guide](../docs/ubx-restitch.md) describes the public CLI,
+UTC grouping policy, and preservation guarantees.
+
 The library can also be configured directly with `cmake -S libcppubx2 -B build/ubx`.
 Use `-DCPPUBX2_BUILD_EXAMPLES=OFF` for a library-only build and
 `-DBUILD_TESTING=OFF` to omit tests. Static builds are the default;
