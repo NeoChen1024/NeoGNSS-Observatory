@@ -45,10 +45,13 @@ def validate(path, item, previous_hash=None):
     sha512 = digest_file(path)
     if previous_hash and sha512 != previous_hash:
         raise DownloadError("File differs from its recorded local SHA-512")
+    evidence = {"upstream_status": item["upstream_status"]}
     if "expected_digest" in item:
         actual = sha512 if item["digest_algorithm"] == "sha512" else digest_file(path, "md5")
-        if actual != item["expected_digest"]:
-            raise DownloadError("Upstream checksum mismatch (download damage or stale upstream snapshot)")
+        evidence = {
+            "upstream_status": "verified" if actual == item["expected_digest"] else "mismatch",
+            "upstream_actual_digest": actual,
+        }
     name = item["path"]
     try:
         if name.endswith(".gz"):
@@ -80,7 +83,13 @@ def validate(path, item, previous_hash=None):
     }
     if b"<html" in prefix.lower() or b"<!doctype html" in prefix.lower() or not signatures[item["format"]](prefix):
         raise DownloadError("Product header does not match the configured format")
-    return {"size": size, "sha512": sha512, "upstream_status": "verified" if "expected_digest" in item else item["upstream_status"]}
+    return {"size": size, "sha512": sha512, **evidence}
+
+
+def checksum_warning(record):
+    if record.get("upstream_status") == "mismatch":
+        return " (warning: upstream checksum mismatch; snapshot is advisory)"
+    return ""
 
 
 def validator(headers):
@@ -98,7 +107,7 @@ def download_one(root, item, http, old=None, update=lambda size, total: None):
         try:
             if old and any(item.get(field) and item[field] != old.get(field) for field in ("etag", "last_modified")):
                 raise DownloadError("Static input identity differs from the new plan")
-            # Preserve local history across replanning, but always check the new expected checksum too.
+            # Local history is authoritative for reuse; upstream comparison is advisory.
             checked = validate(target, item, old.get("sha512") if old and old.get("status") == "complete" else None)
             update(checked["size"], checked["size"])
             return {
@@ -275,7 +284,9 @@ def fetch(plan, root, http, progress):
                         progress.remove_task(task)
                         progress.advance(total_task)
                         progress.console.print(
-                            f"{record['status']}: {item['path']}" + (f" ({record['error']})" if "error" in record else ""),
+                            f"{record['status']}: {item['path']}"
+                            + (f" ({record['error']})" if "error" in record else "")
+                            + checksum_warning(record),
                             markup=False,
                             soft_wrap=True,
                         )
@@ -302,9 +313,10 @@ def verify(root, report):
             try:
                 checked = validate(local_path(root, path), record, record.get("sha512"))
                 record.update(checked, status="complete", verified_at=now())
+                record.pop("error", None)
             except (DownloadError, OSError) as exc:
                 failures += 1
                 record.update(status="corrupt", error=str(exc), verified_at=now())
             save_record(connection, record)
-            report(f"{record['status']}: {path}")
+            report(f"{record['status']}: {path}" + checksum_warning(record))
     return failures

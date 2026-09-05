@@ -40,12 +40,14 @@ from neognss_observatory.download_plan import (
     parse_listing,
     read_config,
     summarize,
+    upstream_evidence_status,
 )
 from neognss_observatory.download_plan_io import plan_digest, write_plan
 from neognss_observatory.download_transfer import (
     download_one,
     fetch,
     read_records,
+    validate,
     verify,
 )
 
@@ -237,12 +239,36 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(result["status"], "complete")
         self.assertEqual(http.calls[1][1], {})
 
-    def test_upstream_mismatch_quarantines_without_downgrade(self):
+    def test_upstream_mismatch_is_advisory_without_downgrade(self):
+        for algorithm, width in (("sha512", 128), ("md5", 32)):
+            with tempfile.TemporaryDirectory() as root:
+                expected = {**self.item, "expected_digest": "0" * width, "digest_algorithm": algorithm}
+                result = download_one(root, expected, FakeHTTP([Response(self.payload)]))
+                self.assertEqual(result["status"], "complete")
+                self.assertEqual(result["upstream_status"], "mismatch")
+                self.assertEqual(result["expected_digest"], "0" * width)
+                self.assertEqual(result["upstream_actual_digest"], hashlib.new(algorithm, self.payload).hexdigest())
+                self.assertEqual(result["quarantined"], [])
+                self.assertTrue(local_path(root, self.item["path"]).exists())
+                reused = download_one(root, expected, FakeHTTP(), result)
+                self.assertEqual(reused["action"], "reused")
+                self.assertEqual(reused["upstream_status"], "mismatch")
+
+    def test_advisory_mismatch_does_not_bypass_integrity_checks(self):
         expected = {**self.item, "expected_digest": "0" * 128, "digest_algorithm": "sha512"}
-        result = download_one(self.root, expected, FakeHTTP([Response(self.payload)]))
-        self.assertEqual(result["status"], "failed")
-        self.assertIn("Upstream checksum mismatch", result["error"])
-        self.assertFalse(local_path(self.root, self.item["path"]).exists())
+        path = self.root / "candidate.gz"
+        for payload, message in (
+            (self.payload[:-8] + b"\0" * 8, "Compressed product integrity"),
+            (gzip.compress(b"not an SP3 header"), "Product header"),
+        ):
+            path.write_bytes(payload)
+            with self.assertRaisesRegex(DownloadError, message):
+                validate(path, {**expected, "size": len(payload)})
+        path.write_bytes(self.payload)
+        with self.assertRaisesRegex(DownloadError, "recorded local SHA-512"):
+            validate(path, expected, "0" * 128)
+        with self.assertRaisesRegex(DownloadError, "File size"):
+            validate(path, {**expected, "size": len(self.payload) + 1})
 
     def test_html_is_auth_failure_even_with_http_200(self):
         http = FakeHTTP([Response(b"<html>login</html>", headers={"Content-Type": "text/html"})])
@@ -293,6 +319,29 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(verify(self.root, lambda _: None), 1)
         records, _ = read_records(self.root)
         self.assertEqual(records[self.item["path"]]["status"], "corrupt")
+
+    def test_mismatch_fetch_and_verify_succeed_with_warnings(self):
+        expected = {**self.item, "expected_digest": "0" * 128, "digest_algorithm": "sha512"}
+        plan = {
+            "sha512": "test",
+            "start": "2025-04-06",
+            "end": "2025-04-06",
+            "files": [expected],
+            "slots": [],
+            "latest_selected_dates": {},
+        }
+        terminal = io.StringIO()
+        with Progress(console=Console(file=terminal, width=200), disable=True) as progress:
+            summary, code = fetch(plan, self.root, FakeHTTP([Response(self.payload)]), progress)
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["files_complete"], 1)
+        self.assertEqual(summary["upstream_checksum"], {"mismatch": 1})
+        self.assertIn("warning: upstream checksum mismatch", terminal.getvalue())
+        messages = []
+        self.assertEqual(verify(self.root, messages.append), 0)
+        self.assertIn("warning: upstream checksum mismatch", messages[0])
+        records, _ = read_records(self.root)
+        self.assertEqual(records[self.item["path"]]["upstream_status"], "mismatch")
 
     def test_plan_tampering_is_rejected(self):
         plan = {"schema": 1, "files": [self.item]}
@@ -363,6 +412,18 @@ class DownloaderTests(unittest.TestCase):
                 result = download_one(root, expected, FakeHTTP([Response(self.payload)]))
                 self.assertEqual(result["upstream_status"], "verified")
 
+    def test_md5_evidence_uses_actual_digest_not_stale_expectation(self):
+        expected = {**self.item, "expected_digest": "0" * 32, "digest_algorithm": "md5"}
+        record = download_one(self.root, expected, FakeHTTP([Response(self.payload)]))
+        self.assertEqual(upstream_evidence_status(expected, record), "mismatch")
+        current = {**expected, "expected_digest": hashlib.md5(self.payload).hexdigest()}
+        self.assertEqual(upstream_evidence_status(current, record), "verified")
+        legacy = {**record, "upstream_status": "verified", "expected_digest": current["expected_digest"]}
+        del legacy["upstream_actual_digest"]
+        self.assertEqual(upstream_evidence_status(current, legacy), "verified")
+        self.assertEqual(upstream_evidence_status(expected, legacy), "mismatch")
+        self.assertEqual(upstream_evidence_status(current, {"sha512": record["sha512"]}), "available")
+
     def test_snapshot_extraction_of_matching_hash(self):
         source = self.root / "SHA512SUMS"
         expected = hashlib.sha512(self.payload).hexdigest()
@@ -396,11 +457,15 @@ class DownloaderTests(unittest.TestCase):
         result = download_one(self.root, changed, FakeHTTP([response]), record)
         self.assertEqual(result["action"], "downloaded")
 
-    def test_summary_new_checksum_does_not_count_old_record_complete(self):
+    def test_summary_new_checksum_keeps_complete_and_reports_mismatch(self):
         record = download_one(self.root, self.item, FakeHTTP([Response(self.payload)]))
         changed = {**self.item, "expected_digest": "0" * 128, "digest_algorithm": "sha512"}
         plan = {"start": "2025-04-06", "end": "2025-04-06", "files": [changed], "slots": [], "latest_selected_dates": {}}
-        self.assertEqual(summarize(plan, {record["path"]: record})["files_complete"], 0)
+        summary = summarize(plan, {record["path"]: record})
+        self.assertEqual(summary["files_complete"], 1)
+        self.assertEqual(summary["upstream_checksum"], {"mismatch": 1})
+        changed["expected_digest"] = record["sha512"]
+        self.assertEqual(summarize(plan, {record["path"]: record})["upstream_checksum"], {"verified": 1})
 
     def test_auth_error_sets_cli_exit_three(self):
         result = CliRunner().invoke(
@@ -522,7 +587,7 @@ class DownloaderTests(unittest.TestCase):
         )
         self.assertEqual(updates[-1]["pending"], 2)
 
-    def test_inventory_final_count_includes_checksum_conflict(self):
+    def test_inventory_checksum_conflict_does_not_increase_pending_count(self):
         name = "COD0MGXFIN_20250960000_01D_05M_ORB.SP3.gz"
         candidate = item(self.payload, name)
         record = download_one(self.root, candidate, FakeHTTP([Response(self.payload)]))
@@ -547,7 +612,7 @@ class DownloaderTests(unittest.TestCase):
             inventory_progress=updates.append,
         )
         self.assertEqual(updates[-2]["pending"], 0)
-        self.assertEqual(updates[-1]["pending"], 1)
+        self.assertEqual(updates[-1]["pending"], 0)
 
     def test_terminal_inventory_progress_and_jsonlines_cli_output(self):
         name = "COD0MGXFIN_20250960000_01D_05M_ORB.SP3.gz"

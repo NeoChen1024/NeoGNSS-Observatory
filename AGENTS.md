@@ -28,6 +28,9 @@
 - The user-authorized Era A reconstruction output is
   `~/net/DATA_SSD/datasets/GNSS/era-a`. Only this derived-output directory
   may be written; the expanded source directories remain read-only.
+- For downstream Era A analysis, use the reconstructed UTC segments in
+  `era-a/` and exclude `era-a/unassigned/`. Leave excluded files and their
+  provenance intact; do not attempt to infer missing UTC assignments.
 - Read Era A-C processing inputs from `~/net/DATA_SSD/datasets/GNSS`:
   Era A uses `archive/ubx24h`, Era B uses `archive/ubx`, and Era C uses
   `gnss/mosaic-x5/BX4ACP`. Treat this expanded dataset as read-only too.

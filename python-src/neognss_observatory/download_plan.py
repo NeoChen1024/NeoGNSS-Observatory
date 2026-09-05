@@ -274,15 +274,26 @@ def attach_checksums(plan, config, progress=None):
         progress(size, size)
 
 
+def upstream_evidence_status(item, record):
+    """Compare the current snapshot with recorded bytes, independently of completion."""
+    if not item.get("expected_digest"):
+        return item["upstream_status"]
+    actual = record.get("sha512") if item["digest_algorithm"] == "sha512" else None
+    if item["digest_algorithm"] == record.get("digest_algorithm") and actual is None:
+        actual = record.get("upstream_actual_digest")
+        # Legacy successful records did enforce the expected digest.
+        if actual is None and record.get("upstream_status") == "verified":
+            actual = record.get("expected_digest")
+    if actual is None:
+        return "available"
+    return "verified" if actual == item["expected_digest"] else "mismatch"
+
+
 def recorded_complete(item, record):
     if record.get("status") != "complete" or record.get("url") != item["url"]:
         return False
     if item["size"] is not None and record.get("size") != item["size"]:
         return False
-    if item.get("expected_digest"):
-        actual = record.get("sha512") if item["digest_algorithm"] == "sha512" else record.get("expected_digest")
-        if actual != item["expected_digest"]:
-            return False
     return not any(item.get(field) and item[field] != record.get(field) for field in ("etag", "last_modified"))
 
 
@@ -539,7 +550,7 @@ def summarize(plan, records=None):
         "issues": dict(issues),
         "upstream_checksum": dict(
             Counter(
-                records[item["path"]]["upstream_status"] if item["path"] in complete else item["upstream_status"]
+                upstream_evidence_status(item, records[item["path"]]) if item["path"] in complete else item["upstream_status"]
                 for item in plan["files"]
             )
         ),

@@ -4,7 +4,7 @@ project(cppubx2 VERSION 0.1.0 LANGUAGES CXX)
 if(PROJECT_IS_TOP_LEVEL)
     include(CTest)
 endif()
-option(CPPUBX2_BUILD_EXAMPLES "Build the POSIX neoubxlogger application" ON)
+option(CPPUBX2_BUILD_EXAMPLES "Build the logger and offline example applications" ON)
 set(Python3_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/../.venv/bin/python")
 if(NOT EXISTS "${Python3_EXECUTABLE}")
     message(FATAL_ERROR "Create the repository environment first: uv venv .venv")
@@ -43,6 +43,7 @@ add_custom_command(
     VERBATIM)
 add_custom_target(cppubx2_codegen DEPENDS ${generated_sources} ${generated_headers})
 add_library(cppubx2 src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/ubx_archive.cpp
+    src/ubx_subframe.cpp src/sbas.cpp
     ${generated_sources} ${generated_headers})
 add_library(cppubx2::cppubx2 ALIAS cppubx2)
 add_dependencies(cppubx2 cppubx2_codegen)
@@ -57,6 +58,8 @@ endif()
 
 if(CPPUBX2_BUILD_EXAMPLES)
     find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    add_executable(cppubx2_subframes examples/subframes.cpp)
+    target_link_libraries(cppubx2_subframes PRIVATE cppubx2::cppubx2 OpenSSL::Crypto)
     add_executable(cppubx2_archive_index examples/archive_index.cpp)
     target_link_libraries(cppubx2_archive_index PRIVATE cppubx2::cppubx2 OpenSSL::Crypto)
     if(NOT UNIX)
@@ -69,12 +72,15 @@ if(CPPUBX2_BUILD_EXAMPLES)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(cppubx2_subframe_test tests/test_subframe.cpp)
+    target_link_libraries(cppubx2_subframe_test PRIVATE cppubx2::cppubx2)
+    add_test(NAME cppubx2.subframe COMMAND cppubx2_subframe_test)
     add_executable(cppubx2_test tests/test_ubx.cpp)
     target_link_libraries(cppubx2_test PRIVATE cppubx2::cppubx2)
     add_executable(cppubx2_reader_test tests/test_reader.cpp)
     target_link_libraries(cppubx2_reader_test PRIVATE cppubx2::cppubx2)
     # Assertions perform checks (and some I/O) in these inherited tests.
-    foreach(test_target cppubx2_test cppubx2_reader_test)
+    foreach(test_target cppubx2_test cppubx2_reader_test cppubx2_subframe_test)
         if(MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()
@@ -90,6 +96,10 @@ if(BUILD_TESTING)
         "CPPUBX2_LIBRARY=$<TARGET_FILE:cppubx2>"
         "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_codegen.py)
     if(CPPUBX2_BUILD_EXAMPLES)
+        add_test(NAME cppubx2.subframes_cli COMMAND "${CMAKE_COMMAND}" -E env
+            PYTHONDONTWRITEBYTECODE=1 "CPPUBX2_SUBFRAMES=$<TARGET_FILE:cppubx2_subframes>"
+            "${Python3_EXECUTABLE}" -m unittest discover
+            -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_subframes.py)
         add_test(NAME cppubx2.archive COMMAND "${CMAKE_COMMAND}" -E env
             PYTHONDONTWRITEBYTECODE=1
             "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/../python-src"

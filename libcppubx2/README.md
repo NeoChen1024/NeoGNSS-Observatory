@@ -2,8 +2,8 @@
 
 C++20 UBX framing, generated message decoders, message names, and NAV semantic
 helpers, maintained in NeoGNSS Observatory. The POSIX logger is an application
-of this library, not its entry point. Future navigation-subframe decoding and
-offline tools belong in separate library modules and applications respectively.
+of this library, not its entry point. Navigation-subframe routing and SBAS L1
+decoding live in separate library modules, independent of transport and logging.
 
 ## Build and test
 
@@ -26,7 +26,7 @@ CMake generates parsers in the build directory; it never installs dependencies
 or fetches schemas implicitly. Python is not required by the compiled library
 or logger at runtime.
 
-The archive-index application also requires OpenSSL Crypto development files.
+The archive-index and subframes applications also require OpenSSL Crypto development files.
 Its library scanner API is in `<cppubx2/ubx_archive.hpp>`; the
 [reconstruction guide](../docs/ubx-restitch.md) describes the public CLI,
 UTC grouping policy, and preservation guarantees.
@@ -71,8 +71,11 @@ transport-independent decoder.
 The generated schema covers NAV, RXM, MON, TIM, ESF, HNR, LOG, SEC, CFG, and ACK.
 Names also cover upstream messages without generated decoders. Debug dispatch
 falls back to the original payload for unsupported messages or wire variants.
-SFRBX container decoding is available; constellation navigation-subframe
-interpretation is not yet implemented.
+`ubx_subframe.hpp` provides RXM-SFRBX routing by constellation, satellite,
+signal, and GLONASS frequency slot. `sbas.hpp` decodes SBAS L1 frames with
+CRC-24Q validation. Other constellations retain their raw navigation words.
+See the [subframe guide](../docs/subframes.md) for supported SBAS message types,
+API examples, limitations, and the `cppubx2_subframes` JSON Lines exporter.
 
 ## Logger compatibility
 

@@ -117,8 +117,9 @@ selected files, files needing download, reusable local files and directories
 queried. Non-terminal stderr receives the same counters once per completed week.
 Pending counts exclude manifest-complete files whose identity and on-disk size
 still match. This is a planning estimate, not a hash scan: fetch revalidates
-the bytes. Counts are refreshed after static inputs and upstream checksums are
-resolved, which can increase the pending count when a checksum conflicts.
+the bytes. Counts are refreshed after static input identities are resolved.
+Upstream snapshot checksum conflicts are advisory and do not increase the
+pending count or invalidate otherwise reusable files.
 
 Plan reports total weeks, inventoried weeks/directories, weeks requiring
 transfers, weeks with missing required inputs, selected files and known bytes.
@@ -175,11 +176,21 @@ Files absent from the snapshot are downloaded normally and marked unavailable
 for upstream verification. MD5 snapshots are supported only when explicitly
 configured with `algorithm = "md5"`; SHA-512 mismatch never triggers downgrade.
 
-Every completed file has a local SHA-512. Upstream match, unavailable and
-ambiguous are distinct from transfer completion. Mismatch quarantines the file
-and fails that transfer: it may indicate damaged bytes or a stale snapshot,
-and neither explanation is silently assumed. No automatic per-directory
-checksum retrieval is performed in this version.
+Every completed file has a local SHA-512. Upstream `verified`, `mismatch`,
+`unavailable`, and `ambiguous` are distinct from transfer completion. The
+snapshot is auxiliary evidence, not the source of truth: a mismatch records
+the expected digest, algorithm, actual digest (`upstream_actual_digest`), and
+snapshot provenance, and prints a warning. It does not alone fail a transfer,
+quarantine bytes, or prevent reuse. Full compressed-stream integrity, size,
+format-header checks and recorded local SHA-512 checks still apply. Successful
+decompression does not prove scientific correctness or upstream authenticity.
+No automatic per-directory checksum retrieval is performed in this version.
+
+Existing plans remain usable with this policy; there is no need to re-inventory
+just to relax snapshot verification. Re-run fetch to retry previously failed
+transfers. Existing quarantine files are left untouched, not automatically
+adopted or deleted. Verify also reports snapshot mismatches as warnings, while
+changes relative to the recorded local SHA-512 remain errors.
 
 ## Transfers and recovery
 
@@ -197,7 +208,8 @@ sidecar. Resume requires a matching source identity and a strong ETag or
 Last-Modified validator. It uses Range/If-Range and validates Content-Range.
 An ignored Range restarts from zero; unverifiable partial bytes are quarantined.
 Size, compressed-stream integrity, configured format signature, local SHA-512
-and any applicable upstream checksum are checked before an atomic rename.
+are checked before an atomic rename. Applicable upstream checksums are compared
+as advisory evidence, not required to match.
 Format signatures are not full scientific payload validation.
 
 Re-running fetch reuses valid files after checking them again. Damaged existing
