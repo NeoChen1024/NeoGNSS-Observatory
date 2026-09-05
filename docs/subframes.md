@@ -136,16 +136,89 @@ alone do not establish that a correction is safe to apply.
 
 MT18 mask positions are one-based static mask bits. MT26
 `active_mask_ordinal` is instead an ordinal into the **active** MT18 mask,
-starting at `15 * block + 1`. Matching band/IODI, resolving geographic IGPs,
-checking active-mask bounds, aging corrections, and building time-dependent
-state are intentionally left for a later module, independently per SBAS signal.
-The current parser validates field extraction, CRC, and band/block bounds,
-not every reserved bit or cross-message semantic constraint.
+starting at `15 * block + 1`. The stateless C++ parser validates field
+extraction, CRC, and band/block bounds, not every reserved bit or cross-message
+semantic constraint. The Python hourly-map experiment described below adds
+conservative matching and aging independently per SBAS signal.
+
+## Experimental hourly VTEC maps
+
+Install the package dependencies, then render from a completed batch extraction:
+
+```sh
+sbas-grid-render \
+  --sbas-dir /path/to/era-a-sbas \
+  --reconstruction-dir /path/to/era-a \
+  --coastline contrib/natural-earth/ne_110m_coastline.zip \
+  --output new-hourly-map-directory
+```
+
+`--start YYYY-MM-DDTHH` and exclusive `--end YYYY-MM-DDTHH` restrict an
+experiment to UTC hours. `--vmin`, `--vmax`, and `--min-coverage` control the
+fixed color scale and displayed coverage threshold. Defaults are 0–100 TECU
+and 25%. `hourly.jsonl` retains values below the display threshold so later
+rendering choices do not alter the aggregation result.
+
+This experiment reconstructs the standard 2,192 IGP coordinates, associates
+MT26 active-mask ordinals with MT18 masks having the same IODI, and keeps state
+across continuous reconstructed files. A time gap starts fresh state. A new
+IODI, changed same-IODI mask, expired/incomplete mask, MT0, `not_monitored`, or
+`do_not_use` data is handled conservatively rather than filled with zero.
+
+An accepted MT26 value is held until its next update or for at most 600 seconds;
+complete masks age out after 1,200 seconds. Hourly means are weighted by the
+number of valid seconds, split exactly at UTC-hour boundaries. `coverage` and
+`valid_seconds` accompany every value. These timeout choices follow published
+SBAS maximum intervals and are recorded in output provenance, but the result is
+an exploratory visualization—not an aviation integrity implementation.
+
+RXM-SFRBX has no timestamp. The command maps each extraction byte offset back
+through reconstruction spans to the original payload-derived NAV/EOE epoch.
+This is a reception-context UTC approximation, not an inferred SBAS transmit
+time. No time is derived from an output filename.
+
+VTEC is derived from the SBAS L1 vertical delay using the first-order relation
+`VTEC = delay_m * 1575.42e6² / (40.3 * 1e16)`. It is not receiver-observed TEC.
+The PNG overlay uses un-interpolated 5° point-centered cells, a fixed run-wide
+extent and color scale, black 1:110m Natural Earth coastlines, and 10° graticules.
+Missing or insufficient-coverage cells remain white. High-latitude cell shapes
+are deliberately approximate; the JSON Lines grid points are authoritative.
+
+Outputs include checksums for every PNG, input and source hashes, dependency
+versions, and a snapshot of the aggregation source. The command requires a new
+output directory and writes `completed.json` last. Interrupted output is not
+automatically resumed.
+
+### HEVC/MP4 preview
+
+Encode the PNG manifest in its recorded order with a Vulkan Video HEVC encoder:
+
+```sh
+./scripts/encode-sbas-map-video \
+  --images-manifest work/era-a-vtec-hourly/images.json \
+  --output work/era-a-vtec-hourly/era-a-prn137-hourly-vtec-5fps-hevc.mp4 \
+  --title "Era A SBAS PRN 137 hourly mean VTEC"
+```
+
+The defaults are 5 fps, Vulkan physical device 0, CQP 24, an `hvc1` MP4 stream,
+and `faststart` metadata placement. Native dimensions are preserved when both
+dimensions are even; an odd dimension is padded by one pixel because the NV12
+hardware path requires even dimensions. The command never rescales.
+
+Frame order comes only from `images.json`, not a filesystem glob. By default,
+the command verifies every PNG checksum, checks the encoded codec, dimensions,
+frame rate, frame count, and duration with `ffprobe`, and fully decodes the
+finished video. It writes adjacent `.frames.jsonl` and `.json` files recording
+the frame-to-hour mapping, checksums, exact command, actual tool versions, and
+verification results. Use `--overwrite` to replace existing outputs only after
+the new video passes verification.
 
 ## References and verification
 
 - [u-blox integration manual](https://www.u-blox.com/sites/default/files/ZED-F9P_IntegrationManual_UBX-18010802.pdf): RXM-SFRBX navigation-word arrangement.
 - [ESA Navipedia SBAS message format](https://gssc.esa.int/navipedia/index.php/The_EGNOS_SBAS_Message_Format_Explained): message contents and correction semantics.
+- [ESA Navipedia ionospheric delay](https://gssc.esa.int/navipedia/index.php/Ionospheric_Delay): first-order delay/TEC relationship.
+- [Natural Earth 1:110m physical vectors](https://www.naturalearthdata.com/downloads/110m-physical-vectors/): public-domain coastline source.
 - [Pinned RTKLIB SBAS implementation](../contrib/RTKLIB/src/sbas.c): field-layout cross-reference; dependency revision is the repository gitlink.
 
 Tests include independently byte-computed CRC fixtures, signed boundaries,

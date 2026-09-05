@@ -30,8 +30,9 @@ upstream `tomojitakasu/RTKLIB` repository.
 
 The Python package requires Python 3.11 or newer. Runtime dependencies are
 declared in `requirements.txt`. The `cddis-download` command inventories,
-downloads and verifies external GNSS products. Observation processing commands
-have not been implemented yet.
+downloads and verifies external GNSS products. `ubx-restitch` reconstructs Era A
+UTC segments, `sbas-grid-render` produces experimental hourly SBAS VTEC maps,
+and `sbas-map-video` encodes those maps as a manifest-ordered HEVC/MP4 preview.
 
 ```sh
 python -m pip install .
@@ -43,6 +44,8 @@ processing runs record their actual installed versions in provenance.
 See [the downloader guide](docs/cddis-downloader.md) and
 [example configuration](config/products.example.toml) for Earthdata setup,
 product selection, optional checksum snapshots and resumable downloads.
+See the [subframe and SBAS guide](docs/subframes.md) for extraction and hourly
+map semantics.
 
 ## C++ UBX library
 

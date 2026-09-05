@@ -12,6 +12,8 @@ dynamic = ["dependencies"]
 [project.scripts]
 cddis-download = "neognss_observatory.cddis_download:cli"
 ubx-restitch = "neognss_observatory.ubx_restitch:cli"
+sbas-grid-render = "neognss_observatory.sbas_grid_render:cli"
+sbas-map-video = "neognss_observatory.sbas_map_video:cli"
 
 [build-system]
 requires = ["setuptools>=77.0.3"]

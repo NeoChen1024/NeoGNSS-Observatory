@@ -1,0 +1,6 @@
+#!/usr/bin/env python
+# SPDX-License-Identifier: GPL-3.0-only
+from neognss_observatory.sbas_map_video import cli
+
+if __name__ == "__main__":
+    cli()
