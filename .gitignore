@@ -1,0 +1,24 @@
+# Large or reproducible processing products belong outside Git.
+work/
+data/
+products/
+*.ubx
+*.sbf
+*.obs
+*.nav
+*.rnx
+*.sp3
+*.clk
+*.erp
+*.bia
+*.bsx
+*.obx
+*.xz
+*.gz
+*.Z
+
+# Local environments and caches.
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
