@@ -29,7 +29,7 @@ or logger at runtime.
 The archive-index and subframes applications also require OpenSSL Crypto development files.
 Its library scanner API is in `<cppubx2/ubx_archive.hpp>`; the
 [reconstruction guide](../docs/ubx-restitch.md) describes the public CLI,
-UTC grouping policy, and preservation guarantees.
+GPST grouping policy, and preservation guarantees.
 
 The library can also be configured directly with `cmake -S libcppubx2 -B build/ubx`.
 Use `-DCPPUBX2_BUILD_EXAMPLES=OFF` for a library-only build and
@@ -89,9 +89,16 @@ API examples, limitations, and the `cppubx2_subframes` JSON Lines exporter.
 | `-d` | Dump every frame to stderr |
 | `-q` | Suppress live status; retain periodic statistics |
 
-`-f`/`-t` and `-d`/`-q` remain mutually exclusive. A valid NAV-PVT opens
-or rotates recording by full UTC date; preceding frames are not recorded.
-NAV-EOE is diagnostic only. Invalid PVT does not change the recording date.
+`-f`/`-t` and `-d`/`-q` remain mutually exclusive. Frames are buffered until
+NAV-EOE. Every EOE requires a fresh valid NAV-TIMEGPS with the same iTOW;
+missing, invalid, conflicting or non-increasing time causes a nonzero exit.
+The entire epoch, including EOE, is written to its GPST day. NAV-PVT calendar
+fields never select the output date. Outputs are named
+`YYYY-MM/GPST-%Y-%m-%d--%H-%M-%S.ubx`, using the first recorded epoch.
+Nominal iTOW defines the epoch boundary; fTOW remains unchanged in the raw
+message and is not used to move a nominal epoch across a day boundary.
+EOF with an incomplete recording epoch fails without publishing that epoch.
+The pending epoch buffer is limited to 64 MiB; exceeding it fails explicitly.
 Truncated file input and output flush/close failures return nonzero. TCP uses
 the existing byte-at-a-time read and five-second receive timeout, discarding
 partial frames on timeout before resynchronizing. This application is not a

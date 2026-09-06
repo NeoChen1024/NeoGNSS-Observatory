@@ -14,6 +14,9 @@ cddis-download = "neognss_observatory.cddis_download:cli"
 ubx-restitch = "neognss_observatory.ubx_restitch:cli"
 sbas-grid-render = "neognss_observatory.sbas_grid_render:cli"
 sbas-map-video = "neognss_observatory.sbas_map_video:cli"
+tec-ipp-map = "neognss_observatory.tec_ipp:cli"
+sbf-rinex = "neognss_observatory.sbf_rinex:cli"
+rinex-observation-audit = "neognss_observatory.sbf_rinex:audit_cli"
 
 [build-system]
 requires = ["setuptools>=77.0.3"]

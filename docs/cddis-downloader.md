@@ -89,12 +89,14 @@ masters under `/hdd` must never be selected as output locations.
 
 ## Planning and dates
 
-Dates are inclusive UTC processing-date labels. `guard_days` adds explicit
+Dates are inclusive GPST processing-date labels. `guard_days` adds explicit
 adjacent candidate days (default one on either side). GPS week numbers group
 these calendar labels for directory lookup and rough progress only; this is
 not conversion of UTC observation epochs to GPST. Product nominal dates are
 filename-derived, and every file is marked `coverage_status = unverified`.
-Downstream processing must inspect payload epochs and preserve GNSS time and UTC.
+Downstream processing must inspect payload epochs and follow the single GPST
+policy. This calendar-bucketing clarification does not change existing product
+filenames, downloads or plans; external formats keep their native time fields.
 
 Layouts are `week` (`base/<GPS-week>/`), `year` (`base/<year>/brdc/`), and `day`
 (`base/<year>/<DOY>/`). Patterns accept `{yyyy}`, `{yy}`, `{doy}` and `{week}`.

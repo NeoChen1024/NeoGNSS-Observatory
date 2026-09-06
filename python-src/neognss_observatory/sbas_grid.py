@@ -159,7 +159,7 @@ class HourlyGrid:
                 raise ValueError("Overlapping or invalid hourly grid coverage")
             lat, lon = COORDINATES[band, bit]
             yield dict(
-                hour_utc=hour,
+                hour_gpst=hour,
                 band=band,
                 mask_bit=bit,
                 latitude=lat,

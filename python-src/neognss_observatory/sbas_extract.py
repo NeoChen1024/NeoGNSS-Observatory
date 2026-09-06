@@ -32,7 +32,7 @@ def inventory(root):
     metadata = {}
     for path in (root / ".artifacts").glob("*.json"):
         record = json.loads(path.read_text())
-        if record.get("kind") == "utc_segment":
+        if record.get("kind") == "gpst_segment":
             if record["name"] in metadata:
                 raise ValueError("Duplicate artifact metadata")
             metadata[record["name"]] = record
@@ -40,32 +40,32 @@ def inventory(root):
     with (root / "plan.jsonl").open() as stream:
         for line in stream:
             record = json.loads(line)
-            if record.get("record_type") != "artifacts" or record["kind"] != "utc_segment":
+            if record.get("record_type") != "artifacts" or record["kind"] != "gpst_segment":
                 continue
             name = record["name"]
             if Path(name).name != name or not name.endswith(".ubx"):
-                raise ValueError("Expected root-level UTC segment")
+                raise ValueError("Expected root-level GPST segment")
             meta = metadata[name]
             if not meta.get("verified") or any(meta.get(k) != v for k, v in record.items() if k != "record_type"):
                 raise ValueError(f"Artifact metadata does not match plan: {name}")
             stat = (root / name).stat()
             if stat.st_size != meta["size"]:
                 raise ValueError(f"Source size changed: {name}")
-            if meta["end_utc"] - meta["start_utc"] + 1 != meta["nav_seconds"]:
+            if meta["end_gpst"] - meta["start_gpst"] + 1 != meta["nav_seconds"]:
                 raise ValueError(f"Non-contiguous segment: {name}")
-            segments.append({k: meta[k] for k in ("name", "size", "sha256", "start_utc", "end_utc")})
+            segments.append({k: meta[k] for k in ("name", "size", "sha256", "start_gpst", "end_gpst")})
             segments[-1]["mtime_ns"] = stat.st_mtime_ns
-    if len(segments) != completed["utc_segments"] or {p.name for p in root.glob("*.ubx")} != {s["name"] for s in segments}:
+    if len(segments) != completed["gpst_segments"] or {p.name for p in root.glob("*.ubx")} != {s["name"] for s in segments}:
         raise ValueError("Segment inventory does not match reconstruction")
     return segments, completed
 
 
 def continuous_groups(segments):
     groups = []
-    for segment in sorted(segments, key=lambda s: s["start_utc"]):
-        if groups and segment["start_utc"] <= groups[-1][-1]["end_utc"]:
+    for segment in sorted(segments, key=lambda s: s["start_gpst"]):
+        if groups and segment["start_gpst"] <= groups[-1][-1]["end_gpst"]:
             raise ValueError("Overlapping or reversed segment timestamps")
-        if not groups or segment["start_utc"] != groups[-1][-1]["end_utc"] + 1:
+        if not groups or segment["start_gpst"] != groups[-1][-1]["end_gpst"] + 1:
             groups.append([])
         groups[-1].append(segment)
     return groups
@@ -118,9 +118,9 @@ def extract_group(root, group, output, worker, progress):
         output / "sources.json",
         {
             "sources": sources,
-            "time_basis": "reconstruction_payload_utc",
-            "start_utc": group[0]["start_utc"],
-            "end_utc": group[-1]["end_utc"],
+            "time_basis": "reconstruction_payload_gpst",
+            "start_gpst": group[0]["start_gpst"],
+            "end_gpst": group[-1]["end_gpst"],
         },
     )
     checksums = {p.name: digest(p) for p in sorted(output.iterdir()) if p.is_file()}
@@ -148,7 +148,7 @@ class tempfile_logs:
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New output directory; never overwrites a run.")
 @click.option("--worker", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
 def cli(input_dir, output, worker):
-    """Extract all SBAS from reconstructed UTC segments, excluding unassigned/."""
+    """Extract all SBAS from reconstructed GPST segments, excluding unassigned/."""
     try:
         root, worker = input_dir.resolve(), worker.resolve()
         segments, completed = inventory(root)
@@ -176,7 +176,9 @@ def cli(input_dir, output, worker):
         write_json(
             output / "run.json",
             {
-                "schema": 1,
+                "schema": 2,
+                "time_scale": "GPST",
+                "time_origin": "1980-01-06 00:00:00 GPST",
                 "source_root": str(root),
                 "reconstruction": completed,
                 "plan_file_sha256": digest(root / "plan.jsonl"),

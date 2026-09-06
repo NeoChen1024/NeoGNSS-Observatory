@@ -17,15 +17,15 @@ class Progress:
 class SbasBatchTest(unittest.TestCase):
     def test_midnight_is_not_a_reset_but_gap_is(self):
         segments = [
-            dict(start_utc=86390, end_utc=86399),
-            dict(start_utc=86400, end_utc=86403),
-            dict(start_utc=86405, end_utc=86406),
+            dict(start_gpst=86390, end_gpst=86399),
+            dict(start_gpst=86400, end_gpst=86403),
+            dict(start_gpst=86405, end_gpst=86406),
         ]
         self.assertEqual([len(g) for g in continuous_groups(segments)], [2, 1])
 
     def test_overlap_is_rejected(self):
         with self.assertRaises(ValueError):
-            continuous_groups([dict(start_utc=1, end_utc=3), dict(start_utc=3, end_utc=5)])
+            continuous_groups([dict(start_gpst=1, end_gpst=3), dict(start_gpst=3, end_gpst=5)])
 
     def test_partial_frame_survives_continuous_file_boundary(self):
         worker = Path("build/libcppubx2/cppubx2_subframes").resolve()
@@ -51,8 +51,8 @@ class SbasBatchTest(unittest.TestCase):
                         size=len(chunk),
                         sha256=hashlib.sha256(chunk).hexdigest(),
                         mtime_ns=path.stat().st_mtime_ns,
-                        start_utc=86399 + i,
-                        end_utc=86399 + i,
+                        start_gpst=86399 + i,
+                        end_gpst=86399 + i,
                     )
                 )
             summary = extract_group(root, group, root / "out", worker, Progress())

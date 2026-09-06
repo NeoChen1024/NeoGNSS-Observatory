@@ -25,12 +25,12 @@
 ## Data handling
 
 - Treat GNSS archives under `/hdd` as read-only preservation masters.
-- The user-authorized Era A reconstruction output is
-  `~/net/DATA_SSD/datasets/GNSS/era-a`. Only this derived-output directory
-  may be written; the expanded source directories remain read-only.
-- For downstream Era A analysis, use the reconstructed UTC segments in
+- The user-authorized reconstruction outputs are
+  `~/net/DATA_SSD/datasets/GNSS/era-a` and `era-b` beside it.
+  The expanded source directories remain read-only.
+- For downstream Era A analysis, use the reconstructed GPST segments in
   `era-a/` and exclude `era-a/unassigned/`. Leave excluded files and their
-  provenance intact; do not attempt to infer missing UTC assignments.
+  provenance intact; do not invent missing GPST assignments.
 - Read Era A-C processing inputs from `~/net/DATA_SSD/datasets/GNSS`:
   Era A uses `archive/ubx24h`, Era B uses `archive/ubx`, and Era C uses
   `gnss/mosaic-x5/BX4ACP`. Treat this expanded dataset as read-only too.
@@ -41,10 +41,31 @@
 - Every derived artifact must be reproducible from source data, pinned tools,
   versioned configuration, and recorded provenance.
 - Never infer observation coverage or time scale solely from filenames; inspect
-  payload timestamps and preserve both GNSS time and UTC where applicable.
+  payload timestamps and preserve original GNSS fields as provenance.
+
+## Single GPST policy
+
+- All project observation time axes, day/hour partitions, processing windows,
+  map labels and derived artifact metadata use GPST. No optional UTC mode or
+  compatibility reading of old UTC-derived products is maintained.
+- Scalar `gpst`, `start_gpst`, `end_gpst` and `hour_gpst` values are continuous
+  seconds since 1980-01-06 00:00:00 GPST, not Unix timestamps. Integer-second
+  indexes describe nominal receiver epochs; raw fractional time remains intact.
+- Name assigned UBX outputs `GPST-%Y-%m-%d--%H-%M-%S.ubx`. Never use a UTC `Z`
+  or `+0000` suffix for GPST. Keep native protocol fields and external product
+  formats unchanged; decode their specified scales at the input boundary.
+- Logger epochs are buffered until EOE. Every EOE requires a fresh valid
+  NAV-TIMEGPS with matching iTOW; otherwise fail. Rotate before writing the
+  complete first epoch of the new GPST day, including its EOE.
+- Old UTC analysis/reconstruction outputs were explicitly cleared. Preserve
+  archives, downloaded products, downloader plans/configuration and map assets.
+  Rebuild derived outputs with GPST tools; do not relabel old timestamps.
 
 ## Toolchain
 
+- This workspace has Septentrio RxTools under `~/.local/RxTools`; its SBF to
+  RINEX converter is `bin/sbf2rin`. Read the installed tool's help and record
+  its version and binary hash for each run. Do not vendor the installation.
 - References to RTKLIB mean the RTKLIB-EX `main` branch from
   `rtklibexplorer/RTKLIB`, not upstream `tomojitakasu/RTKLIB`.
 - Pin exact tool revisions or container digests for production processing.
@@ -102,7 +123,7 @@ configuring `libcppubx2/` directly.
   Expose reusable functionality through `cppubx2::cppubx2`; keep transport,
   recording policy, and automatic terminal output in applications.
 - `libcppubx2/examples/ubxlogger.cpp` is the maintained logger application.
-  Preserve its existing flags, exit behavior, and recording semantics.
+  Preserve its CLI flags; recording follows the single GPST policy above.
 - Generate parsers into the build directory from the pinned
   `contrib/pyubx2` submodule. Python/pyubx2 is a build-time dependency, not
   a runtime dependency of the C++ library. Do not edit generated files.

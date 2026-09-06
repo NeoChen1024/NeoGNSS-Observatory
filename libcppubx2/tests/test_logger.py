@@ -30,6 +30,12 @@ def pvt(year=2026, month=9, day=5, tow=1000, valid=3):
     return frame(1, 7, data)
 
 
+def epoch(week=2434, tow=518400000, valid=3, eoe_tow=None):
+    return frame(1, 0x20, struct.pack("<IihbBI", tow, 0, week, 18, valid, 0)) + frame(
+        1, 0x61, struct.pack("<I", tow if eoe_tow is None else eoe_tow)
+    )
+
+
 class LoggerTests(unittest.TestCase):
     def run_logger(self, data=b"", args=("-n", "-q"), cwd=None):
         return subprocess.run([str(LOGGER), *args], input=data, cwd=cwd, capture_output=True, timeout=10)
@@ -57,36 +63,52 @@ class LoggerTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn(b"Truncated UBX frame", result.stderr)
 
-    def test_recording_uses_pvt_without_eoe_and_full_date(self):
+    def test_recording_rotates_complete_gpst_epoch_at_eoe(self):
         with tempfile.TemporaryDirectory() as directory:
-            dates = [(2026, 9, 5), (2026, 10, 5), (2027, 10, 5)]
-            packets = [pvt(*date) for date in dates]
-            mismatch = frame(1, 0x61, struct.pack("<I", 2000))
-            result = self.run_logger(b"".join(packets) + mismatch, ("-q",), directory)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn(b"EOE iTOW mismatch", result.stderr)
-            for index, (year, month, day) in enumerate(dates):
-                path = Path(directory) / f"{year:04}-{month:02}" / f"{year:04}{month:02}{day:02}T000000.ubx"
-                expected = packets[index] + (mismatch if index == 2 else b"")
-                self.assertEqual(path.read_bytes(), expected)
+            from datetime import datetime, timedelta
 
-    def test_invalid_pvt_does_not_change_output_date(self):
+            packets = [pvt(valid=0) + epoch(tow=t) for t in (518399000, 518400000)]
+            result = self.run_logger(b"".join(packets), ("-q",), directory)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for packet, tow in zip(packets, (518399, 518400)):
+                date = datetime(1980, 1, 6) + timedelta(seconds=2434 * 604800 + tow)
+                path = Path(directory) / date.strftime("%Y-%m/GPST-%Y-%m-%d--%H-%M-%S.ubx")
+                self.assertEqual(path.read_bytes(), packet)
+
+    def test_each_eoe_requires_fresh_matching_valid_timegps(self):
+        cases = [
+            frame(1, 0x61, struct.pack("<I", 0)),
+            epoch() + frame(1, 0x61, struct.pack("<I", 518401000)),
+            epoch(valid=0),
+            epoch(eoe_tow=1),
+            epoch() + epoch(),
+        ]
+        for data in cases:
+            with self.subTest(data=data), tempfile.TemporaryDirectory() as directory:
+                self.assertNotEqual(self.run_logger(data, ("-q",), directory).returncode, 0)
+
+    def test_incomplete_epoch_is_not_published(self):
         with tempfile.TemporaryDirectory() as directory:
-            valid = pvt()
-            invalid = pvt(month=10, valid=0)
-            result = self.run_logger(valid + invalid, ("-q",), directory)
-            self.assertEqual(result.returncode, 0)
-            outputs = list(Path(directory).rglob("*.ubx"))
-            self.assertEqual(len(outputs), 1)
-            self.assertEqual(outputs[0].read_bytes(), valid + invalid)
+            result = self.run_logger(epoch()[:-12], ("-q",), directory)
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(list(Path(directory).rglob("*.ubx")))
+
+    def test_gps_week_rollover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_logger(epoch(tow=604799000) + epoch(week=2435, tow=0), ("-q",), directory)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(list(Path(directory).rglob("*.ubx"))), 2)
 
     def test_buffered_output_failure_at_eof_and_rotation(self):
         for rotate in (False, True):
             with self.subTest(rotate=rotate), tempfile.TemporaryDirectory() as directory:
-                folder = Path(directory) / "2026-09"
+                from datetime import datetime, timedelta
+
+                date = datetime(1980, 1, 6) + timedelta(seconds=2434 * 604800 + 518400)
+                folder = Path(directory) / date.strftime("%Y-%m")
                 folder.mkdir()
-                (folder / "20260905T000000.ubx").symlink_to("/dev/full")
-                data = pvt() + (pvt(month=10) if rotate else b"")
+                (folder / date.strftime("GPST-%Y-%m-%d--%H-%M-%S.ubx")).symlink_to("/dev/full")
+                data = epoch() + (epoch(week=2435, tow=0) if rotate else b"")
                 result = self.run_logger(data, ("-q",), directory)
                 self.assertEqual(result.returncode, 1)
                 self.assertIn(b"UBX output close", result.stderr)

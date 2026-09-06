@@ -12,10 +12,13 @@ Both the expanded dataset and preservation masters remain read-only.
 See [docs/offline-processing-plan.md](docs/offline-processing-plan.md) for the
 verified data inventory and proposed implementation sequence.
 
+All observation processing uses [one GPST time policy](docs/time-policy.md),
+including day/hour boundaries and GPST-prefixed derived filenames.
+
 The first deliverable is deliberately smaller than a complete two-year
 reprocessing run:
 
-1. Generate one UTC day of canonical RINEX from Era C's 1 Hz SBF data.
+1. Generate one GPST day of canonical RINEX from Era C's 1 Hz SBF data.
 2. Cross-check it against the receiver-generated 30 s RINEX.
 3. Produce availability, gap, cycle-slip, and signal-pair QC.
 4. Produce carrier-phase relative dTEC, ROT/ROTI, and IPP time series.
@@ -31,8 +34,12 @@ upstream `tomojitakasu/RTKLIB` repository.
 The Python package requires Python 3.11 or newer. Runtime dependencies are
 declared in `requirements.txt`. The `cddis-download` command inventories,
 downloads and verifies external GNSS products. `ubx-restitch` reconstructs Era A
-UTC segments, `sbas-grid-render` produces experimental hourly SBAS VTEC maps,
+GPST segments, `sbas-grid-render` produces experimental hourly SBAS VTEC maps,
 and `sbas-map-video` encodes those maps as a manifest-ordered HEVC/MP4 preview.
+`sbf-rinex` wraps an installed Septentrio RxTools converter for native-rate SBF
+exports; `rinex-observation-audit` inventories the resulting observations.
+See the [RxTools conversion experiment](docs/era-c-rxtools-experiment.md) for
+preservation options, validation results and current limits.
 
 ```sh
 python -m pip install .
@@ -46,6 +53,8 @@ See [the downloader guide](docs/cddis-downloader.md) and
 product selection, optional checksum snapshots and resumable downloads.
 See the [subframe and SBAS guide](docs/subframes.md) for extraction and hourly
 map semantics.
+The [IPP track experiment](docs/tec-ipp-maps.md) adds relative dSTEC trajectories
+over pale SBAS backgrounds, with parallel hourly PNG export.
 
 ## C++ UBX library
 

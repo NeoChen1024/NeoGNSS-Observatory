@@ -35,16 +35,18 @@ def frame(cls, msg, payload=b""):
     return b"\xb5\x62" + body + bytes([a, b])
 
 
-def second(utc, tow, *, nav=True, eoe=True, offset=0.01, marker=0):
+def second(gpst, tow, *, nav=True, eoe=True, offset=0.01, marker=0):
+    week, tow = divmod(gpst, 604800)
     rawx = bytearray(16)
-    struct.pack_into("<dH", rawx, 0, tow + offset, 2263)
+    struct.pack_into("<dH", rawx, 0, tow + offset, week)
     rawx[10] = 18
     rawx[12] = 1
     data = frame(2, 0x13, bytes([marker]) * 8) + frame(2, 0x15, rawx)
     if nav:
-        date = datetime.fromtimestamp(utc, timezone.utc)
+        date = datetime.fromtimestamp(gpst + 315964800 - 18, timezone.utc)
         pvt = bytearray(92)
         struct.pack_into("<IHBBBBBB", pvt, 0, tow * 1000, date.year, date.month, date.day, date.hour, date.minute, date.second, 3)
+        data += frame(1, 0x20, struct.pack("<IihbBI", tow * 1000, 0, week, 18, 3, 0))
         data += frame(1, 7, pvt)
     if eoe:
         data += frame(1, 0x61, struct.pack("<I", tow * 1000))
@@ -53,6 +55,12 @@ def second(utc, tow, *, nav=True, eoe=True, offset=0.01, marker=0):
 
 @unittest.skipUnless(INDEXER.exists(), "Build cppubx2_archive_index first")
 class ArchiveScanTests(unittest.TestCase):
+    def test_pvt_calendar_is_not_a_gpst_anchor(self):
+        pvt = bytearray(92)
+        struct.pack_into("<IHBBBBBB", pvt, 0, 1000, 2025, 4, 1, 0, 0, 0, 3)
+        rows = self.scan(frame(1, 7, pvt) + frame(1, 0x61, struct.pack("<I", 1000)))
+        self.assertEqual(rows[0].gpst, UNKNOWN)
+
     def scan(self, data):
         with tempfile.TemporaryDirectory() as directory:
             source, index = Path(directory) / "input.ubx", Path(directory) / "epochs.idx"
@@ -65,38 +73,38 @@ class ArchiveScanTests(unittest.TestCase):
         return result
 
     def test_rawx_clock_steering_and_order(self):
-        start = 1684800000
+        start = 1368835200
         data = b"gpsd header\r\n" + b"".join(second(start + i, 172818 + i, offset=-0.01) for i in range(3))
         rows = self.scan(data)
         self.assertEqual(len(rows), 4)
         self.assertEqual(rows[0].flags, NOISE)
-        self.assertEqual([r.utc for r in rows[1:]], [start, start + 1, start + 2])
+        self.assertEqual([r.gpst for r in rows[1:]], [start, start + 1, start + 2])
         self.assertTrue(all(r.flags & EOE and not r.flags & PARTIAL for r in rows[1:]))
         self.assertEqual(rows[1].week, 2263)
 
     def test_corrupt_length_and_checksum_resynchronize(self):
-        valid = second(1684800000, 172818)
+        valid = second(1368835200, 172818)
         rows = self.scan(b"\xb5\x62\x01\x07\xff\xffbroken" + valid + b"\xb5\x62")
         self.assertEqual(rows[0].flags, NOISE)
-        self.assertEqual(rows[1].utc, 1684800000)
+        self.assertEqual(rows[1].gpst, 1368835200)
         self.assertEqual(rows[-1].flags, NOISE)
 
     def test_missing_nav_and_eoe_preserves_bytes(self):
-        data = second(1684800000, 172818)
-        data += second(1684800001, 172819, nav=False, eoe=False)
-        data += second(1684800002, 172820)
+        data = second(1368835200, 172818)
+        data += second(1368835201, 172819, nav=False, eoe=False)
+        data += second(1368835202, 172820)
         rows = self.scan(data)
         self.assertEqual(len(rows), 3)
         self.assertTrue(rows[1].flags & NO_NAV)
-        self.assertEqual(rows[1].utc, 1684800001)
-        self.assertEqual(rows[2].utc, 1684800002)
+        self.assertEqual(rows[1].gpst, 1368835201)
+        self.assertEqual(rows[2].gpst, 1368835202)
 
     def test_untimed_tail_and_week_rollover(self):
-        data = second(1684627181, 604799) + second(1684627182, 0)
+        data = second(1368662381, 604799) + second(1368662382, 0)
         data += frame(2, 0x13, b"asynchronous")
         rows = self.scan(data)
-        self.assertEqual(rows[1].utc, 1684627182)
-        self.assertEqual(rows[-1].utc, UNKNOWN)
+        self.assertEqual(rows[1].gpst, 1368662382)
+        self.assertEqual(rows[-1].gpst, UNKNOWN)
         self.assertTrue(rows[-1].flags & PARTIAL)
 
 
@@ -119,7 +127,7 @@ class ReconstructionTests(unittest.TestCase):
         return b"".join(Path(s["source"]).read_bytes()[s["begin"] : s["end"]] for s in artifact["spans"])
 
     def test_exact_overlap_preserves_async_packets(self):
-        packets = [second(1684800000 + i, 172818 + i, marker=i) for i in range(9)]
+        packets = [second(1368835200 + i, 172818 + i, marker=i) for i in range(9)]
         # Incoming first epoch lacks its first complete asynchronous frame.
         first = self.source("a.ubx", b"gpsd\n" + b"".join(packets[:6]))
         last = self.source("b.ubx", b"gpsd\n" + packets[3][16:] + b"".join(packets[4:]))
@@ -128,16 +136,33 @@ class ReconstructionTests(unittest.TestCase):
         self.assertEqual(len(plan["artifacts"]), 1)
         self.assertEqual(self.materialize(plan["artifacts"][0]), b"".join(packets))
 
+    def test_split_epoch_at_file_boundary_retains_all_bytes(self):
+        packets = [second(1368835200 + i, 172818 + i, marker=i) for i in range(3)]
+        # 16-byte SFRBX plus 24-byte RAWX precede NAV-PVT and NAV-EOE.
+        first = self.source("a.ubx", packets[0] + packets[1][:40])
+        last = self.source("b.ubx", packets[1][40:] + packets[2])
+        plan = segment_plan(build_plan([first, last]))
+        self.assertEqual(plan["joins"][0]["kind"], "split_epoch_continuation")
+        self.assertEqual(self.materialize(plan["artifacts"][0]), b"".join(packets))
+        self.assertEqual(plan["byte_accounting"]["verified_duplicate_bytes"], 0)
+
+    def test_complete_same_epoch_is_not_a_split_continuation(self):
+        packets = [second(1368835200 + i, 172818 + i) for i in range(3)]
+        first = self.source("a.ubx", packets[0] + packets[1])
+        last = self.source("b.ubx", packets[1][40:] + packets[2])
+        with self.assertRaisesRegex(ValueError, "Unverified overlap"):
+            build_plan([first, last])
+
     def test_overlap_with_changed_payload_fails_closed(self):
-        packets = [second(1684800000 + i, 172818 + i, marker=i) for i in range(9)]
+        packets = [second(1368835200 + i, 172818 + i, marker=i) for i in range(9)]
         first = self.source("a.ubx", b"".join(packets[:6]))
-        packets[3] = second(1684800003, 172821, marker=99)
+        packets[3] = second(1368835203, 172821, marker=99)
         last = self.source("b.ubx", b"".join(packets[3:]))
         with self.assertRaisesRegex(ValueError, "Unverified overlap"):
             build_plan([first, last])
 
-    def test_utc_midnight_gap_and_no_nav_intervals(self):
-        start = int(datetime(2023, 5, 23, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+    def test_gpst_midnight_gap_and_no_nav_intervals(self):
+        start = int(datetime(2023, 5, 23, 23, 59, 59, tzinfo=timezone.utc).timestamp()) - 315964800
         packets = [
             second(start, 259217),
             second(start + 1, 259218),
@@ -146,14 +171,14 @@ class ReconstructionTests(unittest.TestCase):
             second(start + 7, 259224),
         ]
         plan = segment_plan(build_plan([self.source("a.ubx", b"".join(packets))]))
-        main = [a for a in plan["artifacts"] if a["kind"] == "utc_segment"]
+        main = [a for a in plan["artifacts"] if a["kind"] == "gpst_segment"]
         self.assertEqual(
             [a["name"] for a in main],
             [
-                "2023-05-23T23:59:59+0000.ubx",
-                "2023-05-24T00:00:00+0000.ubx",
-                "2023-05-24T00:00:02+0000.ubx",
-                "2023-05-24T00:00:06+0000.ubx",
+                "GPST-2023-05-23--23-59-59.ubx",
+                "GPST-2023-05-24--00-00-00.ubx",
+                "GPST-2023-05-24--00-00-02.ubx",
+                "GPST-2023-05-24--00-00-06.ubx",
             ],
         )
         unassigned = [a for a in plan["artifacts"] if a["kind"] == "unassigned_frames"]
@@ -163,7 +188,7 @@ class ReconstructionTests(unittest.TestCase):
         self.assertEqual(sum(a["size"] for a in plan["artifacts"]), sum(map(len, packets)))
 
     def test_publication_readback_resume_and_existing_output(self):
-        data = second(1684800000, 172818)
+        data = second(1368835200, 172818)
         plan = segment_plan(build_plan([self.source("a.ubx", data)]))
         output = self.root / "output"
         result = publish(plan, output, INDEXER)

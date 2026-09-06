@@ -9,11 +9,12 @@ import struct
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 import click
 from tqdm import tqdm
+
+from .gpst import label as gpst_label
 
 
 def sha256(path):
@@ -41,6 +42,8 @@ def load_images(manifest_path, verify=True):
     dimensions = None
     progress = tqdm(records, desc="Verify PNGs", unit="image", disable=not verify)
     for record in progress:
+        if "hour_utc" in record:
+            raise ValueError("Old UTC image manifests are not supported; rerender with GPST tools")
         relative = record.get("path")
         if not isinstance(relative, str):
             raise ValueError("Image manifest contains an invalid path")
@@ -231,12 +234,12 @@ def atomic_jsonlines(path, images, fps, overwrite):
             row = {
                 "frame_index": number,
                 "video_time_seconds": number / fps,
-                "hour_utc": record.get("hour_utc"),
+                "hour_gpst": record.get("hour_gpst"),
                 "png": record["path"],
                 "png_sha256": record.get("sha256"),
             }
-            if row["hour_utc"] is not None:
-                row["hour_iso_utc"] = datetime.fromtimestamp(row["hour_utc"], timezone.utc).isoformat().replace("+00:00", "Z")
+            if row["hour_gpst"] is not None:
+                row["hour_label_gpst"] = gpst_label(row["hour_gpst"])
             stream.write(json.dumps(row, separators=(",", ":"), sort_keys=True) + "\n")
     os.replace(temporary, path)
 
@@ -308,7 +311,8 @@ def cli(images_manifest, output, device, fps, quality, title, verify_input, veri
         frame_digest = sha256(frames_path)
         provenance = {
             "status": "complete",
-            "created_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "time_scale": "GPST",
+            "time_source_sha256": sha256(Path(__file__).with_name("gpst.py")),
             "source": {"path": str(Path(__file__).resolve()), "sha256": source_digest},
             "input": {
                 "images_manifest": str(Path(images_manifest).resolve()),

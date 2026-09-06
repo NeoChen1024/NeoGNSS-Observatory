@@ -117,16 +117,12 @@ output path and hash, epoch count, warnings, and completion status
 external-product URLs, hashes, and product family
 ```
 
-Filename time never substitutes for payload time. Both the original GNSS time
-scale and converted UTC must be retained to prevent leap-second and local-time
-ambiguity.
-
-Canonical partitions use `[00:00:00, 24:00:00) UTC`; RINEX headers and epochs
-may still correctly identify GPST. During 2023-2025, a UTC day boundary occurs
-at 00:00:18 GPST. Conversion and comparison must therefore read adjacent source
-days with an 18-second guard interval. Existing Era C 30 s RINEX is aligned to
-GPS days, so comparisons use absolute-epoch joins rather than matching
-filenames or line numbers.
+Filename time never substitutes for payload time. Preserve original protocol
+time fields as provenance; project processing uses GPST exclusively.
+Canonical partitions use `[00:00:00, 24:00:00) GPST`, with integer-second
+archive indexes measured from 1980-01-06. Existing Era C files must still have
+their actual coverage inspected. Comparisons use absolute-epoch joins, not
+filenames or line numbers. See [the time policy](time-policy.md).
 
 ## 4. Toolchain policy
 
@@ -171,7 +167,7 @@ expanded UBX or SBF
   -> expanded-file size and hash inventory
   -> packet framing and checksum inventory
   -> era-specific normalization
-  -> UTC-day canonical RINEX 3.04 at native 1 Hz
+  -> GPST-day canonical RINEX 3.04 at native 1 Hz
   -> observation and arc QC
   -> analysis-specific views (PPP 30 s, TEC 1 s)
 ```
@@ -187,13 +183,13 @@ expanded UBX or SBF
 4. Preserve the original stream order for asynchronous packets, especially
    `RXM-SFRBX`. EOE is an anchor, not a coarse boundary for deleting everything
    before an EOE packet.
-5. Produce a lossless normalized UBX stream before splitting it into UTC days
+5. Produce a lossless normalized UBX stream before splitting it into GPST days
    according to payload GNSS time.
 
 If overlap verification fails, mark a conflict and retain both sources instead
 of guessing which one is correct.
 
-### Era B: segment-aware UTC-day assembly
+### Era B: segment-aware GPST-day assembly
 
 1. Treat multiple files on the same day as restart segments. Do not concatenate
    them solely in lexical order.
@@ -217,16 +213,16 @@ of guessing which one is correct.
 4. Deterministically decimate to 30 s only for the PPP view. TEC and QC retain
    1 Hz observations.
 
-UTC-day conversion must read the adjacent SBF day files as guard inputs. When a
-neighboring source day is absent, record the boundary coverage loss instead of
-mislabeling a GPS-day file as UTC-complete.
+GPST-day conversion must verify payload coverage and use adjacent source files
+when needed for complete epochs and navigation context. Record missing boundary
+coverage explicitly; never fabricate epochs or infer completeness from names.
 
 ### Daily QC schema
 
 At minimum, record:
 
 ```text
-era, receiver, UTC day
+era, receiver, GPST day
 first_epoch, last_epoch, nominal_interval_s
 expected_epochs, observed_epochs, coverage_fraction
 duplicate_epochs, checksum_errors
@@ -268,7 +264,7 @@ Galileo E1/E5a, and other pairs with complete code and phase observations.
 Each per-arc output row contains:
 
 ```text
-time_gpst, time_utc, receiver, satellite, signal_pair, arc_id
+time_gpst, receiver, satellite, signal_pair, arc_id
 phase_gf_m, dSTEC_TECU, ROT_TECU_per_min, ROTI
 azimuth_deg, elevation_deg, ipp_lat, ipp_lon
 cn0 values, slip detectors, quality_flags
@@ -392,7 +388,7 @@ smoother than 1 Hz carrier dTEC.
   transition coverage.
 - Produce a machine-readable daily availability table.
 
-Gate: every UTC day is traceable to source files or byte ranges, and rerunning
+Gate: every GPST day is traceable to source files or byte ranges, and rerunning
 the inventory produces the same result.
 
 ### P1: Era C golden day
@@ -425,7 +421,7 @@ manifest.
 
 ### P4: normalize Eras A and B
 
-Complete raw-level stitching, deduplication, and UTC-day splitting, then use the
+Complete raw-level stitching, deduplication, and GPST-day splitting, then use the
 same RINEX, QC, and TEC interface.
 
 Gate: observations and derived dTEC at common epochs in the Era A/B overlap are
@@ -453,7 +449,7 @@ and missing blocks. Stale state must never fill a broadcast gap.
 The smallest slice with scientific value is:
 
 ```text
-one complete UTC day in April 2025
+one complete GPST day in April 2025
   -> canonical 1 Hz RINEX from SBF
   -> receiver 30 s cross-check
   -> GPS L1/L2 and Galileo E1/E5b arc QC

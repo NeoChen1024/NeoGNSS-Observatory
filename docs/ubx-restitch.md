@@ -21,7 +21,10 @@ Inventory caches are keyed by resolved source path, size, modification time,
 and worker executable SHA-256. Each index records the full source SHA-256 and
 is itself checksummed. Three native workers scan files concurrently; progress
 uses tqdm on stderr. The input directory's `*.ubx` files are selected directly,
-not recursively. State storage must be writable and separate from input data.
+not recursively by default. Pass `--recursive` to either command to include
+expanded `.ubx` files in subdirectories, such as Era B's monthly directories.
+Compressed files are not selected. State storage must be writable and separate
+from input data.
 
 ## Reconstruction policy
 
@@ -30,22 +33,27 @@ not recursively. State storage must be writable and separate from input data.
   Record all non-UBX/corrupt spans, including gpsd text headers.
 - Group valid frames through NAV-EOE while preserving original byte order.
   If EOE is absent, a known epoch transition closes the preceding run.
-- NAV-PVT's valid UTC date/time anchors the integer-second timeline.
+- NAV-TIMEGPS or RAWX week/TOW anchors the integer-second GPST timeline.
   RAWX timestamps are rounded to the nearest nominal second for grouping
   because receiver clock steering can straddle an integer-second boundary.
   Original RAWX bytes are unchanged. Index records retain RAWX GPS week when
   present and NAV iTOW, together with time-source flags.
-- A known NAV timestamp may inherit UTC from a PVT anchor within 60 seconds.
-  Unanchored time, conflicting timestamps, and leap-second labels are not
-  silently converted into authoritative UTC.
+- A known NAV timestamp may inherit GPST from a GPS anchor within 60 seconds.
+  Unanchored time and conflicting timestamps are not silently promoted to
+  authoritative GPST. NAV-PVT calendar fields never anchor this time axis.
 - Sort sources by payload coverage, not filenames. A join needs two consecutive
   exact EOE intervals plus byte-for-byte verification of the entire discarded
   incoming head and outgoing tail. Fingerprints only locate candidates.
   Unverified or nested overlaps and time reversals stop planning before output.
-- Split at UTC midnight or a missing NAV-bearing second. Same-second records
+- A same-GPST/iTOW boundary may instead join an outgoing partial RAWX-bearing
+  interval without NAV/EOE to an incoming NAV-PVT/EOE interval without RAWX.
+  Both intervals must touch their physical file boundaries. This complementary
+  split epoch retains every byte and records a `split_epoch_continuation` join;
+  it does not count as duplicate removal.
+- Split at GPST midnight or a missing NAV-bearing second. Same-second records
   are considered together, so a damaged individual frame is not automatically
   treated as a missing second. No samples or timestamps are fabricated.
-- Name each timed segment `%FT%T%z.ubx`, with UTC `+0000` and the actual
+- Name each timed segment `GPST-%Y-%m-%d--%H-%M-%S.ubx`, using the actual
   first available second. Filename collisions are errors, never overwrites.
 - Untimed valid frames and intervals without NAV are preserved separately in
   `unassigned/`. For example, asynchronous frames before the first timestamp
@@ -58,7 +66,7 @@ does not implement SBAS extraction or constellation-specific subframe parsing.
 
 ## Outputs and verification
 
-- UTC-named UBX files: the reconstructed NAV-bearing segments.
+- GPST-named UBX files: the reconstructed NAV-bearing segments.
 - `unassigned/*.ubx`: valid frames requiring further timing review.
 - `plan.jsonl`: source selections, exact overlap proofs, output byte spans,
   gap/anomaly events, and byte-accounting totals.

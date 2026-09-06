@@ -72,7 +72,7 @@ def publish(plan, output, indexer):
         else:
             if any(p.name != lock.name for p in output.iterdir()):
                 raise ValueError("Output directory is not empty and has no matching run manifest")
-            write_json(run, {"schema": 1, "plan_sha256": plan_hash, "status": "started"})
+            write_json(run, {"schema": 2, "time_scale": "GPST", "plan_sha256": plan_hash, "status": "started"})
             write_plan(output / "plan.jsonl", plan)
             snapshot_tools(output, indexer)
             indexes = output / "provenance/indexes"
@@ -144,7 +144,7 @@ def publish(plan, output, indexer):
             "status": "complete",
             "artifacts": len(completed),
             "bytes": sum(a["size"] for a in completed),
-            "utc_segments": sum(a["kind"] == "utc_segment" for a in completed),
+            "gpst_segments": sum(a["kind"] == "gpst_segment" for a in completed),
             "unassigned_files": sum(a["kind"] == "unassigned_frames" for a in completed),
             "joins": len(plan["joins"]),
         }

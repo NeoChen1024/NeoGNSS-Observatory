@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-3.0-only
+set(RTKLIB_SOURCE "${PROJECT_SOURCE_DIR}/contrib/RTKLIB/src")
+set(RTKLIB_FILES rtkcmn trace rinex sbas preceph rcvraw convrnx rtcm rtcm2 rtcm3
+    rtcm3e pntpos ephemeris ionex sofa)
+set(RTKLIB_RECEIVERS novatel ublox crescent skytraq javad nvs binex rt17
+    septentrio swiftnav unicore)
+set(RTKLIB_SOURCES)
+foreach(name IN LISTS RTKLIB_FILES)
+    list(APPEND RTKLIB_SOURCES "${RTKLIB_SOURCE}/${name}.c")
+endforeach()
+foreach(name IN LISTS RTKLIB_RECEIVERS)
+    list(APPEND RTKLIB_SOURCES "${RTKLIB_SOURCE}/rcv/${name}.c")
+endforeach()
+add_library(neognss_rtklib STATIC ${RTKLIB_SOURCES})
+target_include_directories(neognss_rtklib PUBLIC "${RTKLIB_SOURCE}")
+target_compile_definitions(neognss_rtklib PUBLIC ENAGLO ENAQZS ENAGAL ENACMP
+    ENAIRN NFREQ=4 NEXOBS=3)
+set_target_properties(neognss_rtklib PROPERTIES C_STANDARD 99)
+target_link_libraries(neognss_rtklib PUBLIC m)
+add_executable(neognss_convbin "${PROJECT_SOURCE_DIR}/contrib/RTKLIB/app/consapp/convbin/convbin.c")
+target_link_libraries(neognss_convbin PRIVATE neognss_rtklib)
+add_executable(neognss_rinex_geometry rinex_geometry.c)
+target_link_libraries(neognss_rinex_geometry PRIVATE neognss_rtklib)

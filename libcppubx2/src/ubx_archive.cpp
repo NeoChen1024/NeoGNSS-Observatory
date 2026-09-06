@@ -20,22 +20,11 @@ int64_t nav_tow(uint8_t id, std::span<const uint8_t> p) {
     }
     return -1;
 }
-int64_t pvt_utc(std::span<const uint8_t> p) {
-    using namespace std::chrono;
-    if(p.size() != 92 || (p[11] & 3) != 3 || p[8] > 23 || p[9] > 59 || p[10] > 59)
-        return unknown_utc;
-    const year_month_day date{year{read_le<uint16_t>(p, 4)}, month{p[6]}, day{p[7]}};
-    if(!date.ok()) return unknown_utc;
-    // Keep the receiver's integer-second label. nano is a signed subsecond
-    // correction and is not used to move nominal 1 Hz epochs across seconds.
-    return duration_cast<seconds>(sys_days{date}.time_since_epoch()).count()
-        + p[8] * 3600 + p[9] * 60 + p[10];
-}
 }
 void scan_archive(std::span<const uint8_t> b, const std::function<void(const ArchiveEpoch &)> &emit) {
     ArchiveEpoch epoch;
     bool active = false;
-    int64_t anchor_tow = -1, anchor_utc = unknown_utc;
+    int64_t anchor_tow = -1, anchor_gpst = unknown_gpst;
     auto finish = [&](uint32_t extra) {
         if(!active) return;
         epoch.flags |= extra;
@@ -48,13 +37,13 @@ void scan_archive(std::span<const uint8_t> b, const std::function<void(const Arc
         active = false;
     };
     auto mapped = [&](int64_t tow) {
-        if(tow < 0 || anchor_utc == unknown_utc) return unknown_utc;
+        if(tow < 0 || anchor_gpst == unknown_gpst) return unknown_gpst;
         int64_t delta = tow - anchor_tow;
         if(delta < -week_ms / 2) delta += week_ms;
         if(delta > week_ms / 2) delta -= week_ms;
         // Do not extrapolate across long unanchored outages.
-        if(std::abs(delta) > 60000 || delta % 1000) return unknown_utc;
-        return anchor_utc + delta / 1000;
+        if(std::abs(delta) > 60000 || delta % 1000) return unknown_gpst;
+        return anchor_gpst + delta / 1000;
     };
     size_t pos = 0, noise = 0;
     while(pos < b.size()) {
@@ -90,23 +79,35 @@ void scan_archive(std::span<const uint8_t> b, const std::function<void(const Arc
                 tow = (std::llround(t) * 1000) % week_ms;
         }
         if(tow >= week_ms) tow = -1;
-        const int64_t utc = cls == 1 && id == 7 ? pvt_utc(p) : unknown_utc;
+        int64_t gpst = unknown_gpst;
+        int32_t full_week = -1;
+        if(cls == 1 && id == 0x20 && p.size() == 16 && (p[11] & 3) == 3 && tow >= 0) {
+            full_week = read_le<int16_t>(p, 8);
+            if(full_week >= 0) gpst = int64_t(full_week) * 604800 + tow / 1000;
+        }
+        if(cls == 2 && id == 0x15 && p.size() >= 16 && tow >= 0) {
+            full_week = read_le<uint16_t>(p, 8);
+            const double t = read_le<double>(p, 0);
+            gpst = int64_t(full_week) * 604800 + std::llround(t);
+            full_week = gpst / 604800;
+        }
         if(active && epoch.tow_ms >= 0 && tow >= 0 && epoch.tow_ms / 1000 != tow / 1000)
             finish(archive_partial);
         if(!active) { epoch.begin = pos; active = true; }
         epoch.end = pos + length;
-        if(cls == 2 && id == 0x15 && p.size() >= 16)
-            epoch.gps_week = read_le<uint16_t>(p, 8);
+        if(full_week >= 0) epoch.gps_week = full_week;
+        if(cls == 2 && id == 0x15) epoch.flags |= archive_rawx;
+        if(cls == 1 && id == 7 && p.size() == 92) epoch.flags |= archive_pvt;
         ++epoch.frames;
         if(cls == 1) ++epoch.nav_frames;
         if(tow >= 0) epoch.tow_ms = tow;
-        if(utc != unknown_utc && tow >= 0) {
-            if(epoch.utc != unknown_utc && epoch.utc != utc) epoch.flags |= archive_time_conflict;
-            epoch.utc = utc; epoch.flags |= archive_pvt;
-            anchor_tow = tow; anchor_utc = utc;
-        } else if(epoch.utc == unknown_utc && tow >= 0) {
-            epoch.utc = mapped(tow);
-            if(epoch.utc != unknown_utc) epoch.flags |= archive_inferred_time;
+        if(gpst != unknown_gpst && tow >= 0) {
+            if(epoch.gpst != unknown_gpst && epoch.gpst != gpst) epoch.flags |= archive_time_conflict;
+            epoch.gpst = gpst;
+            anchor_tow = tow; anchor_gpst = gpst;
+        } else if(epoch.gpst == unknown_gpst && tow >= 0) {
+            epoch.gpst = mapped(tow);
+            if(epoch.gpst != unknown_gpst) epoch.flags |= archive_inferred_time;
         }
         pos += length;
         noise = pos;

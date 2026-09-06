@@ -6,6 +6,7 @@ import hashlib
 import importlib.metadata
 import json
 import mmap
+import multiprocessing
 import os
 import shutil
 import subprocess
@@ -13,11 +14,14 @@ import sys
 import tempfile
 import zipfile
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from concurrent.futures import ProcessPoolExecutor
 from io import BytesIO
 from pathlib import Path
 
 import click
+
+from .gpst import label as gpst_label
+from .gpst import parse_hour as parse_gpst_hour
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / f"neognss-matplotlib-{os.getuid()}"))
 import matplotlib
@@ -55,7 +59,7 @@ class EpochIndex:
             raise ValueError(f"Reconstruction epoch index checksum mismatch: {path}")
         self.stream = path.open("rb")
         self.data = mmap.mmap(self.stream.fileno(), 0, access=mmap.ACCESS_READ)
-        if self.data[:8] != b"UBXIDX02" or (len(self.data) - INDEX_HEADER_SIZE) % RECORD.size:
+        if self.data[:8] != b"UBXIDX03" or (len(self.data) - INDEX_HEADER_SIZE) % RECORD.size:
             raise ValueError(f"Invalid reconstruction epoch index: {path}")
         self.count = (len(self.data) - INDEX_HEADER_SIZE) // RECORD.size
 
@@ -64,13 +68,13 @@ class EpochIndex:
 
     def locate(self, offset, hint=None):
         if hint is not None:
-            begin, end, utc, *_ = self.record(hint)
+            begin, end, gpst, *_ = self.record(hint)
             if begin <= offset < end:
-                return hint, utc
+                return hint, gpst
             if offset >= end and hint + 1 < self.count:
-                begin, end, utc, *_ = self.record(hint + 1)
+                begin, end, gpst, *_ = self.record(hint + 1)
                 if begin <= offset < end:
-                    return hint + 1, utc
+                    return hint + 1, gpst
         low, high = 0, self.count
         while low < high:
             middle = (low + high) // 2
@@ -81,10 +85,10 @@ class EpochIndex:
         number = low - 1
         if number < 0:
             raise ValueError(f"Offset precedes epoch index: {self.path}:{offset}")
-        begin, end, utc, *_ = self.record(number)
-        if not begin <= offset < end or utc == UNKNOWN:
-            raise ValueError(f"SBAS offset has no payload-derived UTC epoch: {self.path}:{offset}")
-        return number, utc
+        begin, end, gpst, *_ = self.record(number)
+        if not begin <= offset < end or gpst == UNKNOWN:
+            raise ValueError(f"SBAS offset has no payload-derived GPST epoch: {self.path}:{offset}")
+        return number, gpst
 
     def close(self):
         self.data.close()
@@ -103,7 +107,7 @@ class EraATimeMapper:
                 if record.get("record_type") == "sources":
                     path = reconstruction / "provenance/indexes" / (record["sha256"] + ".idx")
                     self.source_indexes[record["path"]] = (path, record["index_sha256"])
-                elif record.get("record_type") == "artifacts" and record.get("kind") == "utc_segment":
+                elif record.get("record_type") == "artifacts" and record.get("kind") == "gpst_segment":
                     self.artifacts[record["name"]] = record
 
     def index(self, source):
@@ -132,7 +136,7 @@ class ArtifactCursor:
         self.mapper, self.artifact, self.ends = mapper, artifact, ends
         self.hints = {}
 
-    def utc(self, local_offset):
+    def gpst(self, local_offset):
         if not 0 <= local_offset < self.artifact["size"]:
             raise ValueError(f"SBAS offset outside artifact: {self.artifact['name']}:{local_offset}")
         number = bisect.bisect_right(self.ends, local_offset)
@@ -140,11 +144,11 @@ class ArtifactCursor:
         local_begin = 0 if number == 0 else self.ends[number - 1]
         original = span["begin"] + local_offset - local_begin
         index = self.mapper.index(span["source"])
-        hint, utc = index.locate(original, self.hints.get(span["source"]))
+        hint, gpst = index.locate(original, self.hints.get(span["source"]))
         self.hints[span["source"]] = hint
-        if not self.artifact["start_utc"] <= utc <= self.artifact["end_utc"]:
-            raise ValueError(f"Mapped UTC outside artifact: {self.artifact['name']}")
-        return utc
+        if not self.artifact["start_gpst"] <= gpst <= self.artifact["end_gpst"]:
+            raise ValueError(f"Mapped GPST outside artifact: {self.artifact['name']}")
+        return gpst
 
 
 class GroupOffsetMapper:
@@ -153,14 +157,14 @@ class GroupOffsetMapper:
         self.ends = [source["stream_end"] for source in sources]
         self.cursors = [mapper.artifact_cursor(source["name"]) for source in sources]
 
-    def utc(self, offset):
+    def gpst(self, offset):
         number = bisect.bisect_right(self.ends, offset)
         if number == len(self.sources):
             raise ValueError(f"SBAS offset outside continuous group: {offset}")
         source = self.sources[number]
         if offset < source["stream_begin"]:
             raise ValueError(f"SBAS offset falls between group sources: {offset}")
-        return self.cursors[number].utc(offset - source["stream_begin"])
+        return self.cursors[number].gpst(offset - source["stream_begin"])
 
 
 def group_paths(extraction):
@@ -186,7 +190,7 @@ def aggregate(extraction, reconstruction, start=None, end=None):
         with tqdm(total=total, desc="Aggregate SBAS grid", unit="B", unit_scale=True, mininterval=2) as progress:
             for group in paths:
                 source_info = json.loads((group / "sources.json").read_text())
-                if end is not None and source_info["start_utc"] >= end or start is not None and source_info["end_utc"] < start:
+                if end is not None and source_info["start_gpst"] >= end or start is not None and source_info["end_gpst"] < start:
                     progress.update(sum(path.stat().st_size for path in group.glob("gnss-1_*.jsonl")))
                     continue
                 for path in sorted(group.glob("gnss-1_*.jsonl")):
@@ -199,19 +203,19 @@ def aggregate(extraction, reconstruction, start=None, end=None):
                                 continue
                             record = json.loads(line)
                             message = record["sbas"]
-                            time = offset_mapper.utc(record["offset"])
+                            time = offset_mapper.gpst(record["offset"])
                             key = (record["gnssId"], record["svId"], record["sigId"], record["freqId"])
                             state = states.setdefault(key, HourlyGrid())
                             state.process(time, message)
                             messages[str(message["type"])] += 1
                     progress.update(path.stat().st_size)
                     for key, state in states.items():
-                        state.finish(source_info["end_utc"] + 1)
+                        state.finish(source_info["end_gpst"] + 1)
                         diagnostics.update(state.diagnostics)
                         for row in state.rows():
-                            if start is not None and row["hour_utc"] < start or end is not None and row["hour_utc"] >= end:
+                            if start is not None and row["hour_gpst"] < start or end is not None and row["hour_gpst"] >= end:
                                 continue
-                            target = combined[key, row["hour_utc"], row["band"], row["mask_bit"]]
+                            target = combined[key, row["hour_gpst"], row["band"], row["mask_bit"]]
                             target[0] += row["vtec_tecu"] * row["valid_seconds"]
                             target[1] += row["valid_seconds"]
         rows = []
@@ -225,7 +229,7 @@ def aggregate(extraction, reconstruction, start=None, end=None):
                     svId=key[1],
                     sigId=key[2],
                     freqId=key[3],
-                    hour_utc=hour,
+                    hour_gpst=hour,
                     band=band,
                     mask_bit=bit,
                     latitude=lat,
@@ -269,25 +273,25 @@ def extent_for(rows):
     )
 
 
-def render(rows, coastline, output, vmin, vmax, min_coverage):
+def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None, show_progress=True, png_compression=3):
     selected = [row for row in rows if row["coverage"] >= min_coverage]
     if not selected:
         raise ValueError("No hourly grid cells meet the coverage threshold")
-    extent = extent_for(selected)
+    extent = extent if extent is not None else extent_for(selected)
     coast = list(coastline_parts(coastline))
     grouped = defaultdict(list)
     for row in selected:
-        grouped[(row["gnssId"], row["svId"], row["sigId"], row["freqId"], row["hour_utc"])].append(row)
+        grouped[(row["gnssId"], row["svId"], row["sigId"], row["freqId"], row["hour_gpst"])].append(row)
     image_dir = output / "png"
     image_dir.mkdir()
     manifest = []
     norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
     cmap = matplotlib.colormaps["turbo"]
-    for key, cells in tqdm(sorted(grouped.items()), desc="Render hourly PNG", unit="image"):
+    for key, cells in tqdm(sorted(grouped.items()), desc="Render hourly PNG", unit="image", disable=not show_progress):
         gnss, sv, signal, frequency, hour = key
         directory = image_dir / f"gnss-{gnss}_sv-{sv}_sig-{signal}_freq-{frequency}"
         directory.mkdir(exist_ok=True)
-        label = datetime.fromtimestamp(hour, timezone.utc).strftime("%Y-%m-%dT%H:00:00Z")
+        label = gpst_label(hour)
         path = directory / (label.replace(":", "-") + ".png")
         fig, ax = plt.subplots(figsize=(12, 8), dpi=150, constrained_layout=True)
         ax.set_facecolor("white")
@@ -315,13 +319,14 @@ def render(rows, coastline, output, vmin, vmax, min_coverage):
                 "Title": f"SBAS PRN {sv} hourly mean VTEC {label}",
                 "Description": "Experimental time-weighted MT26 grid; Made with Natural Earth.",
             },
+            pil_kwargs={"compress_level": png_compression},
         )
         plt.close(fig)
         manifest.append(
             dict(
                 path=str(path.relative_to(output)),
                 sha256=sha256(path),
-                hour_utc=hour,
+                hour_gpst=hour,
                 gnssId=gnss,
                 svId=sv,
                 sigId=signal,
@@ -332,14 +337,45 @@ def render(rows, coastline, output, vmin, vmax, min_coverage):
     return manifest, extent
 
 
+def render_job(job):
+    rows, coastline, output, vmin, vmax, min_coverage, extent, compression = job
+    # Each worker owns a temporary output tree and publishes its unique hour.
+    with tempfile.TemporaryDirectory(prefix=".render-", dir=output) as temporary:
+        manifest, _ = render_serial(rows, coastline, Path(temporary), vmin, vmax, min_coverage, extent, False, compression)
+        for record in manifest:
+            target = output / record["path"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(Path(temporary) / record["path"]), target)
+    return manifest
+
+
+def render(rows, coastline, output, vmin, vmax, min_coverage, workers=4, png_compression=3):
+    selected = [r for r in rows if r["coverage"] >= min_coverage]
+    if not selected:
+        raise ValueError("No hourly grid cells meet the coverage threshold")
+    extent = extent_for(selected)
+    groups = defaultdict(list)
+    for row in selected:
+        key = tuple(row[k] for k in ("gnssId", "svId", "sigId", "freqId", "hour_gpst"))
+        groups[key].append(row)
+    if workers == 1 or len(groups) == 1:
+        return render_serial(selected, coastline, output, vmin, vmax, min_coverage, extent, True, png_compression)
+    jobs = [(cells, coastline, output, vmin, vmax, min_coverage, extent, png_compression) for _, cells in sorted(groups.items())]
+    manifest = []
+    with ProcessPoolExecutor(max_workers=min(workers, len(jobs)), mp_context=multiprocessing.get_context("spawn")) as pool:
+        for result in tqdm(pool.map(render_job, jobs), total=len(jobs), desc="Render hourly PNG", unit="image"):
+            manifest.extend(result)
+    return manifest, extent
+
+
 def parse_hour(_context, _parameter, value):
     if value is None:
         return None
     try:
-        parsed = datetime.strptime(value, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+        parsed = parse_gpst_hour(value)
     except ValueError as error:
-        raise click.BadParameter("use YYYY-MM-DDTHH in UTC") from error
-    return int(parsed.timestamp())
+        raise click.BadParameter("use YYYY-MM-DDTHH in GPST") from error
+    return parsed
 
 
 @click.command()
@@ -347,12 +383,14 @@ def parse_hour(_context, _parameter, value):
 @click.option("--reconstruction-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
 @click.option("--coastline", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New output directory.")
-@click.option("--start", callback=parse_hour, help="Optional first UTC hour, YYYY-MM-DDTHH.")
-@click.option("--end", callback=parse_hour, help="Optional exclusive UTC hour, YYYY-MM-DDTHH.")
+@click.option("--start", callback=parse_hour, help="Optional first GPST hour, YYYY-MM-DDTHH.")
+@click.option("--end", callback=parse_hour, help="Optional exclusive GPST hour, YYYY-MM-DDTHH.")
 @click.option("--vmin", type=float, default=0.0, show_default=True)
 @click.option("--vmax", type=float, default=100.0, show_default=True)
 @click.option("--min-coverage", type=click.FloatRange(0, 1), default=0.25, show_default=True)
-def cli(sbas_dir, reconstruction_dir, coastline, output, start, end, vmin, vmax, min_coverage):
+@click.option("--workers", type=click.IntRange(1, 32), default=min(4, os.cpu_count() or 1), show_default=True)
+@click.option("--png-compression", type=click.IntRange(0, 9), default=3, show_default=True)
+def cli(sbas_dir, reconstruction_dir, coastline, output, start, end, vmin, vmax, min_coverage, workers, png_compression):
     """Export time-weighted hourly SBAS VTEC maps as PNG files."""
     try:
         if start is not None and end is not None and start >= end:
@@ -364,14 +402,20 @@ def cli(sbas_dir, reconstruction_dir, coastline, output, start, end, vmin, vmax,
         with (output / "hourly.jsonl").open("x") as stream:
             for row in rows:
                 stream.write(json.dumps(row, sort_keys=True) + "\n")
-        manifest, extent = render(rows, coastline.resolve(), output, vmin, vmax, min_coverage)
-        source_files = [Path(__file__).resolve(), Path(__file__).with_name("sbas_grid.py").resolve()]
+        manifest, extent = render(rows, coastline.resolve(), output, vmin, vmax, min_coverage, workers, png_compression)
+        source_files = [
+            Path(__file__).resolve(),
+            Path(__file__).with_name("sbas_grid.py").resolve(),
+            Path(__file__).with_name("gpst.py").resolve(),
+        ]
         provenance = output / "provenance"
         provenance.mkdir()
         for source in source_files:
             shutil.copy2(source, provenance / source.name)
         run = dict(
-            schema=1,
+            schema=2,
+            time_scale="GPST",
+            time_origin="1980-01-06 00:00:00 GPST",
             status="complete",
             arguments=sys.argv,
             git_revision=subprocess.check_output(
@@ -390,6 +434,8 @@ def cli(sbas_dir, reconstruction_dir, coastline, output, start, end, vmin, vmax,
                 min_coverage=min_coverage,
                 vmin=vmin,
                 vmax=vmax,
+                workers=workers,
+                png_compression=png_compression,
             ),
             extent=extent,
             hourly_cells=len(rows),
@@ -397,7 +443,7 @@ def cli(sbas_dir, reconstruction_dir, coastline, output, start, end, vmin, vmax,
             message_types=dict(messages),
             diagnostics=dict(diagnostics),
         )
-        write_json(output / "images.json", {"images": manifest})
+        write_json(output / "images.json", {"time_scale": "GPST", "images": manifest})
         write_json(output / "completed.json", run)
         click.echo(
             json.dumps(

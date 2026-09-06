@@ -59,7 +59,7 @@ class HourlyGridTest(unittest.TestCase):
         state.process(3610, correction(16))
         state.finish(3620)
         rows = list(state.rows())
-        self.assertEqual([row["hour_utc"] for row in rows], [0, 3600])
+        self.assertEqual([row["hour_gpst"] for row in rows], [0, 3600])
         self.assertEqual([row["valid_seconds"] for row in rows], [10, 20])
         self.assertAlmostEqual(rows[0]["vtec_tecu"], TECU_PER_M)
         self.assertAlmostEqual(rows[1]["vtec_tecu"], 1.5 * TECU_PER_M)
@@ -89,9 +89,9 @@ class HourlyGridTest(unittest.TestCase):
 
 
 class MappingTest(unittest.TestCase):
-    def make_index(self, path, utc):
+    def make_index(self, path, gpst):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"UBXIDX02" + b"\0" * 40 + RECORD.pack(0, 100, utc, 0, 0, 1, 1, 1, 0))
+        path.write_bytes(b"UBXIDX03" + b"\0" * 40 + RECORD.pack(0, 100, gpst, 0, 0, 1, 1, 1, 0))
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
     def make_reconstruction(self, root):
@@ -99,17 +99,17 @@ class MappingTest(unittest.TestCase):
         indexes = reconstruction / "provenance/indexes"
         indexes.mkdir(parents=True)
         records = []
-        for number, utc in enumerate((3590, 3600)):
+        for number, gpst in enumerate((3590, 3600)):
             source = f"source-{number}"
-            digest = self.make_index(indexes / f"sha-{number}.idx", utc)
+            digest = self.make_index(indexes / f"sha-{number}.idx", gpst)
             records.append({"record_type": "sources", "path": source, "sha256": f"sha-{number}", "index_sha256": digest})
             records.append(
                 {
                     "record_type": "artifacts",
                     "name": f"segment-{number}.ubx",
-                    "kind": "utc_segment",
-                    "start_utc": utc,
-                    "end_utc": utc,
+                    "kind": "gpst_segment",
+                    "start_gpst": gpst,
+                    "end_gpst": gpst,
                     "size": 100,
                     "spans": [{"source": source, "begin": 0, "end": 100}],
                 }
@@ -121,7 +121,7 @@ class MappingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             mapper = EraATimeMapper(self.make_reconstruction(Path(temp)))
             try:
-                self.assertEqual(mapper.artifact_cursor("segment-1.ubx").utc(50), 3600)
+                self.assertEqual(mapper.artifact_cursor("segment-1.ubx").gpst(50), 3600)
             finally:
                 mapper.close()
 
@@ -135,10 +135,10 @@ class MappingTest(unittest.TestCase):
             (extraction / "completed.json").write_text(json.dumps({"status": "complete", "continuous_groups": 1}))
             (extraction / "groups.jsonl").write_text(json.dumps({"group": "group-00000"}) + "\n")
             sources = [
-                {"name": "segment-0.ubx", "stream_begin": 0, "stream_end": 100, "start_utc": 3590, "end_utc": 3590},
-                {"name": "segment-1.ubx", "stream_begin": 100, "stream_end": 200, "start_utc": 3600, "end_utc": 3600},
+                {"name": "segment-0.ubx", "stream_begin": 0, "stream_end": 100, "start_gpst": 3590, "end_gpst": 3590},
+                {"name": "segment-1.ubx", "stream_begin": 100, "stream_end": 200, "start_gpst": 3600, "end_gpst": 3600},
             ]
-            (group / "sources.json").write_text(json.dumps({"sources": sources, "start_utc": 3590, "end_utc": 3600}))
+            (group / "sources.json").write_text(json.dumps({"sources": sources, "start_gpst": 3590, "end_gpst": 3600}))
             rows = [
                 {"offset": 50, "gnssId": 1, "svId": 137, "sigId": 0, "freqId": 0, "sbas": mask()},
                 {"offset": 150, "gnssId": 1, "svId": 137, "sigId": 0, "freqId": 0, "sbas": correction(8)},
@@ -148,7 +148,7 @@ class MappingTest(unittest.TestCase):
             )
             averages, diagnostics, messages = aggregate(extraction, reconstruction)
             self.assertEqual(len(averages), 1)
-            self.assertEqual(averages[0]["hour_utc"], 3600)
+            self.assertEqual(averages[0]["hour_gpst"], 3600)
             self.assertEqual(averages[0]["valid_seconds"], 1)
             self.assertEqual(messages, {"18": 1, "26": 1})
             self.assertFalse(diagnostics)
@@ -163,7 +163,7 @@ class MappingTest(unittest.TestCase):
                     "svId": 137,
                     "sigId": 0,
                     "freqId": 0,
-                    "hour_utc": 3600,
+                    "hour_gpst": 3600,
                     "band": 7,
                     "mask_bit": 1,
                     "latitude": 25,

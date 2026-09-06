@@ -24,7 +24,7 @@ python -m neognss_observatory.sbas_extract \
 
 The batch application validates the completed reconstruction's plan and artifact
 metadata, excludes `unassigned/`, and groups segments using payload-derived
-`start_utc`/`end_utc`, not their filenames. Adjacent seconds remain in one
+`start_gpst`/`end_gpst`, not their filenames. Adjacent seconds remain in one
 continuous group, including across midnight. Each group is fed through one
 persistent native reader over a pipe: intermediate file boundaries do not
 produce EOF or discard partial framing/parser state. Gaps start new groups;
@@ -45,7 +45,7 @@ Interrupted runs retain completed groups and partial output for inspection;
 automatic resume is not implemented, and existing run directories are refused.
 
 The output directory must not exist; its parent must exist. Input is read-only.
-Use reconstructed UTC segments for Era A; exclude `unassigned/`. This tool
+Use reconstructed GPST segments for Era A; exclude `unassigned/`. This tool
 processes one recording per invocation, not an archive recursively.
 
 Each `gnss-N_sv-N_sig-N_freq-N.jsonl` contains one RXM-SFRBX per line, with
@@ -149,15 +149,19 @@ Install the package dependencies, then render from a completed batch extraction:
 sbas-grid-render \
   --sbas-dir /path/to/era-a-sbas \
   --reconstruction-dir /path/to/era-a \
-  --coastline contrib/natural-earth/ne_110m_coastline.zip \
+  --coastline contrib/natural-earth/ne_10m_coastline.zip \
   --output new-hourly-map-directory
 ```
 
 `--start YYYY-MM-DDTHH` and exclusive `--end YYYY-MM-DDTHH` restrict an
-experiment to UTC hours. `--vmin`, `--vmax`, and `--min-coverage` control the
+experiment to GPST hours. `--vmin`, `--vmax`, and `--min-coverage` control the
 fixed color scale and displayed coverage threshold. Defaults are 0–100 TECU
 and 25%. `hourly.jsonl` retains values below the display threshold so later
 rendering choices do not alter the aggregation result.
+
+`--workers` (default up to four) renders independent hours in separate
+processes, including PNG compression. `--png-compression` selects level 0-9
+(default 3). These options do not change the hourly aggregation or map extent.
 
 This experiment reconstructs the standard 2,192 IGP coordinates, associates
 MT26 active-mask ordinals with MT18 masks having the same IODI, and keeps state
@@ -167,20 +171,20 @@ IODI, changed same-IODI mask, expired/incomplete mask, MT0, `not_monitored`, or
 
 An accepted MT26 value is held until its next update or for at most 600 seconds;
 complete masks age out after 1,200 seconds. Hourly means are weighted by the
-number of valid seconds, split exactly at UTC-hour boundaries. `coverage` and
+number of valid seconds, split exactly at GPST-hour boundaries. `coverage` and
 `valid_seconds` accompany every value. These timeout choices follow published
 SBAS maximum intervals and are recorded in output provenance, but the result is
 an exploratory visualization—not an aviation integrity implementation.
 
 RXM-SFRBX has no timestamp. The command maps each extraction byte offset back
 through reconstruction spans to the original payload-derived NAV/EOE epoch.
-This is a reception-context UTC approximation, not an inferred SBAS transmit
+This is a reception-context GPST approximation, not an inferred SBAS transmit
 time. No time is derived from an output filename.
 
 VTEC is derived from the SBAS L1 vertical delay using the first-order relation
 `VTEC = delay_m * 1575.42e6² / (40.3 * 1e16)`. It is not receiver-observed TEC.
 The PNG overlay uses un-interpolated 5° point-centered cells, a fixed run-wide
-extent and color scale, black 1:110m Natural Earth coastlines, and 10° graticules.
+extent and color scale, black 1:10m Natural Earth coastlines, and 10° graticules.
 Missing or insufficient-coverage cells remain white. High-latitude cell shapes
 are deliberately approximate; the JSON Lines grid points are authoritative.
 
@@ -218,7 +222,7 @@ the new video passes verification.
 - [u-blox integration manual](https://www.u-blox.com/sites/default/files/ZED-F9P_IntegrationManual_UBX-18010802.pdf): RXM-SFRBX navigation-word arrangement.
 - [ESA Navipedia SBAS message format](https://gssc.esa.int/navipedia/index.php/The_EGNOS_SBAS_Message_Format_Explained): message contents and correction semantics.
 - [ESA Navipedia ionospheric delay](https://gssc.esa.int/navipedia/index.php/Ionospheric_Delay): first-order delay/TEC relationship.
-- [Natural Earth 1:110m physical vectors](https://www.naturalearthdata.com/downloads/110m-physical-vectors/): public-domain coastline source.
+- [Natural Earth 1:10m coastline](https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-coastline/): public-domain coastline source.
 - [Pinned RTKLIB SBAS implementation](../contrib/RTKLIB/src/sbas.c): field-layout cross-reference; dependency revision is the repository gitlink.
 
 Tests include independently byte-computed CRC fixtures, signed boundaries,

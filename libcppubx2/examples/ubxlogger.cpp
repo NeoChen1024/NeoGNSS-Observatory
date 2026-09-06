@@ -26,6 +26,7 @@
 #include <charconv>
 #include <ctime>
 #include <format>
+#include <chrono>
 
 #define RETURN_ERR \
 	return 1
@@ -81,10 +82,9 @@ void print_status_line(const ubx_nav_pvt &pvt)
 		buf[i] = ' ';
 	buf[80] = '\0';
 	fputs(buf, stderr);
-	auto status = std::format("\riTOW={:06}.{:03} {:>10} {:04}/{:02}/{:02} {:02}:{:02}:{:02}, Sats: {:02}",
+	auto status = std::format("\riTOW={:06}.{:03} GPST {:>10}, Sats: {:02}",
 		pvt.data.iTOW / 1000, pvt.data.iTOW % 1000,
 		ubx_nav_pvt_fix_type(pvt).c_str(),
-		pvt.data.year, pvt.data.month, pvt.data.day, pvt.data.hour, pvt.data.min, pvt.data.second,
 		pvt.data.numSV);
 	fputs(status.c_str(), stderr);
 }
@@ -297,7 +297,10 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Connected to %s:%d\n", tcp_host.c_str(), tcp_port);
 	}
 
-	ubx_nav_pvt current_pvt, last_pvt;
+	ubx_buf_t pending;
+	int64_t epoch_gpst_ms = -1, last_gpst_ms = -1, output_day = -1;
+	uint32_t epoch_tow = 0;
+	bool have_timegps = false;
 	time_t stats_next = time(NULL) + 60;
 
 	while(1)
@@ -362,59 +365,67 @@ int main(int argc, char *argv[])
 			stats.period_pvt++;
 			if((pvt.data.flags_bit & 1) && pvt.data.fixType >= 2 && pvt.data.fixType <= 4)
 				stats.period_fix++;
-			current_pvt = pvt;
 			if(!quiet) print_status_line(pvt);
-			if((output.get() == nullptr ||
-				current_pvt.data.year != last_pvt.data.year ||
-				current_pvt.data.month != last_pvt.data.month ||
-				current_pvt.data.day != last_pvt.data.day) && !no_write)
-			{
-				if(!output.close()) RETURN_ERR;
-				char dirname[64];
-				snprintf(dirname, sizeof(dirname), "%04u-%02hhu",
-					current_pvt.data.year, current_pvt.data.month);
-				if(mkdir(dirname, 0755) != 0 && errno != EEXIST)
-				{
-					perror(dirname);
-					RETURN_ERR;
-				}
-				char filename[128];
-				snprintf(filename, 128, "%s/%04u%02hhu%02hhuT%02hhu%02hhu%02hhu.ubx",
-					dirname,
-					current_pvt.data.year, current_pvt.data.month, current_pvt.data.day, current_pvt.data.hour, current_pvt.data.min, current_pvt.data.second);
-				if(!output.open(filename))
-				{
-					fprintf(stderr, "Unable to open file %s!\n", filename);
-					RETURN_ERR;
-				}
-				if(!quiet)
-					fprintf(stderr, "\nOpened file %s\n", filename);
-			}
-			last_pvt = current_pvt;
 		}
 
+		if(!no_write) {
+			if(pending.size() + buf.size() > 64 * 1024 * 1024) {
+				fputs("Missing EOE: epoch buffer exceeds 64 MiB\n", stderr);
+				RETURN_ERR;
+			}
+			pending.push_back(0xb5);
+			pending.push_back(0x62);
+			pending.insert(pending.end(), buf.begin(), buf.end());
+		}
+		if(frame.class_id == 1 && frame.msg_id == 0x20) {
+			const auto &p = frame.payload;
+			if(p.size() != 16 || (p[11] & 3) != 3 ||
+				read_le<int16_t>(p, 8) < 0 || read_le<uint32_t>(p, 0) >= 604800000) {
+				fputs("Invalid NAV-TIMEGPS\n", stderr);
+				RETURN_ERR;
+			}
+			const auto tow = read_le<uint32_t>(p, 0);
+			const int64_t value = int64_t(read_le<int16_t>(p, 8)) * 604800000 + tow;
+			if(have_timegps && value != epoch_gpst_ms) {
+				fputs("Conflicting NAV-TIMEGPS before EOE\n", stderr);
+				RETURN_ERR;
+			}
+			epoch_gpst_ms = value;
+			epoch_tow = tow;
+			have_timegps = true;
+		}
 		ubx_nav_eoe eoe(frame);
 		if(ubx_nav_eoe_semantically_valid(eoe))
 		{
-			if(!current_pvt.valid)
-			{
-				fprintf(stderr, "\nIgnoring NAV-EOE without a valid NAV-PVT\n");
+			if(!have_timegps || epoch_tow != eoe.data.iTOW) {
+				fputs("EOE requires matching valid NAV-TIMEGPS in this epoch\n", stderr);
+				RETURN_ERR;
 			}
-			else
-			{
-				if(eoe.data.iTOW != current_pvt.data.iTOW)
-				{
-					fprintf(stderr, "\nEOE iTOW mismatch! %u != %u\n", eoe.data.iTOW, current_pvt.data.iTOW);
+			if(epoch_gpst_ms <= last_gpst_ms) {
+				fputs("Non-increasing GPST epoch\n", stderr);
+				RETURN_ERR;
+			}
+			const auto day = epoch_gpst_ms / 86400000;
+			if(!no_write && day != output_day) {
+				if(!output.close()) RETURN_ERR;
+				using namespace std::chrono;
+				const auto calendar = sys_days{year{1980}/1/6} + milliseconds{epoch_gpst_ms};
+				const auto dirname = std::format("{:%Y-%m}", calendar);
+				if(mkdir(dirname.c_str(), 0755) != 0 && errno != EEXIST) {
+					perror(dirname.c_str()); RETURN_ERR;
 				}
-
-				if(!quiet) fputs(" EOE", stderr);
+				const auto filename = dirname + "/" + std::format("GPST-{:%Y-%m-%d--%H-%M-%S}.ubx", floor<seconds>(calendar));
+				if(!output.open(filename.c_str())) RETURN_ERR;
+				output_day = day;
+				if(!quiet) fprintf(stderr, "\nOpened file %s\n", filename.c_str());
 			}
-		}
-
-		if(output.get() && frame.write(output.get()) == EOF)
-		{
-			perror("UBX output");
-			RETURN_ERR;
+			if(!no_write && fwrite(pending.data(), 1, pending.size(), output.get()) != pending.size()) {
+				perror("UBX output"); RETURN_ERR;
+			}
+			pending.clear();
+			have_timegps = false;
+			last_gpst_ms = epoch_gpst_ms;
+			if(!quiet) fputs(" EOE GPST", stderr);
 		}
 
 		stats.period_bytes += 8 + frame.length;
@@ -428,6 +439,10 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	if(!pending.empty() || have_timegps) {
+		fputs("Incomplete epoch at EOF: missing EOE; pending bytes not published\n", stderr);
+		RETURN_ERR;
+	}
 	if(!output.close()) RETURN_ERR;
 	if(readin != stdin) fclose(readin);
 	if(!quiet)
