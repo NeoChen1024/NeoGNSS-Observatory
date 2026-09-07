@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Produce daily GPST SBAS grid intervals directly from reconstructed UBX."""
+"""Produce daily GPST grid intervals from protocol-neutral SBAS streams."""
 
 import json
-import subprocess
-import sys
 from collections import Counter, defaultdict
-from contextlib import redirect_stdout
 from pathlib import Path
 
 import click
@@ -13,11 +10,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from . import sbas_extract
+from . import _native
 from .gpst import label
-from .research_output import staged_output
-from .sbas_grid import COORDINATES, TECU_PER_M, HourlyGrid
-from .sbas_grid_render import EraATimeMapper, GroupOffsetMapper, group_paths, write_json
+from .research_output import staged_output, write_json
+from .sbas_frames import SCHEMA as FRAME_SCHEMA
 
 SCHEMA = pa.schema(
     [
@@ -25,76 +21,25 @@ SCHEMA = pa.schema(
         for name in (
             "start_gpst_ms",
             "end_gpst_ms",
-            "gnssId",
-            "svId",
-            "sigId",
-            "freqId",
+            "prn",
             "band",
             "mask_bit",
             "iodi",
             "givei",
-            "frame_offset",
+            "frame_id",
+            "stream_id",
         )
     ]
     + [(name, pa.float64()) for name in ("latitude", "longitude", "delay_m", "vtec_tecu")]
-    + [("group", pa.string())],
+    + [(name, pa.string()) for name in ("constellation", "signal")],
     metadata={
-        b"schema_version": b"1",
+        b"schema_version": b"3",
         b"time_scale": b"GPST",
         b"time_origin": b"1980-01-06 00:00:00 GPST",
-        b"time_basis": b"NAV/EOE reception context, not SBAS transmit time",
+        b"time_basis": b"input SBAS frame context; not transmit time",
         b"interval": b"[start_gpst_ms,end_gpst_ms)",
     },
 )
-
-
-class IntervalGrid(HourlyGrid):
-    """Emit valid sample-and-hold intervals without retaining hourly history."""
-
-    def __init__(self, emit):
-        super().__init__()
-        self.emit = emit
-        self.references = {}
-
-    def flush_cell(self, key, time):
-        start, expiry, value = self.cells[key]
-        end = min(time, expiry, self.mask_deadline())
-        if end > start:
-            lat, lon = COORDINATES[key]
-            self.emit(
-                dict(
-                    start_gpst_ms=round(start * 1000),
-                    end_gpst_ms=round(end * 1000),
-                    band=key[0],
-                    mask_bit=key[1],
-                    latitude=lat,
-                    longitude=lon,
-                    vtec_tecu=value,
-                    delay_m=value / TECU_PER_M,
-                    **self.references[key],
-                )
-            )
-        self.cells[key] = (time, expiry, value)
-
-    def accept(self, time, message, offset):
-        super().process(time, message)
-        if message.get("status") == "decoded" and message["type"] == 26:
-            content = message["content"]
-            band = content["band"]
-            if band in self.masks and content["iodi"] == self.iodi and self.mask_deadline() > time:
-                positions = self.masks[band][0]
-                for i, correction in enumerate(content["corrections"]):
-                    ordinal = content["block"] * 15 + i
-                    if ordinal < len(positions):
-                        key = band, positions[ordinal]
-                        if (
-                            key in self.cells
-                            and self.cells[key][0] == time
-                            and correction["status"] == "usable"
-                            and correction["givei"] != 15
-                            and correction["delay_raw"] != 511
-                        ):
-                            self.references[key] = dict(iodi=self.iodi, givei=correction["givei"], frame_offset=offset)
 
 
 class DailySink:
@@ -156,90 +101,98 @@ class DailySink:
         return manifest
 
 
-def build_grid(extraction, reconstruction, output):
-    paths = list(group_paths(extraction))
+def build_grid(input_dir, output):
+    daily = input_dir / "daily" if (input_dir / "daily").is_dir() else input_dir
+    paths = sorted(daily.glob("GPST-*.parquet"))
+    if not paths:
+        raise ValueError("No daily SBAS frame Parquet inputs")
     sink = DailySink(output)
-    mapper = EraATimeMapper(reconstruction)
+    states, identities, pending = {}, {}, {}
+    ended = set()
     diagnostics = Counter()
-    try:
-        for group in tqdm(paths, desc="SBAS grid state", unit="group"):
-            signal_paths = sorted(group.glob("gnss-1_*.jsonl"))
-            source_info = json.loads((group / "sources.json").read_text())
-            for path in signal_paths:
-                offsets = GroupOffsetMapper(mapper, source_info["sources"])
-                states = {}
-                with path.open() as stream:
-                    for line in stream:
-                        record = json.loads(line)
-                        message = record["sbas"]
-                        if message.get("type") not in (0, 18, 26):
-                            continue
-                        key = tuple(record[k] for k in ("gnssId", "svId", "sigId", "freqId"))
-                        if key not in states:
-                            identity = dict(zip(("gnssId", "svId", "sigId", "freqId"), key), group=group.name)
-                            states[key] = IntervalGrid(lambda row, identity=identity: sink.add(dict(row, **identity)))
-                        states[key].accept(offsets.gpst(record["offset"]), message, record["offset"])
-                for state in states.values():
-                    # No fabricated extra second or assumed receiver cadence at EOF.
-                    state.finish(source_info["end_gpst"])
-                    diagnostics.update(state.diagnostics)
-    finally:
-        mapper.close()
+
+    def emit(key, rows):
+        for row in rows:
+            frame_id = row.pop("frame_offset")
+            sink.add(dict(row, **identities[key], stream_id=key, frame_id=frame_id))
+
+    def flush(key):
+        if pending[key]:
+            emit(key, states[key].process_frames(pending[key]))
+            pending[key].clear()
+
+    for path in tqdm(paths, desc="SBAS frame days", unit="day"):
+        with pq.ParquetFile(path) as source:
+            schema = source.schema_arrow
+            if not schema.equals(FRAME_SCHEMA) or any(
+                (schema.metadata or {}).get(k) != v for k, v in FRAME_SCHEMA.metadata.items()
+            ):
+                raise ValueError(f"Unexpected SBAS frame schema: {path}")
+            day = int(schema.metadata[b"day_gpst_ms"])
+            if day % 86400000:
+                raise ValueError("Frame partition is not a GPST day")
+            for batch in source.iter_batches(batch_size=8192):
+                for row in batch.to_pylist():
+                    if not day <= row["gpst_ms"] < day + 86400000:
+                        raise ValueError("SBAS record outside its GPST day")
+                    key = row["stream_id"]
+                    identity = {k: row[k] for k in ("constellation", "prn", "signal")}
+                    if identity["constellation"] != "SBAS" or identity["signal"] != "L1CA":
+                        raise ValueError("Grid requires SBAS L1CA")
+                    if key in ended:
+                        raise ValueError("SBAS stream continued after its end marker")
+                    if key not in states:
+                        if row["kind"] != "frame":
+                            raise ValueError("SBAS stream has no initial frame")
+                        states[key], pending[key], identities[key] = _native.GridProcessor(), [], identity
+                    elif identities[key] != identity:
+                        raise ValueError("SBAS stream identity changed")
+                    if row["kind"] == "frame":
+                        if row["frame_id"] is None or row["frame"] is None or row["crc_valid"] is None:
+                            raise ValueError("Incomplete SBAS frame record")
+                        pending[key].append({k: row[k] for k in ("gpst_ms", "frame_id", "frame", "crc_valid", "accepted")})
+                    elif row["kind"] == "end":
+                        flush(key)
+                        emit(key, states[key].finish(row["gpst_ms"]))
+                        diagnostics.update(states[key].diagnostics)
+                        del states[key], pending[key], identities[key]
+                        ended.add(key)
+                    else:
+                        raise ValueError("Unknown SBAS record kind")
+                for key in states:
+                    flush(key)
+    if states:
+        raise ValueError("Incomplete SBAS streams: missing end markers")
     return sink.finish(), dict(diagnostics)
 
 
 @click.command()
-@click.option("--input-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
 @click.option(
-    "--worker", type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Required unless --sbas-dir is supplied."
-)
-@click.option(
-    "--sbas-dir",
+    "--input-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
-    help="Reuse a completed extraction; skip reading UBX. Output must still be new.",
+    required=True,
+    help="Daily SBAS frame Parquet; no raw recordings or reconstruction indexes required.",
 )
 @click.option("--output", type=click.Path(path_type=Path), required=True)
-@click.pass_context
 @click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")
 @staged_output
-def cli(context, input_dir, worker, output, sbas_dir=None):
-    """Parse reconstructed UBX into daily GPST SBAS grid interval Parquet."""
+def cli(input_dir, output):
+    """Compute daily GPST grid intervals from source-independent SBAS frames."""
     try:
-        input_dir = input_dir.resolve()
-        if sbas_dir is not None:
-            if worker is not None:
-                raise ValueError("Use either --worker or --sbas-dir, not both")
-            extraction = sbas_dir.resolve()
-        elif worker is None:
-            raise ValueError("--worker is required unless --sbas-dir is supplied")
-        output.mkdir(parents=False, exist_ok=False)
-        if sbas_dir is None:
-            extraction = output / "frames"
-            with redirect_stdout(sys.stderr):
-                context.invoke(sbas_extract.cli, input_dir=input_dir, worker=worker, output=extraction)
-        manifest, diagnostics = build_grid(extraction, input_dir, output)
-        write_json(
-            output / "completed.json",
-            dict(
-                schema=1,
-                status="complete",
-                time_scale="GPST",
-                time_origin="1980-01-06 00:00:00 GPST",
-                product="sbas_igp_intervals",
-                files=manifest,
-                diagnostics=diagnostics,
-                policy=dict(
-                    correction_age_seconds=600,
-                    mask_age_seconds=1200,
-                    tail="stop at final observed epoch; no cadence extrapolation",
-                    invalid="excluded from intervals; retained in frames",
-                    gaps="reset at reconstruction continuous-group boundaries",
-                ),
-                extraction_root="frames" if sbas_dir is None else str(extraction.resolve()),
-            ),
+        output.mkdir()
+        manifest, diagnostics = build_grid(input_dir.resolve(), output)
+        result = dict(
+            schema=3,
+            status="complete",
+            product="sbas_igp_intervals",
+            time_scale="GPST",
+            files=manifest,
+            diagnostics=diagnostics,
+            policy=dict(correction_age_seconds=600, mask_age_seconds=1200, tail="explicit stream end; no cadence extrapolation"),
         )
+        write_json(output / "completed.json", result)
         click.echo(json.dumps(dict(status="complete", days=len(manifest), intervals=sum(r["rows"] for r in manifest))))
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, KeyError, RuntimeError) as error:
         raise click.ClickException(str(error)) from error
 
 

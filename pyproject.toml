@@ -15,7 +15,7 @@ receiver-clock-plot = "neognss_observatory.receiver_clock_plot:cli"
 receiver-clock-reunwrap = "neognss_observatory.receiver_clock_reunwrap:cli"
 cddis-download = "neognss_observatory.cddis_download:cli"
 ubx-restitch = "neognss_observatory.ubx_restitch:cli"
-sbas-grid-render = "neognss_observatory.sbas_grid_render:cli"
+sbas-frame-parquet = "neognss_observatory.sbas_extract:cli"
 sbas-grid-parquet = "neognss_observatory.sbas_grid_parquet:cli"
 sbas-grid-plot = "neognss_observatory.sbas_grid_plot:cli"
 sbas-map-video = "neognss_observatory.sbas_map_video:cli"
@@ -24,7 +24,7 @@ sbf-rinex = "neognss_observatory.sbf_rinex:cli"
 rinex-observation-audit = "neognss_observatory.sbf_rinex:audit_cli"
 
 [build-system]
-requires = ["setuptools>=77.0.3"]
+requires = ["setuptools>=77.0.3", "pybind11>=3.1.0", "click>=8.5.0", "pynmeagps>=1.1.7", "pyrtcm>=1.2.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.dynamic]

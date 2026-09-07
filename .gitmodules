@@ -5,3 +5,9 @@
 [submodule "contrib/pyubx2"]
 	path = contrib/pyubx2
 	url = https://github.com/semuconsulting/pyubx2.git
+[submodule "contrib/pysbf2"]
+	path = contrib/pysbf2
+	url = https://github.com/semuconsulting/pysbf2.git
+[submodule "contrib/json"]
+	path = contrib/json
+	url = https://github.com/nlohmann/json.git

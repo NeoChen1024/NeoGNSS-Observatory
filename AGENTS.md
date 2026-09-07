@@ -104,7 +104,7 @@
 
 ## Python scripts
 
-The library's build-time generator lives in `libcppubx2/scripts/`; Python
+The library's build-time generator lives in `libcppgnss/scripts/`; Python
 regression tests may live beside the C++ library. The generator uses Click;
 tests are run through unittest discovery rather than custom Python CLIs.
 Use the repository-root `./.venv`, managed by uv, for code generation and
@@ -116,8 +116,8 @@ Local setup commands (create `.venv` only if it does not already exist):
 
 ```sh
 uv venv .venv
+uv pip install --python .venv/bin/python -r libcppgnss/requirements-codegen.txt
 uv pip install --python .venv/bin/python -e .
-uv pip install --python .venv/bin/python -r libcppubx2/requirements-codegen.txt
 uv pip install --python .venv/bin/python pre-commit
 .venv/bin/pre-commit install
 .venv/bin/pre-commit run --all-files
@@ -125,7 +125,7 @@ uv pip install --python .venv/bin/python pre-commit
 
 The current CMake configuration selects the repository-root
 `./.venv/bin/python` for code generation and Python tests, including when
-configuring `libcppubx2/` directly.
+configuring `libcppgnss/` directly.
 
 - Keep Python code under `python-src/neognss_observatory/`. Use setuptools with
   `pyproject.toml`; maintain runtime dependencies in `requirements.txt` as the
@@ -147,15 +147,53 @@ configuring `libcppubx2/` directly.
   `requirements.txt`, allowing upgrades without a lockfile. Do not automatically
   inventory installed versions for experimental runs.
 
+## Native library boundaries
+
+- Raw processing CLIs expose `--protocol/-p ubx|sbf` (default `ubx`). Validate
+  complete foreign-protocol frames before skipping them atomically; report
+  throttled warnings on stderr and retain skipped frame/byte counts. Never
+  parse an embedded sync sequence inside a valid foreign frame. Unsupported
+  analysis/protocol combinations must fail explicitly before producing outputs.
+
+- `libcppgnss/` contains reusable UBX/SBF framing, generated protocol decoders,
+  signal routing, SBAS L1 decoding, and standard IGP coordinate/ordinal rules.
+  Keep transport, recording policy and automatic terminal output out of the library.
+- `libneognss-obs/` contains Observatory-specific epoch association, archive
+  segmentation, receiver-clock state, SBAS mask/aging policy, and batch bindings.
+  It depends on `libcppgnss`, never the reverse.
+- Python calls the native extension directly. Do not resurrect archive-index,
+  clock-scan, subframe-export or inspection worker executables as alternate backends.
+  Keep the actual `neoubxlogger` application and its CLI.
+- Keep file orchestration, Parquet, plotting and external converter invocation
+  in Python. Batch data across the binding; do not call Python once per raw frame.
+  Release the GIL during native processing. Batch/file/day boundaries must not
+  reset state; use explicit timeout/restart/continuous-group policies instead.
+- Generate every available pinned pysbf2 block schema. Keep unknown or empty
+  definitions explicit and preserve raw bytes; schema coverage is not proof of
+  receiver-firmware/revision or scientific validation.
+- Keep JSON serialization primarily in Python; `contrib/json` is available to
+  native processing without introducing C++ Parquet or plotting dependencies.
+- Grid processing consumes protocol-neutral timed SBAS records, not UBX wire
+  identifiers. Use `constellation`, `prn`, and `signal` in derived grid and
+  hourly products. Persist only SBAS's 250-bit body, normalized GPST and signal
+  identity, validity and generic continuity/end information in frame Parquet.
+  Do not persist UBX/SBF envelopes, field dictionaries or source offsets in
+  SBAS intermediate products; raw archives preserve those. Resolve protocol
+  timestamps at extraction, never by reopening raw data in grid processing.
+  Preserve the distinction between navigation epoch context and receiver message time. Do not
+  reset signal state solely at a physical file or GPST day boundary.
+- Bump the native archive-policy identifier when changing index interpretation
+  or epoch grouping, so functional inventory caches cannot silently reuse old results.
+
 ## Dependencies and licensing
 
-- Maintain the C++ UBX parser in `libcppubx2/` using CMake and C++20.
-  Expose reusable functionality through `cppubx2::cppubx2`; keep transport,
+- Maintain the C++ UBX/SBF parser in `libcppgnss/` using CMake and C++20.
+  Expose reusable functionality through `cppgnss::cppgnss`; keep transport,
   recording policy, and automatic terminal output in applications.
-- `libcppubx2/examples/ubxlogger.cpp` is the maintained logger application.
+- `libcppgnss/examples/ubxlogger.cpp` is the maintained logger application.
   Preserve its CLI flags; recording follows the single GPST policy above.
 - Generate parsers into the build directory from the pinned
-  `contrib/pyubx2` submodule. Python/pyubx2 is a build-time dependency, not
+  `contrib/pyubx2` and `contrib/pysbf2` submodules. Python schemas are build-time dependencies, not
   a runtime dependency of the C++ library. Do not edit generated files.
 - The historical `rpi-gnss-server` repository is no longer the maintenance
   location for these components. Preserve imported BSD-3-Clause notices;

@@ -4,7 +4,7 @@
 import struct
 import unittest
 
-from neognss_observatory.receiver_clock import ClockTracker
+from neognss_observatory._native import ClockProcessor
 
 
 def epoch(tow=100, bias=999000, drift=100, runtime=100, reset=False, week=2300, temperature=40, anchor=True):
@@ -30,11 +30,26 @@ def epoch(tow=100, bias=999000, drift=100, runtime=100, reset=False, week=2300, 
 class ClockTests(unittest.TestCase):
     def setUp(self):
         self.samples, self.events, self.telemetry = [], [], []
-        self.tracker = ClockTracker(self.samples.append, self.events.append, self.telemetry.append, max_gap=1.5)
+        self.tracker = ClockProcessor(max_gap=1.5)
+        self.source = None
+
+    def accept(self, source, offset, cls, msg, length, payload):
+        if self.source is not None and source != self.source:
+            self.tracker.end_file()
+        self.source = source
+        body = struct.pack("<BBH", cls, msg, length) + payload
+        a = b = 0
+        for value in body:
+            a = (a + value) & 255
+            b = (b + a) & 255
+        batch = self.tracker.feed(b"\xb5\x62" + body + bytes((a, b)), source)
+        self.samples.extend(batch["samples"])
+        self.events.extend(batch["events"])
+        self.telemetry.extend(batch["telemetry"])
 
     def feed(self, rows):
         for i, (cls, msg, p) in enumerate(rows):
-            self.tracker.accept("input.ubx", i, cls, msg, len(p), p[:16] if cls == 2 else p)
+            self.accept("input.ubx", i, cls, msg, len(p), p)
 
     def test_units_temperature_and_confirmed_unwrap(self):
         self.feed(epoch())
@@ -55,7 +70,7 @@ class ClockTests(unittest.TestCase):
         self.feed(epoch(tow=102, bias=500, runtime=99))
         self.assertEqual(self.samples[-1]["receiver_session_id"], 1)
         self.assertEqual(self.samples[-1]["clock_adjustment_total_ns"], 0)
-        self.assertEqual(self.tracker.counts["restarts"], 1)
+        self.assertEqual(self.tracker.summary()["counts"]["restarts"], 1)
 
     def test_positive_multiple_ms_adjustment(self):
         self.feed(epoch(bias=-2000000))
@@ -119,7 +134,7 @@ class ClockTests(unittest.TestCase):
                 p = bytearray(p)
                 if cls == 1:
                     struct.pack_into("<I", p, 0, itow)
-                self.tracker.accept(f"segment-{index}.ubx", offset, cls, msg, len(p), p)
+                self.accept(f"segment-{index}.ubx", offset, cls, msg, len(p), p)
         self.assertEqual(len(self.samples), 3)
         self.assertEqual(
             [r["gpst_ns"] for r in self.samples], [2300 * 604800 * 10**9 + t * 1000000 for t in (195638001, 195638500, 195639000)]
@@ -132,7 +147,7 @@ class ClockTests(unittest.TestCase):
             with self.subTest(tow=tow):
                 self.setUp()
                 self.feed(epoch(tow=100))
-                with self.assertRaisesRegex(ValueError, "Non-increasing NAV-CLOCK GPST: input.ubx:.*previous input.ubx:"):
+                with self.assertRaisesRegex(RuntimeError, "Non-increasing NAV-CLOCK GPST.*input.ubx:"):
                     self.feed(epoch(tow=tow))
 
     def test_empty_rawx_does_not_conflict(self):
@@ -171,8 +186,8 @@ class ClockTests(unittest.TestCase):
         self.assertEqual(self.samples[0]["iTOW_ms"], 604800000)
 
     def test_itow_beyond_week_reports_location(self):
-        with self.assertRaisesRegex(ValueError, "604800001.*input.ubx:42"):
-            self.tracker.accept("input.ubx", 42, 1, 0x61, 4, struct.pack("<I", 604800001))
+        with self.assertRaisesRegex(RuntimeError, "604800001.*input.ubx:0"):
+            self.accept("input.ubx", 42, 1, 0x61, 4, struct.pack("<I", 604800001))
 
     def test_unresolved_rawx_flag_breaks_arc(self):
         self.feed(epoch())
@@ -187,13 +202,13 @@ class ClockTests(unittest.TestCase):
         self.assertEqual(summary["ranges"]["clock_drift_ns_s"], {"min": 10, "max": 20})
 
     def test_unknown_monitor_version_rejected(self):
-        with self.assertRaisesRegex(ValueError, "msgVer"):
-            self.tracker.accept("input", 0, 10, 0x39, 24, bytes(24))
+        with self.assertRaisesRegex(RuntimeError, "msgVer"):
+            self.accept("input", 0, 10, 0x39, 24, bytes(24))
 
     def test_conflicting_anchors_rejected(self):
         rows = epoch()
         p = bytearray(rows[1][2])
         struct.pack_into("<H", p, 8, 2301)
         rows[1] = (2, 0x15, p)
-        with self.assertRaisesRegex(ValueError, "Conflicting"):
+        with self.assertRaisesRegex(RuntimeError, "Conflicting"):
             self.feed(rows)

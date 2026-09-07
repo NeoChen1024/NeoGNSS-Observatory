@@ -13,7 +13,7 @@ from tqdm import tqdm
 from .ubx_restitch import sha256, source_identity, write_json, write_plan
 
 
-def publish(plan, output, indexer):
+def publish(plan, output):
     output.mkdir(parents=True, exist_ok=True)
     lock = output / ".restitch.lock"
     with lock.open("a") as lockfile:

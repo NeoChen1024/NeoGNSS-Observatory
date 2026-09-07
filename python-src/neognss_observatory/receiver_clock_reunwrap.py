@@ -17,7 +17,7 @@ from .sbas_extract import write_json
 
 
 class BatchUnwrapper:
-    """Vectorized equivalent of ClockTracker's bias adjustment/timeout rules."""
+    """Vectorized Parquet reduction using the native clock processor's adjustment/timeout policy."""
 
     def __init__(self, event, max_gap=50.0, tolerance=50000):
         self.event, self.max_gap, self.tolerance = event, max_gap, tolerance

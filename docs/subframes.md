@@ -1,79 +1,119 @@
 # Navigation subframes and SBAS
 
-`libcppubx2` separates RXM-SFRBX container decoding, signal routing, and
-constellation-specific content decoding. It does not need Python at runtime.
+The processing boundary is the SBAS message, not its UBX/SBF transport.
 
-## Export a recording
-
-After building the examples:
+## Daily Parquet pipeline
 
 ```sh
-build/libcppubx2/cppubx2_subframes input.ubx new-output-directory
+# Choose UBX reconstruction or expanded raw SBF only at extraction.
+sbas-frame-parquet -p ubx --input-dir /data/reconstructed --output /data/sbas-frames
+# Alternatively:
+sbas-frame-parquet -p sbf --input-dir /data/raw-sbf --output /data/sbas-frames
+
+sbas-grid-parquet --input-dir /data/sbas-frames --output /data/sbas-grid
+
+sbas-grid-plot --input-dir /data/sbas-grid --output /data/sbas-maps \
+  --coastline contrib/natural-earth/ne_10m_coastline.zip
 ```
 
-Append `--sbas-only` to suppress other constellations' signal output.
+Extraction, grid calculation and plotting are separate commands. Grid accepts
+only frame Parquet and has no protocol selection, raw-data path, reconstruction
+dependency, or source-offset lookup. The earlier raw JSONL intermediate and
+combined `sbas-grid-render` CLI are removed. Old products must be regenerated;
+there is no compatibility reader or automatic deletion of existing products.
 
-### Batch extraction from reconstructed Era A
+### Explicit wire protocol
 
-```sh
-python -m neognss_observatory.sbas_extract \
-  --input-dir /path/to/era-a \
-  --output new-sbas-output \
-  --worker build/libcppubx2/cppubx2_subframes
-```
+Only `sbas-frame-parquet` uses `--protocol/-p ubx|sbf` (default UBX,
+case-insensitive). Complete checksum-valid foreign frames are skipped atomically
+with throttled stderr warnings and skipped frame/byte counts. Invalid wire
+frames follow the decoder's corruption/resynchronization policy; corrupt lengths
+can still result in a truncated-tail error.
 
-The batch application validates the completed reconstruction's plan and artifact
-metadata, excludes `unassigned/`, and groups segments using payload-derived
-`start_gpst`/`end_gpst`, not their filenames. Segments within the reconstruction's
-recorded gap timeout remain in one continuous group, including across midnight.
-Each group is fed through one
-persistent native reader over a pipe: intermediate file boundaries do not
-produce EOF or discard partial framing/parser state. Gaps start new groups;
-overlaps are rejected. This does not yet add a stateful SBAS correction engine.
+UBX input is a completed GPST reconstruction, excluding unassigned data.
+Reconstruction epoch mappings resolve the SFRBX time at extraction. SBF input
+recursively selects expanded `.sbf`, `.YY_`, and `.ubx` candidates in path
+order; arrange files in stream order and do not mix overlapping recordings.
+No XZ decompression occurs. SBF uses GEORawL1 TOW/WNc directly. Missing time
+and reversed timestamps fail rather than receiving invented timestamps.
 
-`group-NNNNN/` contains SBAS signal JSON Lines, the native summary, and
-`sources.json`. A record's `offset` is in the concatenated group stream:
-find the source range containing it and subtract `stream_begin` for its local
-file offset. Source ranges also support a frame spanning a file boundary.
-No exact SFRBX reception or transmission time is inferred from these ranges.
+Continuous file/day boundaries preserve framing and signal state. UBX uses
+reconstruction continuous groups. SBF starts a new per-signal stream after a
+gap greater than `--gap-timeout` (default 50 seconds), considering every SBAS
+message type. This is a conservative signal-coverage rule, not proof of reboot.
+At a gap or EOF, stream closure stops at the last observed time; UBX may close
+at its last navigation epoch. No extra second or receiver cadence is invented.
 
-Sources are size/mtime checked while streaming. The run retains per-group
-diagnostics, source-span mappings, a `groups.jsonl` journal and a concise summary.
-No worker/source snapshots or per-output hash inventories are produced.
-Research directory outputs are published by rename. `--overwrite` retains the
-previous output as a backup; failed temporary output remains for inspection.
+### Frame product
 
-Use reconstructed GPST segments for Era A; exclude `unassigned/`. This tool
-processes one recording per invocation, not an archive recursively.
+`daily/GPST-YYYY-MM-DD.parquet` uses frame schema version 1:
 
-Each `gnss-N_sv-N_sig-N_freq-N.jsonl` contains one RXM-SFRBX per line, with
-the source byte offset (including UBX sync), original header fields and all
-little-endian-decoded `words`. SBAS lines additionally contain canonical frame
-hex, CRC results, message type, parser status, and typed content where supported.
-`summary.json` records byte/frame counts, stream identities,
-and SBAS status/type counts; the same summary is printed to stdout. Record the
-repository/submodule revisions and build options only for explicitly requested production runs.
+| Field | Meaning |
+| --- | --- |
+| `gpst_ms` | Integer milliseconds since 1980-01-06 00:00:00 GPST |
+| `constellation / prn / signal` | Canonical signal identity; currently SBAS L1CA |
+| `time_basis` | `navigation_epoch_context` or `receiver_message_time`; neither asserts SBAS transmit time |
+| `stream_id` | Product-local continuous signal stream; preserved across daily partitions |
+| `kind` | `frame` or `end` |
+| `frame_id` | Product-local frame identity, null on end records |
+| `frame` | Fixed 32 bytes: 250 SBAS bits, MSB-first, final six padding bits zero |
+| `crc_valid` | Independent SBAS CRC result; null on end records |
+| `accepted` | Receiver acceptance when supplied, otherwise null; false blocks grid updates |
 
-`errors.jsonl` records malformed containers with their original UBX body, and
-noise byte ranges. Unsupported SBAS message types stay in their signal stream.
-Unknown SFRBX versions go to the error stream, not a guessed signal stream.
-A complete summary means the input was processed, not that every frame decoded.
-Output failures, truncation, and input I/O errors return nonzero; a partial
-directory is not resumable and has no complete summary. The strict UBX reader
-is not a corruption-salvage scanner: a corrupt length may consume later bytes.
-Use stable input files; this example does not lock inputs against mutation.
+End records carry the observed closure time with null payload/validity fields.
+They preserve integration boundaries without raw files or extra source journals.
+Each stream's records remain ordered within a day; days are consumed in order.
+Only complete stream ranges are accepted by grid; missing end records fail.
+
+The SBAS body includes its own preamble, message type and CRC. UBX/SBF headers,
+checksums, native field dictionaries, ninth UBX words, byte offsets and filenames
+are not copied into the product. Raw archives preserve the transport. Invalid
+and unsupported complete SBAS bodies remain available for inspection/re-decoding.
+
+### Grid and map products
+
+Grid re-decodes SBAS bodies in bounded C++ batches and verifies CRC metadata
+against their bytes. Receiver-rejected frames do not update masks or corrections.
+Independent stream state spans Parquet files and GPST midnight. Explicit end
+records close it; the grid has no protocol-specific continuity branches.
+
+Grid schema version 3 contains canonical signal identity, `stream_id`,
+`frame_id`, IGP band/mask position, coordinates, IODI, GIVEI, delay in meters,
+equivalent VTEC in TECU, and `[start_gpst_ms,end_gpst_ms)`. `frame_id` points
+to the originating MT26 in the input frame product, not a byte offset. SBAS
+bodies are not duplicated for every grid cell. Midnight splits intervals, not
+state. No raw source references or transport identifiers are persisted.
+
+Correction/mask ages remain 600/1200 seconds. Missing masks, expired state,
+invalid and unmonitored values produce no interval, not zero TEC. Values from
+different PRNs are never averaged together. This is SBAS-broadcast equivalent
+VTEC, not receiver-observed STEC. Empty days have no grid Parquet.
+
+Both products use bounded buffers and temporary shards, compacted into daily
+Zstandard level-3 Parquet without keeping all day writers open. Directory
+publication is atomic; `--overwrite` retains the previous output as a backup.
+Concise completion summaries are informational; grid reads frame schemas and
+end records directly without requiring completion JSON or raw sources.
+
+`sbas-grid-plot` uses only grid Parquet and a coastline asset. It computes
+valid-duration-weighted hourly means; `--min-coverage` defaults to 0.25.
+`--start/--end YYYY-MM-DDTHH` select GPST hours with an exclusive end.
+Missing cells stay absent. Rendering/PNG compression use independent worker
+processes (`--workers`), with compression level 3 by default
+(`--png-compression`). Color limits default to 0–100 TECU. The 5-degree cell
+overlay and map coastlines are illustrative, not precision coverage polygons.
 
 ## Library API and routing
 
 ```cpp
-#include <cppubx2/sbas.hpp>
+#include <cppgnss/ubx_subframe.hpp>
 
 UBX::SubframeDemultiplexer router;
 // frame is a checksum-validated UBX::ubx_frame.
 auto result = router.dispatch(frame, [](const UBX::NavigationSubframe &s) {
     // Use s.signal as the key for application-owned per-signal state.
     if (s.signal.gnssId == 1) {
-        auto decoded = UBX::SBAS::parse(s);
+        auto decoded = UBX::parse_sbas(s);
         // Check decoded.status before consuming typed content.
     }
 });
@@ -136,158 +176,8 @@ MT18 mask positions are one-based static mask bits. MT26
 `active_mask_ordinal` is instead an ordinal into the **active** MT18 mask,
 starting at `15 * block + 1`. The stateless C++ parser validates field
 extraction, CRC, and band/block bounds, not every reserved bit or cross-message
-semantic constraint. The Python hourly-map experiment described below adds
-conservative matching and aging independently per SBAS signal.
-
-## Daily Parquet pipeline
-
-Use two independent commands for new grid processing runs:
-
-```sh
-sbas-grid-parquet \
-  --input-dir /path/to/reconstructed-ubx \
-  --worker build/libcppubx2/cppubx2_subframes \
-  --output new-sbas-grid-directory
-
-sbas-grid-plot \
-  --input-dir new-sbas-grid-directory \
-  --coastline contrib/natural-earth/ne_10m_coastline.zip \
-  --output new-sbas-map-directory \
-  --workers 4
-```
-
-The first command reads raw UBX bytes from a completed GPST reconstruction,
-not RINEX. It reuses the native SFRBX decoder and retains its signal JSONL,
-raw words, CRC results, diagnostics and source-offset mappings in
-`frames/`. It then reads these inputs and computes MT18/26 grid validity
-intervals, keeping each signal's state across continuous source files and GPST
-midnight. Separate continuous groups start fresh state. The reconstruction's
-group-boundary policy and SBAS mask/correction aging remain distinct policies.
-
-Each `daily/GPST-YYYY-MM-DD.parquet` contains one GPST day, across all received
-SBAS signals. A row represents an accepted IGP value over the half-open interval
-`[start_gpst_ms, end_gpst_ms)`. Midnight splits the interval, not the parser
-state. Integer times are milliseconds since 1980-01-06 00:00:00 GPST; they are
-not Unix timestamps. Time remains an approximate NAV/EOE reception context,
-not a measured SFRBX reception time or SBAS transmission time.
-
-Rows preserve signal identity, band, mask bit, coordinates, IODI, GIVEI,
-vertical delay in meters, equivalent VTEC in TECU, and the originating MT26
-group-stream offset. That offset references `frames/group-NNNNN/`; it is not
-a local file offset. Source mappings and the retained MT18 messages allow
-replaying the mask association. No values from different PRNs are averaged
-together. This is SBAS-broadcast equivalent VTEC, not receiver-observed STEC.
-
-The experimental state policy retains the existing 600-second correction and
-1,200-second complete-mask limits. Invalid/unmonitored values, missing masks,
-and expired state yield no valid interval, never zero TEC. Their original
-messages remain in `frames/`. Days without any valid interval have no Parquet
-file. At group EOF, integration stops at the final observed epoch: this pipeline
-does not add one second or extrapolate a receiver cadence. Consequently its
-last-hour coverage can differ from the earlier combined experiment.
-
-The producer uses bounded row buffers and temporary shards, then compacts to
-one Zstandard level-3 Parquet file per day. It removes only its own temporary
-shards after successful compaction. State processing is sequential within a
-signal; a day boundary is not a safe independent parser restart point.
-
-The second command needs only the completed grid product and coastline, not
-UBX, reconstruction indexes, or `frames/`. `--start YYYY-MM-DDTHH` and exclusive
-`--end YYYY-MM-DDTHH` select GPST hours; only intersecting daily files are read
-and aggregated. The GPST day is read from Parquet metadata, not inferred solely
-from the filename. Either a product directory or its `daily/` directory is accepted. It processes one day at a time, sums TECU-seconds and valid
-duration across intervals, and divides to obtain time-weighted hourly means.
-`hourly/GPST-YYYY-MM-DD.jsonl` retains the mean, integral, valid seconds and
-coverage, including cells below the display threshold. Future longer-window
-averages must combine integrals and durations, not average hourly means equally.
-
-`--vmin`, `--vmax` and `--min-coverage` default to 0 TECU, 100 TECU and 25%.
-PNG workers render independent signal-hours in parallel, including compression;
-`--png-compression` defaults to 3. Extent and color scale are fixed across the
-selected run. Images use the existing `png/` layout and `images.json` manifest,
-compatible with the video helper. Changing display settings does not rerun
-UBX parsing or SBAS state reconstruction.
-
-If extraction completed but grid processing failed, reuse that extraction without
-rescanning UBX or requiring a native worker:
-
-```sh
-sbas-grid-parquet \
-  --input-dir /path/to/reconstructed-ubx \
-  --sbas-dir previous-sbas-grid-directory/frames \
-  --output new-sbas-grid-directory
-```
-
-This restarts grid calculation, not raw extraction. The caller supplies the
-matching reconstruction for its byte-to-time mapping. Keep the referenced
-extraction for raw-message inspection; the new output does not copy it or demand
-hash-chain sidecars. Epoch-index mappings use an LRU cache of 16 open indexes.
-Cache eviction does not reset SBAS state.
-
-Both commands publish directory outputs by rename; `--overwrite` keeps the old
-directory as a backup. Grid Parquet embeds GPST day, units, time basis and aging
-parameters. Plotting needs only daily Parquet and coastline, not completion
-manifests or extraction files. Concise summaries are informational. Interrupted
-calculation is not automatically resumed.
-
-Daily Parquet rows need not be globally time-sorted across signals; intervals
-are emitted chronologically within each signal/IGP. Consumers must not assume
-global order. The product is an exploratory visualization input, not a complete
-aviation correction/integrity engine.
-
-## Earlier combined hourly VTEC experiment
-
-The original `sbas-grid-render` command remains available for existing workflows.
-New runs should prefer the independent Parquet producer and plotter above.
-
-Install the package dependencies, then render from a completed batch extraction:
-
-```sh
-sbas-grid-render \
-  --sbas-dir /path/to/era-a-sbas \
-  --reconstruction-dir /path/to/era-a \
-  --coastline contrib/natural-earth/ne_10m_coastline.zip \
-  --output new-hourly-map-directory
-```
-
-`--start YYYY-MM-DDTHH` and exclusive `--end YYYY-MM-DDTHH` restrict an
-experiment to GPST hours. `--vmin`, `--vmax`, and `--min-coverage` control the
-fixed color scale and displayed coverage threshold. Defaults are 0–100 TECU
-and 25%. `hourly.jsonl` retains values below the display threshold so later
-rendering choices do not alter the aggregation result.
-
-`--workers` (default up to four) renders independent hours in separate
-processes, including PNG compression. `--png-compression` selects level 0-9
-(default 3). These options do not change the hourly aggregation or map extent.
-
-This experiment reconstructs the standard 2,192 IGP coordinates, associates
-MT26 active-mask ordinals with MT18 masks having the same IODI, and keeps state
-across continuous reconstructed files. A time gap starts fresh state. A new
-IODI, changed same-IODI mask, expired/incomplete mask, MT0, `not_monitored`, or
-`do_not_use` data is handled conservatively rather than filled with zero.
-
-An accepted MT26 value is held until its next update or for at most 600 seconds;
-complete masks age out after 1,200 seconds. Hourly means are weighted by the
-number of valid seconds, split exactly at GPST-hour boundaries. `coverage` and
-`valid_seconds` accompany every value. These timeout choices follow published
-SBAS maximum intervals and are recorded in output provenance, but the result is
-an exploratory visualization—not an aviation integrity implementation.
-
-RXM-SFRBX has no timestamp. The command maps each extraction byte offset back
-through reconstruction spans to the original payload-derived NAV/EOE epoch.
-This is a reception-context GPST approximation, not an inferred SBAS transmit
-time. No time is derived from an output filename.
-
-VTEC is derived from the SBAS L1 vertical delay using the first-order relation
-`VTEC = delay_m * 1575.42e6² / (40.3 * 1e16)`. It is not receiver-observed TEC.
-The PNG overlay uses un-interpolated 5° point-centered cells, a fixed run-wide
-extent and color scale, black 1:10m Natural Earth coastlines, and 10° graticules.
-Missing or insufficient-coverage cells remain white. High-latitude cell shapes
-are deliberately approximate; the JSON Lines grid points are authoritative.
-
-Outputs retain hourly values, image ordering and calculation settings, without
-source snapshots or hash inventories. Directory publication and `--overwrite`
-follow the same research-output policy.
+semantic constraint. The Observatory native grid processor adds conservative
+matching and aging independently per SBAS signal.
 
 ### HEVC/MP4 preview
 

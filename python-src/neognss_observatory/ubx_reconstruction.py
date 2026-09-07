@@ -1,10 +1,10 @@
 """Exact overlap proofs and GPST segment plans for UBX archives."""
 
-from dataclasses import replace
 from pathlib import Path
 
 from tqdm import tqdm
 
+from . import _native
 from .ubx_restitch import (
     CONFLICT,
     EOE,
@@ -14,7 +14,7 @@ from .ubx_restitch import (
     RAWX,
     UNKNOWN,
     epochs,
-    gpst_label,
+    read_index,
 )
 
 
@@ -149,126 +149,16 @@ def build_plan(sources):
     return {"schema": 3, "time_scale": "GPST", "sources": selected, "joins": joins}
 
 
-def append_span(spans, path, begin, end):
-    if spans and spans[-1]["source"] == path and spans[-1]["end"] == begin:
-        spans[-1]["end"] = end
-    else:
-        spans.append({"source": path, "begin": begin, "end": end})
-
-
 def segment_plan(plan, *, gap_timeout_ms=50000):
     """Apply NAV timeout coverage without dropping unassigned UBX bytes."""
     if not isinstance(gap_timeout_ms, int) or gap_timeout_ms < 1:
         raise ValueError("Gap timeout must be a positive integer number of milliseconds")
-    overrides = {
-        (j["previous"], j["previous_epoch_begin"]): j["anchor_gpst_ms"]
-        for j in plan["joins"]
-        if j.get("kind") == "split_epoch_continuation"
-    }
-    artifacts, events, names = [], [], set()
-    segment = None
-    group = []
-    last_gpst = None
-    pending_reason = "first_available"
-    unassigned = {}
-
-    def quarantine(path, epoch, reason):
-        spans = unassigned.setdefault(path, [])
-        append_span(spans, path, epoch.begin, epoch.end)
-        events.append(
-            {
-                "type": reason,
-                "source": path,
-                "begin": epoch.begin,
-                "end": epoch.end,
-                "gpst_ms": None if epoch.gpst_ms == UNKNOWN else epoch.gpst_ms,
-            }
-        )
-
-    def flush():
-        nonlocal segment, last_gpst, pending_reason
-        if not group:
-            return
-        timestamp = group[0][1].gpst_ms
-        if not sum(e.nav for _, e in group):
-            for path, e in group:
-                quarantine(path, e, "no_nav_interval")
-            group.clear()
-            return
-        if any(e.flags & CONFLICT for _, e in group):
-            raise ValueError(f"Conflicting GPST epoch at {gpst_label(timestamp)}")
-        if last_gpst is not None and timestamp < last_gpst:
-            raise ValueError("Reconstructed time runs backwards")
-        reason = pending_reason
-        if last_gpst is not None and timestamp > last_gpst + gap_timeout_ms:
-            reason = "missing_interval"
-            events.append(
-                {
-                    "type": "missing_interval",
-                    "after_gpst_ms": last_gpst,
-                    "next_gpst_ms": timestamp,
-                    "interval_ms": timestamp - last_gpst,
-                    "gap_timeout_ms": gap_timeout_ms,
-                }
-            )
-            segment = None
-        if last_gpst is not None and timestamp // 86400000 != last_gpst // 86400000:
-            reason = "gpst_midnight" if segment is not None else reason
-            segment = None
-        if segment is None:
-            name = gpst_label(timestamp) + ".ubx"
-            if name in names:
-                raise ValueError(f"Segment filename collision: {name}")
-            names.add(name)
-            segment = {
-                "name": name,
-                "kind": "gpst_segment",
-                "start_gpst_ms": timestamp,
-                "end_gpst_ms": timestamp,
-                "start_gpst": timestamp / 1000,
-                "end_gpst": timestamp / 1000,
-                "gap_timeout_ms": gap_timeout_ms,
-                "max_observed_interval_ms": 0,
-                "reason": reason,
-                "frames": 0,
-                "nav_epochs": 0,
-                "spans": [],
-            }
-            artifacts.append(segment)
-        for path, e in group:
-            append_span(segment["spans"], path, e.begin, e.end)
-            segment["frames"] += e.frames
-        if segment["nav_epochs"]:
-            segment["max_observed_interval_ms"] = max(segment["max_observed_interval_ms"], timestamp - segment["end_gpst_ms"])
-        segment["nav_epochs"] += 1
-        segment["end_gpst_ms"] = timestamp
-        segment["end_gpst"] = timestamp / 1000
-        last_gpst = timestamp
-        pending_reason = "continuation"
-        group.clear()
-
+    planner = _native.SegmentPlanner(plan["joins"], gap_timeout_ms)
     for source in tqdm(plan["sources"], desc="GPST segments", unit="file"):
-        path = source["path"]
-        for e in epochs(Path(source["index"])):
-            if (path, e.begin) in overrides:
-                e = replace(e, gpst_ms=overrides[path, e.begin])
-            if e.flags & NOISE:
-                events.append({"type": "non_ubx_or_corrupt_bytes", "source": path, "begin": e.begin, "end": e.end})
-                continue
-            if e.begin < source["begin"] or e.end > source["end"]:
-                continue
-            if e.gpst_ms == UNKNOWN:
-                # Do not invent an epoch for untimed tails or damaged runs.
-                quarantine(path, e, "unknown_time")
-                continue
-            if group and e.gpst_ms != group[0][1].gpst_ms:
-                flush()
-            group.append((path, e))
-    flush()
-    for path, spans in unassigned.items():
-        artifacts.append({"name": "unassigned/" + Path(path).name, "kind": "unassigned_frames", "spans": spans})
-    for artifact in artifacts:
-        artifact["size"] = sum(s["end"] - s["begin"] for s in artifact["spans"])
+        with read_index(Path(source["index"])) as data:
+            planner.feed(source, data)
+    result = planner.finish()
+    artifacts, events = result["artifacts"], result["events"]
     # Prove that each selected source byte is accounted for exactly once,
     # either in an output or as an explicitly recorded non-UBX/corrupt range.
     coverage = {s["path"]: [] for s in plan["sources"]}

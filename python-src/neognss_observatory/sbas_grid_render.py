@@ -1,18 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Build experimental hourly SBAS VTEC maps from extracted Era A frames."""
+"""Rendering helpers for protocol-neutral hourly SBAS cells."""
 
-import bisect
-import hashlib
-import json
-import mmap
 import multiprocessing
 import os
 import shutil
-import subprocess
-import sys
 import tempfile
 import zipfile
-from collections import Counter, OrderedDict, defaultdict
+from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from io import BytesIO
 from pathlib import Path
@@ -21,7 +15,7 @@ import click
 
 from .gpst import label as gpst_label
 from .gpst import parse_hour as parse_gpst_hour
-from .research_output import staged_output
+from .sbas_streams import IDENTITY
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / f"neognss-matplotlib-{os.getuid()}"))
 import matplotlib
@@ -34,246 +28,6 @@ from matplotlib.collections import LineCollection, PatchCollection
 from matplotlib.colors import Normalize
 from matplotlib.patches import Rectangle
 from tqdm import tqdm
-
-from .sbas_grid import HourlyGrid
-from .ubx_restitch import RECORD, UNKNOWN
-
-INDEX_HEADER_SIZE = 48
-
-
-def sha256(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def write_json(path, value):
-    with path.open("x") as stream:
-        json.dump(value, stream, indent=2, sort_keys=True)
-        stream.write("\n")
-
-
-class EpochIndex:
-    def __init__(self, path, expected_sha256):
-        self.path = path
-        if sha256(path) != expected_sha256:
-            raise ValueError(f"Reconstruction epoch index checksum mismatch: {path}")
-        self.stream = path.open("rb")
-        try:
-            self.data = mmap.mmap(self.stream.fileno(), 0, access=mmap.ACCESS_READ)
-        except BaseException:
-            self.stream.close()
-            raise
-        if self.data[:8] not in (b"UBXIDX03", b"UBXIDX04") or (len(self.data) - INDEX_HEADER_SIZE) % RECORD.size:
-            self.close()
-            raise ValueError(f"Invalid reconstruction epoch index: {path}")
-        self.count = (len(self.data) - INDEX_HEADER_SIZE) // RECORD.size
-
-    def record(self, number):
-        row = list(RECORD.unpack_from(self.data, INDEX_HEADER_SIZE + number * RECORD.size))
-        if self.data[:8] == b"UBXIDX04" and row[2] != UNKNOWN:
-            row[2] /= 1000  # Rendering uses GPST seconds, not index milliseconds.
-        return row
-
-    def locate(self, offset, hint=None):
-        if hint is not None:
-            begin, end, gpst, *_ = self.record(hint)
-            if begin <= offset < end:
-                return hint, gpst
-            if offset >= end and hint + 1 < self.count:
-                begin, end, gpst, *_ = self.record(hint + 1)
-                if begin <= offset < end:
-                    return hint + 1, gpst
-        low, high = 0, self.count
-        while low < high:
-            middle = (low + high) // 2
-            if self.record(middle)[0] <= offset:
-                low = middle + 1
-            else:
-                high = middle
-        number = low - 1
-        if number < 0:
-            raise ValueError(f"Offset precedes epoch index: {self.path}:{offset}")
-        begin, end, gpst, *_ = self.record(number)
-        if not begin <= offset < end or gpst == UNKNOWN:
-            raise ValueError(f"SBAS offset has no payload-derived GPST epoch: {self.path}:{offset}")
-        return number, gpst
-
-    def close(self):
-        self.data.close()
-        self.stream.close()
-
-
-class EraATimeMapper:
-    def __init__(self, reconstruction, max_open_indexes=16):
-        if max_open_indexes < 1:
-            raise ValueError("Index cache capacity must be positive")
-        self.max_open_indexes = max_open_indexes
-        self.reconstruction = reconstruction
-        self.source_indexes = {}
-        self.indexes = OrderedDict()
-        self.artifacts = {}
-        self.time_overrides = {}
-        with (reconstruction / "plan.jsonl").open() as stream:
-            for line in stream:
-                record = json.loads(line)
-                if record.get("record_type") == "sources":
-                    path = reconstruction / "provenance/indexes" / (record["sha256"] + ".idx")
-                    self.source_indexes[record["path"]] = (path, record["index_sha256"])
-                elif record.get("record_type") == "artifacts" and record.get("kind") == "gpst_segment":
-                    self.artifacts[record["name"]] = record
-                elif (
-                    record.get("record_type") == "joins"
-                    and record.get("kind") == "split_epoch_continuation"
-                    and "anchor_gpst_ms" in record
-                ):
-                    self.time_overrides[record["previous"], record["previous_epoch_begin"]] = record["anchor_gpst_ms"] / 1000
-
-    def index(self, source):
-        if source not in self.indexes:
-            # Each mapping can retain both a file and an mmap descriptor.
-            # Evict before opening, independently of archive size/group count.
-            if len(self.indexes) >= self.max_open_indexes:
-                _, oldest = self.indexes.popitem(last=False)
-                oldest.close()
-            path, digest = self.source_indexes[source]
-            self.indexes[source] = EpochIndex(path, digest)
-        self.indexes.move_to_end(source)
-        return self.indexes[source]
-
-    def artifact_cursor(self, name):
-        artifact = self.artifacts[name]
-        ends, total = [], 0
-        for span in artifact["spans"]:
-            total += span["end"] - span["begin"]
-            ends.append(total)
-        if total != artifact["size"]:
-            raise ValueError(f"Artifact span size mismatch: {name}")
-        return ArtifactCursor(self, artifact, ends)
-
-    def close(self):
-        for index in self.indexes.values():
-            index.close()
-        self.indexes.clear()
-
-
-class ArtifactCursor:
-    def __init__(self, mapper, artifact, ends):
-        self.mapper, self.artifact, self.ends = mapper, artifact, ends
-        self.hints = {}
-
-    def gpst(self, local_offset):
-        if not 0 <= local_offset < self.artifact["size"]:
-            raise ValueError(f"SBAS offset outside artifact: {self.artifact['name']}:{local_offset}")
-        number = bisect.bisect_right(self.ends, local_offset)
-        span = self.artifact["spans"][number]
-        local_begin = 0 if number == 0 else self.ends[number - 1]
-        original = span["begin"] + local_offset - local_begin
-        index = self.mapper.index(span["source"])
-        hint, gpst = index.locate(original, self.hints.get(span["source"]))
-        gpst = self.mapper.time_overrides.get((span["source"], index.record(hint)[0]), gpst)
-        self.hints[span["source"]] = hint
-        if not self.artifact["start_gpst"] <= gpst <= self.artifact["end_gpst"]:
-            raise ValueError(f"Mapped GPST outside artifact: {self.artifact['name']}")
-        return gpst
-
-
-class GroupOffsetMapper:
-    def __init__(self, mapper, sources):
-        self.sources = sources
-        self.ends = [source["stream_end"] for source in sources]
-        self.cursors = [mapper.artifact_cursor(source["name"]) for source in sources]
-
-    def gpst(self, offset):
-        number = bisect.bisect_right(self.ends, offset)
-        if number == len(self.sources):
-            raise ValueError(f"SBAS offset outside continuous group: {offset}")
-        source = self.sources[number]
-        if offset < source["stream_begin"]:
-            raise ValueError(f"SBAS offset falls between group sources: {offset}")
-        return self.cursors[number].gpst(offset - source["stream_begin"])
-
-
-def group_paths(extraction):
-    with (extraction / "groups.jsonl").open() as stream:
-        for line in stream:
-            record = json.loads(line)
-            yield extraction / record["group"]
-
-
-def aggregate(extraction, reconstruction, start=None, end=None):
-    completed = json.loads((extraction / "completed.json").read_text())
-    if completed.get("status") != "complete":
-        raise ValueError("SBAS extraction is not complete")
-    paths = list(group_paths(extraction))
-    if len(paths) != completed["continuous_groups"]:
-        raise ValueError("SBAS group journal is incomplete")
-    total = sum(path.stat().st_size for group in paths for path in group.glob("gnss-1_*.jsonl"))
-    mapper = EraATimeMapper(reconstruction)
-    combined = defaultdict(lambda: [0.0, 0])
-    diagnostics = Counter()
-    messages = Counter()
-    try:
-        with tqdm(total=total, desc="Aggregate SBAS grid", unit="B", unit_scale=True, mininterval=2) as progress:
-            for group in paths:
-                source_info = json.loads((group / "sources.json").read_text())
-                if end is not None and source_info["start_gpst"] >= end or start is not None and source_info["end_gpst"] < start:
-                    progress.update(sum(path.stat().st_size for path in group.glob("gnss-1_*.jsonl")))
-                    continue
-                for path in sorted(group.glob("gnss-1_*.jsonl")):
-                    offset_mapper = GroupOffsetMapper(mapper, source_info["sources"])
-                    states = {}
-                    with path.open("rb") as stream:
-                        for line in stream:
-                            # MT0 can invalidate state; MT18/26 define and update the grid.
-                            if not any(marker in line for marker in (b'"type":0,', b'"type":18,', b'"type":26,')):
-                                continue
-                            record = json.loads(line)
-                            message = record["sbas"]
-                            time = offset_mapper.gpst(record["offset"])
-                            key = (record["gnssId"], record["svId"], record["sigId"], record["freqId"])
-                            state = states.setdefault(key, HourlyGrid())
-                            state.process(time, message)
-                            messages[str(message["type"])] += 1
-                    progress.update(path.stat().st_size)
-                    for key, state in states.items():
-                        state.finish(source_info["end_gpst"] + 1)
-                        diagnostics.update(state.diagnostics)
-                        for row in state.rows():
-                            if start is not None and row["hour_gpst"] < start or end is not None and row["hour_gpst"] >= end:
-                                continue
-                            target = combined[key, row["hour_gpst"], row["band"], row["mask_bit"]]
-                            target[0] += row["vtec_tecu"] * row["valid_seconds"]
-                            target[1] += row["valid_seconds"]
-        rows = []
-        for (key, hour, band, bit), (integral, seconds) in sorted(combined.items()):
-            if not 0 < seconds <= 3600:
-                raise ValueError("Continuous groups overlap within an hourly IGP average")
-            lat, lon = state_coordinates(band, bit)
-            rows.append(
-                dict(
-                    gnssId=key[0],
-                    svId=key[1],
-                    sigId=key[2],
-                    freqId=key[3],
-                    hour_gpst=hour,
-                    band=band,
-                    mask_bit=bit,
-                    latitude=lat,
-                    longitude=lon,
-                    vtec_tecu=integral / seconds,
-                    valid_seconds=seconds,
-                    coverage=seconds / 3600,
-                )
-            )
-        return rows, diagnostics, messages
-    finally:
-        mapper.close()
-
-
-def state_coordinates(band, bit):
-    from .sbas_grid import COORDINATES
-
-    return COORDINATES[band, bit]
 
 
 def coastline_parts(path):
@@ -307,15 +61,15 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
     coast = list(coastline_parts(coastline))
     grouped = defaultdict(list)
     for row in selected:
-        grouped[(row["gnssId"], row["svId"], row["sigId"], row["freqId"], row["hour_gpst"])].append(row)
+        grouped[tuple(row[k] for k in (*IDENTITY, "hour_gpst"))].append(row)
     image_dir = output / "png"
     image_dir.mkdir()
     manifest = []
     norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
     cmap = matplotlib.colormaps["turbo"]
     for key, cells in tqdm(sorted(grouped.items()), desc="Render hourly PNG", unit="image", disable=not show_progress):
-        gnss, sv, signal, frequency, hour = key
-        directory = image_dir / f"gnss-{gnss}_sv-{sv}_sig-{signal}_freq-{frequency}"
+        constellation, prn, signal, hour = key
+        directory = image_dir / f"{constellation}_prn-{prn}_{signal}"
         directory.mkdir(exist_ok=True)
         label = gpst_label(hour)
         path = directory / (label.replace(":", "-") + ".png")
@@ -331,7 +85,7 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
             ylim=extent[2:],
             xlabel="Longitude",
             ylabel="Latitude",
-            title=f"SBAS PRN {sv} hourly mean VTEC — {label}\nvalid coverage ≥ {min_coverage:.0%}",
+            title=f"SBAS PRN {prn} hourly mean VTEC — {label}\nvalid coverage ≥ {min_coverage:.0%}",
         )
         ax.set_aspect("equal", adjustable="box")
         ax.set_xticks(range(int(extent[0]), int(extent[1]) + 1, 10))
@@ -342,7 +96,7 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
             path,
             facecolor="white",
             metadata={
-                "Title": f"SBAS PRN {sv} hourly mean VTEC {label}",
+                "Title": f"SBAS PRN {prn} hourly mean VTEC {label}",
                 "Description": "Experimental time-weighted MT26 grid; Made with Natural Earth.",
             },
             pil_kwargs={"compress_level": png_compression},
@@ -352,10 +106,9 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
             dict(
                 path=str(path.relative_to(output)),
                 hour_gpst=hour,
-                gnssId=gnss,
-                svId=sv,
-                sigId=signal,
-                freqId=frequency,
+                constellation=constellation,
+                prn=prn,
+                signal=signal,
                 cells=len(cells),
             )
         )
@@ -381,7 +134,7 @@ def render(rows, coastline, output, vmin, vmax, min_coverage, workers=4, png_com
     extent = extent_for(selected)
     groups = defaultdict(list)
     for row in selected:
-        key = tuple(row[k] for k in ("gnssId", "svId", "sigId", "freqId", "hour_gpst"))
+        key = tuple(row[k] for k in (*IDENTITY, "hour_gpst"))
         groups[key].append(row)
     if workers == 1 or len(groups) == 1:
         return render_serial(selected, coastline, output, vmin, vmax, min_coverage, extent, True, png_compression)
@@ -401,73 +154,3 @@ def parse_hour(_context, _parameter, value):
     except ValueError as error:
         raise click.BadParameter("use YYYY-MM-DDTHH in GPST") from error
     return parsed
-
-
-@click.command()
-@click.option("--sbas-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--reconstruction-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
-@click.option("--coastline", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
-@click.option("--output", type=click.Path(path_type=Path), required=True, help="New output directory.")
-@click.option("--start", callback=parse_hour, help="Optional first GPST hour, YYYY-MM-DDTHH.")
-@click.option("--end", callback=parse_hour, help="Optional exclusive GPST hour, YYYY-MM-DDTHH.")
-@click.option("--vmin", type=float, default=0.0, show_default=True)
-@click.option("--vmax", type=float, default=100.0, show_default=True)
-@click.option("--min-coverage", type=click.FloatRange(0, 1), default=0.25, show_default=True)
-@click.option("--workers", type=click.IntRange(1, 32), default=min(4, os.cpu_count() or 1), show_default=True)
-@click.option("--png-compression", type=click.IntRange(0, 9), default=3, show_default=True)
-@click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")
-@staged_output
-def cli(sbas_dir, reconstruction_dir, coastline, output, start, end, vmin, vmax, min_coverage, workers, png_compression):
-    """Export time-weighted hourly SBAS VTEC maps as PNG files."""
-    try:
-        if start is not None and end is not None and start >= end:
-            raise ValueError("--end must be later than --start")
-        if vmax <= vmin:
-            raise ValueError("--vmax must exceed --vmin")
-        output.mkdir(parents=False, exist_ok=False)
-        rows, diagnostics, messages = aggregate(sbas_dir.resolve(), reconstruction_dir.resolve(), start, end)
-        with (output / "hourly.jsonl").open("x") as stream:
-            for row in rows:
-                stream.write(json.dumps(row, sort_keys=True) + "\n")
-        manifest, extent = render(rows, coastline.resolve(), output, vmin, vmax, min_coverage, workers, png_compression)
-        run = dict(
-            schema=2,
-            time_scale="GPST",
-            time_origin="1980-01-06 00:00:00 GPST",
-            status="complete",
-            arguments=sys.argv,
-            policy=dict(
-                correction_age_seconds=600,
-                mask_age_seconds=1200,
-                mean="valid-time-weighted sample-and-hold",
-                min_coverage=min_coverage,
-                vmin=vmin,
-                vmax=vmax,
-                workers=workers,
-                png_compression=png_compression,
-            ),
-            extent=extent,
-            hourly_cells=len(rows),
-            images=len(manifest),
-            message_types=dict(messages),
-            diagnostics=dict(diagnostics),
-        )
-        write_json(output / "images.json", {"time_scale": "GPST", "images": manifest})
-        write_json(output / "completed.json", run)
-        click.echo(
-            json.dumps(
-                {
-                    "status": "complete",
-                    "hourly_cells": len(rows),
-                    "images": len(manifest),
-                    "message_types": dict(messages),
-                    "diagnostics": dict(diagnostics),
-                }
-            )
-        )
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
-        raise click.ClickException(str(error)) from error
-
-
-if __name__ == "__main__":
-    cli()

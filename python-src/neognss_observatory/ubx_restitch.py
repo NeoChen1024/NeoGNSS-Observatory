@@ -6,7 +6,6 @@ import json
 import mmap
 import os
 import struct
-import subprocess
 import sys
 import uuid
 from collections import Counter
@@ -18,7 +17,9 @@ from pathlib import Path
 import click
 from tqdm import tqdm
 
+from . import _native
 from .gpst import label_ms as gpst_label
+from .protocol import ProtocolWarnings, protocol_option, require_ubx
 
 RECORD = struct.Struct("<QQqqQIIIi")
 UNKNOWN = -(1 << 63)
@@ -99,7 +100,7 @@ def source_identity(path):
     return {"path": str(path.resolve()), "size": st.st_size, "mtime_ns": st.st_mtime_ns}
 
 
-def inventory_source(path, state_dir, indexer, tool_sha):
+def inventory_source(path, state_dir, tool_sha):
     identity = source_identity(path)
     key = hashlib.sha256(json.dumps([identity, tool_sha, "UBXIDX04"], sort_keys=True).encode()).hexdigest()
     directory = state_dir / key
@@ -112,7 +113,10 @@ def inventory_source(path, state_dir, indexer, tool_sha):
         return summary
     directory.mkdir(exist_ok=True)
     temporary = directory / f"epochs.{uuid.uuid4().hex}.partial"
-    subprocess.run([str(indexer), str(path), str(temporary)], check=True)
+    with path.open("rb") as source, mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+        index = _native.archive_index(mapped)
+    with temporary.open("xb") as target:
+        target.write(index)
     if source_identity(path) != identity:
         raise ValueError(f"Source changed during inventory: {path}")
     counts = Counter()
@@ -122,6 +126,9 @@ def inventory_source(path, state_dir, indexer, tool_sha):
         counts["frames"] += e.frames
         if e.flags & NOISE:
             counts["excluded_bytes"] += e.end - e.begin
+            if e.flags & 256:
+                counts["skipped_protocol_frames"] += 1
+                counts["skipped_protocol_bytes"] += e.end - e.begin
         elif e.gpst_ms == UNKNOWN:
             counts["untimed_bytes"] += e.end - e.begin
         else:
@@ -142,7 +149,7 @@ def inventory_source(path, state_dir, indexer, tool_sha):
     summary = {
         **identity,
         "sha256": source_sha,
-        "indexer_sha256": tool_sha,
+        "indexer_schema": tool_sha,
         "index": str(index_path.resolve()),
         "index_sha256": sha256(temporary),
         "first_gpst_ms": first,
@@ -154,20 +161,21 @@ def inventory_source(path, state_dir, indexer, tool_sha):
     return summary
 
 
-def inventory(input_dir, state_dir, indexer, recursive=False):
+def inventory(input_dir, state_dir, recursive=False):
     paths = sorted(path for path in input_dir.glob("**/*.ubx" if recursive else "*.ubx") if path.is_file())
     if not paths:
         raise ValueError("No expanded .ubx inputs")
     state_dir.mkdir(parents=True, exist_ok=True)
-    tool_sha = sha256(indexer)
+    tool_sha = _native.archive_schema
     sources = []
     with (
         ThreadPoolExecutor(max_workers=3) as pool,
         tqdm(total=sum(p.stat().st_size for p in paths), unit="B", unit_scale=True, desc="Inventory") as progress,
     ):
-        tasks = [pool.submit(inventory_source, p, state_dir, indexer, tool_sha) for p in paths]
+        tasks = [pool.submit(inventory_source, p, state_dir, tool_sha) for p in paths]
         for task in as_completed(tasks):
             source = task.result()
+            ProtocolWarnings(source["path"], "ubx").update(source, final=True)
             sources.append(source)
             progress.update(source["size"])
             progress.set_postfix(files=len(sources), refresh=False)
@@ -180,11 +188,11 @@ def cli():
 
 
 def common_options(function):
+    function = protocol_option(function)
     for option in reversed(
         [
             click.option("--input-dir", required=True, type=click.Path(exists=True, file_okay=False, path_type=Path)),
             click.option("--state-dir", required=True, type=click.Path(file_okay=False, path_type=Path)),
-            click.option("--indexer", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path)),
             click.option("--recursive", is_flag=True, help="Include expanded .ubx files in subdirectories."),
         ]
     ):
@@ -194,13 +202,14 @@ def common_options(function):
 
 @cli.command("inventory")
 @common_options
-def inventory_command(input_dir, state_dir, indexer, recursive):
+def inventory_command(input_dir, state_dir, recursive, protocol="ubx"):
     """Build resumable per-file frame/time indexes and report coverage."""
     try:
-        sources = inventory(input_dir.resolve(), state_dir.resolve(), indexer.resolve(), recursive=recursive)
+        require_ubx(protocol, "UBX archive reconstruction")
+        sources = inventory(input_dir.resolve(), state_dir.resolve(), recursive=recursive)
         for source in sources:
             click.echo(json.dumps(source))
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, RuntimeError) as error:
         raise click.ClickException(str(error)) from error
 
 
@@ -215,24 +224,25 @@ def inventory_command(input_dir, state_dir, indexer, recursive):
     show_default=True,
     help="Split when consecutive available NAV epochs are more than this many seconds apart.",
 )
-def run_command(input_dir, state_dir, indexer, recursive, output_dir, plan_only, gap_timeout):
+def run_command(input_dir, state_dir, recursive, output_dir, plan_only, gap_timeout, protocol="ubx"):
     """Prove overlaps, split at GPST days/NAV gaps, and publish verified outputs."""
     from .ubx_output import publish
     from .ubx_reconstruction import build_plan, segment_plan
 
     try:
-        input_dir, state_dir, indexer, output_dir = (p.resolve() for p in (input_dir, state_dir, indexer, output_dir))
+        require_ubx(protocol, "UBX archive reconstruction")
+        input_dir, state_dir, output_dir = (p.resolve() for p in (input_dir, state_dir, output_dir))
         if output_dir == input_dir or input_dir in output_dir.parents or output_dir in input_dir.parents:
             raise ValueError("Input and output directories must not overlap")
-        sources = inventory(input_dir, state_dir, indexer, recursive=recursive)
+        sources = inventory(input_dir, state_dir, recursive=recursive)
         plan = segment_plan(build_plan(sources), gap_timeout_ms=round(gap_timeout * 1000))
         if plan_only:
             path = state_dir / f"plan-{uuid.uuid4().hex}.jsonl"
             write_plan(path, plan)
             click.echo(str(path))
         else:
-            click.echo(json.dumps(publish(plan, output_dir, indexer)))
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+            click.echo(json.dumps(publish(plan, output_dir)))
+    except (OSError, ValueError, RuntimeError) as error:
         raise click.ClickException(str(error)) from error
 
 

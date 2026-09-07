@@ -83,5 +83,5 @@ The one suspected timeout in the direct TCP test must not be treated as a
 confirmed explanation for the historical pattern.
 
 See [UBX reconstruction](ubx-restitch.md) for gap handling and
-[logger continuity diagnostics](../libcppubx2/README.md#overnight-continuity-diagnostics)
+[logger continuity diagnostics](../libcppgnss/README.md#overnight-continuity-diagnostics)
 for the maintained logger's checks.

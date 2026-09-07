@@ -1,0 +1,505 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (c) 2026, Kelei Chen
+
+#include <cppgnss/ubx.hpp>
+#include <cppgnss/ubx_reader.hpp>
+#include <cppgnss/ubx_nav.hpp>
+#include <cppgnss/ubx_dump_gen.hpp>
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <endian.h>
+#include <sys/stat.h>
+#include <assert.h>
+#include <errno.h>
+#include <getopt.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <charconv>
+#include <ctime>
+#include <format>
+#include <chrono>
+#include <filesystem>
+#include "logger_diagnostics.hpp"
+
+#define RETURN_ERR \
+	return 1
+
+using namespace UBX;
+
+static ByteReadResult file_read_byte(void *context)
+{
+	FILE *fp = static_cast<FILE *>(context);
+	int c = fgetc(fp);
+	if(c != EOF)
+		return {.result = ReadResult::ok, .byte = static_cast<uint8_t>(c)};
+	return {.result = feof(fp) ? ReadResult::end : ReadResult::error};
+}
+
+static ByteReadResult tcp_read_byte(void *context)
+{
+	int fd = *static_cast<int *>(context);
+	unsigned char c;
+	while(true)
+	{
+		ssize_t n = read(fd, &c, 1);
+		if(n == 1) return {.result = ReadResult::ok, .byte = c};
+		if(n == 0) return {.result = ReadResult::end};
+		if(errno == EINTR) continue;
+		if(errno == EAGAIN || errno == EWOULDBLOCK)
+			return {.result = ReadResult::timeout};
+		return {.result = ReadResult::error};
+	}
+}
+
+static ReadResult read_logged_frame(void *context, read_byte_fn read_byte, ubx_buf_t &buf)
+{
+	size_t discarded = 0;
+	auto result = UBX::read_ubx_frame(context, read_byte, buf, &discarded);
+	if(discarded)
+		fprintf(stderr, "read_ubx_frame(): WASTED %zd Bytes\n", discarded);
+	return result;
+}
+
+static void log_parse_error(std::string_view detail, std::source_location location)
+{
+	auto message = std::format("{}:{} {}: {}\n",
+		location.file_name(), location.line(), location.function_name(), detail);
+	fputs(message.c_str(), stderr);
+}
+
+void print_status_line(const ubx_nav_pvt &pvt)
+{
+	char buf[128];
+	fputc('\r', stderr);
+	for(int i = 0; i < 80; i++)
+		buf[i] = ' ';
+	buf[80] = '\0';
+	fputs(buf, stderr);
+	auto status = std::format("\riTOW={:06}.{:03} GPST {:>10}, Sats: {:02}",
+		pvt.data.iTOW / 1000, pvt.data.iTOW % 1000,
+		ubx_nav_pvt_fix_type(pvt).c_str(),
+		pvt.data.numSV);
+	fputs(status.c_str(), stderr);
+}
+
+static int tcp_connect(const char *host, int port)
+{
+	struct addrinfo hints, *res, *rp;
+	char port_str[16];
+
+	snprintf(port_str, sizeof(port_str), "%d", port);
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+
+	int err = getaddrinfo(host, port_str, &hints, &res);
+	if(err != 0)
+	{
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(err));
+		return -1;
+	}
+
+	int sockfd = -1;
+	for(rp = res; rp != NULL; rp = rp->ai_next)
+	{
+		sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+		if(sockfd < 0) continue;
+
+		struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
+		setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+		if(connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0)
+			break;
+		close(sockfd);
+		sockfd = -1;
+	}
+
+	freeaddrinfo(res);
+	return sockfd;
+}
+
+struct Stats
+{
+	time_t last_print = 0;
+	uint64_t period_bytes = 0;
+	uint64_t period_frames = 0;
+	uint64_t period_pvt = 0;
+	uint64_t period_fix = 0;
+};
+
+static void print_stats(Stats &st, time_t now)
+{
+	double elapsed = difftime(now, st.last_print);
+	if(elapsed < 1) return;
+	double rate = st.period_bytes / elapsed / 1024.0;
+	if(st.period_pvt > 0)
+	{
+		int pct = (int)(st.period_fix * 100 / st.period_pvt);
+		auto message = std::format(
+			"\n[neoubxlogger stats] avg rate: {:.1f} KiB/s, frames: {}, FIX {}%\n",
+			rate, st.period_frames, pct);
+		fputs(message.c_str(), stderr);
+	}
+	else
+	{
+		auto message = std::format(
+			"\n[neoubxlogger stats] avg rate: {:.1f} KiB/s, frames: {}, FIX ---%\n",
+			rate, st.period_frames);
+		fputs(message.c_str(), stderr);
+	}
+	st.last_print = now;
+	st.period_bytes = 0;
+	st.period_frames = 0;
+	st.period_pvt = 0;
+	st.period_fix = 0;
+}
+
+// Own the output stream so early failures also close it. Success paths must
+// explicitly check close(): buffered write errors may only surface at fclose().
+class OutputFile
+{
+public:
+	OutputFile() = default;
+	OutputFile(const OutputFile &) = delete;
+	OutputFile &operator=(const OutputFile &) = delete;
+	~OutputFile() { close(); }
+	FILE *get() const { return fp; }
+	bool close()
+	{
+		FILE *closing = fp;
+		fp = nullptr;
+		if(closing && fclose(closing) == EOF)
+		{
+			perror("UBX output close");
+			return false;
+		}
+		return true;
+	}
+	bool open(const char *filename)
+	{
+		if(!close()) return false;
+		fp = fopen(filename, "wb");
+		if(!fp) perror(filename);
+		return fp != nullptr;
+	}
+private:
+	FILE *fp = nullptr;
+};
+
+int main(int argc, char *argv[])
+{
+	set_parse_error_handler(log_parse_error);
+	bool debug = false;
+	bool no_write = false;
+	bool quiet = false;
+	FILE *readin = stdin;
+	OutputFile output;
+	const char *input_path = nullptr;
+	std::filesystem::path output_root = ".";
+
+	bool tcp_mode = false;
+	std::string tcp_host;
+	int tcp_port = 0;
+	int sockfd = -1;
+
+	Stats stats{.last_print = time(NULL)};
+
+	setvbuf(stderr, NULL, _IONBF, 0);
+
+	int opt;
+	LoggerDiagnostics diagnostics;
+	const option long_options[] = {
+		{"expected-period-ms", required_argument, nullptr, 1000},
+		{"epoch-interval-ms", required_argument, nullptr, 1000},
+		{"epoch-tolerance-percent", required_argument, nullptr, 1001},
+		{"expect-nav-clock", no_argument, nullptr, 1002},
+		{nullptr, 0, nullptr, 0}
+	};
+
+	while((opt = getopt_long(argc, argv, "f:t:dnq", long_options, nullptr)) != -1)
+	{
+		switch(opt)
+		{
+		case 1000:
+		case 1001: {
+			int64_t value = -1;
+			const auto end = optarg + strlen(optarg);
+			const auto parsed = std::from_chars(optarg, end, value);
+			if(parsed.ec != std::errc{} || parsed.ptr != end || value < (opt == 1000 ? 1 : 0) || value >= (opt == 1000 ? 604800000 : 100)) {
+				fputs("Invalid expected period (1..604799999 ms) or tolerance (0..99 percent)\n", stderr);
+				RETURN_ERR;
+			}
+			if(opt == 1000) diagnostics.interval_ms = value;
+			else diagnostics.tolerance_percent = value;
+			break;
+		}
+		case 1002:
+			diagnostics.expect_clock = true;
+			break;
+		case 'f':
+			input_path = optarg;
+			break;
+		case 't':
+		{
+			std::string spec(optarg);
+			size_t colon = spec.rfind(':');
+			if(colon == std::string::npos || colon == 0 || colon == spec.size() - 1)
+			{
+				fprintf(stderr, "Invalid TCP spec '%s'. Expected HOST:PORT\n", optarg);
+				RETURN_ERR;
+			}
+			tcp_host = spec.substr(0, colon);
+			const char *port_begin = spec.data() + colon + 1;
+			const char *port_end = spec.data() + spec.size();
+			auto [end, error] = std::from_chars(port_begin, port_end, tcp_port);
+			if(error != std::errc{} || end != port_end || tcp_port < 1 || tcp_port > 65535)
+			{
+				fprintf(stderr, "Invalid TCP port in '%s'. Expected 1..65535\n", optarg);
+				RETURN_ERR;
+			}
+			if(tcp_host.front() == '[')
+			{
+				if(tcp_host.size() <= 2 || tcp_host.back() != ']')
+				{
+					fprintf(stderr, "Invalid TCP spec '%s'. Expected HOST:PORT\n", optarg);
+					RETURN_ERR;
+				}
+				tcp_host = tcp_host.substr(1, tcp_host.size() - 2);
+			}
+			tcp_mode = true;
+			break;
+		}
+		case 'd':
+			debug = true;
+			break;
+		case 'n':
+			no_write = true;
+			break;
+		case 'q':
+			quiet = true;
+			break;
+		default:
+			fprintf(stderr, "Usage: %s [-f input_file] [-t HOST:PORT] [-n] [-d] [-q] "
+				"[--expected-period-ms 1000] [--epoch-tolerance-percent 20] [--expect-nav-clock] [OUTPUT_DIR]\n", argv[0]);
+			RETURN_ERR;
+		}
+	}
+
+	if(tcp_mode && input_path != nullptr)
+	{
+		fprintf(stderr, "-f and -t are mutually exclusive\n");
+		RETURN_ERR;
+	}
+	if(debug && quiet)
+	{
+		fprintf(stderr, "-d and -q are mutually exclusive\n");
+		RETURN_ERR;
+	}
+	if(argc - optind > 1)
+	{
+		fprintf(stderr, "Unexpected argument: %s (only one OUTPUT_DIR is allowed)\n", argv[optind + 1]);
+		RETURN_ERR;
+	}
+	if(optind < argc) output_root = argv[optind];
+	if(input_path)
+	{
+		readin = fopen(input_path, "rb");
+		if(!readin) { perror(input_path); RETURN_ERR; }
+	}
+	if(tcp_mode)
+	{
+		sockfd = tcp_connect(tcp_host.c_str(), tcp_port);
+		if(sockfd < 0)
+		{
+			fprintf(stderr, "Failed to connect to %s:%d\n", tcp_host.c_str(), tcp_port);
+			RETURN_ERR;
+		}
+		fprintf(stderr, "Connected to %s:%d\n", tcp_host.c_str(), tcp_port);
+	}
+
+	ubx_buf_t pending;
+	int64_t epoch_gpst_ms = -1, last_gpst_ms = -1, output_day = -1;
+	uint32_t epoch_tow = 0;
+	bool have_timegps = false;
+	uint32_t epoch_clock_count = 0, epoch_clock_tow = 0;
+	time_t stats_next = time(NULL) + 60;
+
+	while(1)
+	{
+		ubx_buf_t buf;
+
+		if(tcp_mode)
+		{
+			ReadResult ret = read_logged_frame(&sockfd, tcp_read_byte, buf);
+			if(ret == ReadResult::timeout)
+			{
+				++diagnostics.timeouts;
+				diagnostics.transport("TCP_timeout");
+				fprintf(stderr, "\nTCP %s:%d: read timeout; discarding partial frame and resynchronizing\n",
+					tcp_host.c_str(), tcp_port);
+				continue;
+			}
+			if(ret != ReadResult::ok)
+			{
+				++diagnostics.reconnects;
+				diagnostics.transport("TCP_reconnect_attempt");
+				if(ret == ReadResult::error) perror("TCP read");
+				fprintf(stderr, "\nTCP %s:%d: connection lost, reconnecting in 2s...\n",
+					tcp_host.c_str(), tcp_port);
+				close(sockfd);
+				sleep(2);
+				sockfd = tcp_connect(tcp_host.c_str(), tcp_port);
+				if(sockfd < 0)
+				{
+					fprintf(stderr, "Reconnect to %s:%d failed, retrying...\n",
+						tcp_host.c_str(), tcp_port);
+				}
+				continue;
+			}
+		}
+		else
+		{
+			ReadResult ret = read_logged_frame(readin, file_read_byte, buf);
+			if(ret == ReadResult::end) break;
+			if(ret == ReadResult::truncated)
+			{
+				fputs("Truncated UBX frame at EOF\n", stderr);
+				RETURN_ERR;
+			}
+			if(ret != ReadResult::ok)
+			{
+				perror("UBX input");
+				RETURN_ERR;
+			}
+		}
+
+		ubx_frame frame(buf);
+		if(!frame.valid)
+		{
+			++diagnostics.invalid_checksums;
+			diagnostics.transport("invalid_checksum");
+			fprintf(stderr, "Invalid frame!\n");
+			frame.dump(stderr);
+			continue;
+		}
+
+		if(debug && !ubx_nav_dump_custom(frame, stderr))
+			ubx_dump_any(frame, stderr);
+		if(frame.class_id == 1 && frame.msg_id == 0x22 && frame.payload.size() == 20) {
+			++epoch_clock_count;
+			epoch_clock_tow = read_le<uint32_t>(frame.payload, 0);
+		}
+
+		ubx_nav_pvt pvt(frame);
+		if(ubx_nav_pvt_semantically_valid(pvt))
+		{
+			stats.period_pvt++;
+			if(ubx_nav_pvt_fix_ok(pvt))
+				stats.period_fix++;
+			if(!quiet) print_status_line(pvt);
+		}
+
+		if(!no_write) {
+			if(pending.size() + buf.size() > 64 * 1024 * 1024) {
+				fputs("Missing EOE: epoch buffer exceeds 64 MiB\n", stderr);
+				RETURN_ERR;
+			}
+			pending.push_back(0xb5);
+			pending.push_back(0x62);
+			pending.insert(pending.end(), buf.begin(), buf.end());
+		}
+		if(frame.class_id == 1 && frame.msg_id == 0x20) {
+			const auto &p = frame.payload;
+			if(p.size() != 16 || (p[11] & 3) != 3 ||
+				read_le<int16_t>(p, 8) < 0 || read_le<uint32_t>(p, 0) >= 604800000) {
+				fputs("Invalid NAV-TIMEGPS\n", stderr);
+				RETURN_ERR;
+			}
+			const auto tow = read_le<uint32_t>(p, 0);
+			const int64_t value = int64_t(read_le<int16_t>(p, 8)) * 604800000 + tow;
+			if(have_timegps && value != epoch_gpst_ms) {
+				const auto detail = std::format("[logger qc] missing_EOE_or_conflicting_TIMEGPS previous={} incoming={}\n",
+					LoggerDiagnostics::label(epoch_gpst_ms), LoggerDiagnostics::label(value));
+				fputs(detail.c_str(), stderr);
+				fputs("Conflicting NAV-TIMEGPS before EOE\n", stderr);
+				RETURN_ERR;
+			}
+			epoch_gpst_ms = value;
+			epoch_tow = tow;
+			have_timegps = true;
+		}
+		ubx_nav_eoe eoe(frame);
+		if(ubx_nav_eoe_semantically_valid(eoe))
+		{
+			if(!have_timegps || epoch_tow != eoe.data.iTOW) {
+				fprintf(stderr, "[logger qc] invalid_epoch have_TIMEGPS=%d TIMEGPS_iTOW_ms=%u EOE_iTOW_ms=%u\n",
+					have_timegps, epoch_tow, eoe.data.iTOW);
+				fputs("EOE requires matching valid NAV-TIMEGPS in this epoch\n", stderr);
+				RETURN_ERR;
+			}
+			if(epoch_gpst_ms <= last_gpst_ms) {
+				const auto detail = std::format("[logger qc] non_increasing_epoch previous={} incoming={}\n",
+					LoggerDiagnostics::label(last_gpst_ms), LoggerDiagnostics::label(epoch_gpst_ms));
+				fputs(detail.c_str(), stderr);
+				fputs("Non-increasing GPST epoch\n", stderr);
+				RETURN_ERR;
+			}
+			diagnostics.epoch(epoch_gpst_ms, epoch_clock_count, epoch_clock_tow);
+			epoch_clock_count = 0;
+			const auto day = epoch_gpst_ms / 86400000;
+			if(!no_write && day != output_day) {
+				if(!output.close()) RETURN_ERR;
+				using namespace std::chrono;
+				const auto calendar = sys_days{year{1980}/1/6} + milliseconds{epoch_gpst_ms};
+				const auto dirname = output_root / std::format("{:%Y-%m}", calendar);
+				std::error_code directory_error;
+				std::filesystem::create_directories(dirname, directory_error);
+				if(directory_error) {
+					fprintf(stderr, "Cannot create output directory %s: %s\n", dirname.c_str(), directory_error.message().c_str());
+					RETURN_ERR;
+				}
+				const auto filename = dirname / std::format("GPST-{:%Y-%m-%d--%H-%M-%S}-{:03}.ubx", floor<seconds>(calendar), epoch_gpst_ms % 1000);
+				if(!output.open(filename.c_str())) RETURN_ERR;
+				output_day = day;
+				if(!quiet) fprintf(stderr, "\nOpened file %s\n", filename.c_str());
+			}
+			if(!no_write && fwrite(pending.data(), 1, pending.size(), output.get()) != pending.size()) {
+				perror("UBX output"); RETURN_ERR;
+			}
+			pending.clear();
+			have_timegps = false;
+			last_gpst_ms = epoch_gpst_ms;
+			if(!quiet) fputs(" EOE GPST", stderr);
+		}
+
+		stats.period_bytes += 8 + frame.length;
+		stats.period_frames++;
+
+		time_t now = time(NULL);
+		if(now >= stats_next)
+		{
+			print_stats(stats, now);
+			diagnostics.summary();
+			stats_next = now + 60;
+		}
+	}
+
+	if(!pending.empty() || have_timegps) {
+		fputs("Incomplete epoch at EOF: missing EOE; pending bytes not published\n", stderr);
+		RETURN_ERR;
+	}
+	if(!output.close()) RETURN_ERR;
+	if(readin != stdin) fclose(readin);
+	if(!quiet)
+		fputs("\nEOF!?\n", stderr);
+	return 0;
+}

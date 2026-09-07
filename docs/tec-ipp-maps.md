@@ -102,7 +102,7 @@ One continuous group's decoding and arc tracking remain sequential. Large
 RINEX groups are loaded into native memory, so reduce workers if needed.
 
 PNG compression defaults to level 3 and can be set with `--png-compression`
-from 0 through 9. Native output size is 1800x1200. SBAS-only `sbas-grid-render`
+from 0 through 9. Native output size is 1800x1200. SBAS-only `sbas-grid-plot`
 also supports these two options; its stateful aggregation remains sequential.
 
 Outputs include `images.json`, per-group geometry and track files, logs, and

@@ -2,10 +2,17 @@
 """Small shared publication helper for disposable research runs."""
 
 import functools
+import json
 import uuid
 from pathlib import Path
 
 import click
+
+
+def write_json(path, value):
+    with path.open("x") as stream:
+        json.dump(value, stream, indent=2)
+        stream.write("\n")
 
 
 def staged_output(function):

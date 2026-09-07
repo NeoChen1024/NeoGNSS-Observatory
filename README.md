@@ -41,21 +41,27 @@ experimental script contracts. Raw archives remain read-only.
 The Python package requires Python 3.11 or newer. Runtime dependencies are
 declared in `requirements.txt`. The `cddis-download` command inventories,
 downloads and verifies external GNSS products. `ubx-restitch` reconstructs Era A/B
-GPST segments. `sbas-grid-parquet` parses reconstructed UBX into daily GPST
-Parquet files of SBAS grid validity intervals; `sbas-grid-plot` reads those
-daily files to produce experimental hourly VTEC maps without reopening UBX.
-The earlier combined experiment remains available as `sbas-grid-render`,
-and `sbas-map-video` encodes those maps as a manifest-ordered HEVC/MP4 preview.
+GPST segments. `sbas-frame-parquet -p ubx|sbf` extracts reconstructed UBX or
+expanded SBF into source-independent daily SBAS frame Parquet.
+`sbas-grid-parquet` reads only these frames to calculate daily GPST
+grid validity intervals; `sbas-grid-plot` reads those
+daily files to produce experimental hourly VTEC maps without reopening raw recordings.
+The earlier combined raw-to-map command is removed. `sbas-map-video` encodes
+maps as a manifest-ordered HEVC/MP4 preview.
 `sbf-rinex` wraps an installed Septentrio RxTools converter for native-rate SBF
 exports; `rinex-observation-audit` inventories the resulting observations.
 See the [RxTools conversion experiment](docs/era-c-rxtools-experiment.md) for
 preservation options, validation results and current limits.
 
 ```sh
+git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json
 python -m pip install .
 ```
 
-Python dependencies use minimum versions to allow upgrades.
+Python dependencies use minimum versions to allow upgrades. Building the package
+also requires CMake 3.24+, a C++20 compiler/standard library with `std::format`,
+and OpenSSL Crypto development files. Installation builds the native extension;
+processing commands no longer accept `--worker` or `--indexer` executable paths.
 
 See [the downloader guide](docs/cddis-downloader.md) and
 [example configuration](config/products.example.toml) for Earthdata setup,
@@ -89,13 +95,23 @@ Use `--overwrite` to replace a run; the previous directory is retained as a
 backup. Parquet carries scientific metadata; environment snapshots and artifact
 hash chains are not generated.
 
-## C++ UBX library
+## Native libraries
 
-[`libcppubx2/`](libcppubx2/README.md) contains the maintained C++20 UBX
-library and the original logger as `examples/ubxlogger.cpp`. CMake exposes
-`cppubx2::cppubx2`; parsers are generated at build time using the pinned
-`contrib/pyubx2` schema. The compiled library has no Python runtime dependency.
-See the library guide for build, testing, API, and logger compatibility details.
+[`libcppgnss/`](libcppgnss/README.md) contains the maintained C++20 UBX
+and SBF protocol library and the original logger as `examples/ubxlogger.cpp`.
+CMake exposes `cppgnss::cppgnss`; codegen covers UBX and all available pinned
+`contrib/pysbf2` block definitions. The generic library has no Python runtime
+dependency. SBAS L1 decoding accepts receiver-independent air-frame bits.
+
+[`libneognss-obs/`](libneognss-obs/README.md) contains Observatory-specific
+archive segmentation, clock reconstruction and SBAS grid state. Its pybind11
+extension passes batches directly to Python, releasing the GIL during native
+processing. Python owns orchestration, file/Parquet I/O and plotting. The old
+indexer, clock-scan, subframe-export and inspection executables are removed;
+`neoubxlogger` remains a standalone application.
+
+See the [architecture guide](docs/native-architecture.md) for API boundaries
+and SBF schema limitations.
 
 The [UBX reconstruction tool](docs/ubx-restitch.md) inventories expanded archives,
 proves cross-file overlaps, and writes GPST segments without modifying inputs.
@@ -125,7 +141,7 @@ Both logger and reconstruction outputs use
   solutions; `gnssFixOK` is still required.
 
 Diagnostic warnings do not stop recording. Existing fatal TIMEGPS/EOE checks
-remain enforced. See the [logger guide](libcppubx2/README.md#overnight-continuity-diagnostics)
+remain enforced. See the [logger guide](libcppgnss/README.md#overnight-continuity-diagnostics)
 for an overnight TCP test example and the limits of attributing gaps to a
 receiver, transport bridge, or recording software.
 

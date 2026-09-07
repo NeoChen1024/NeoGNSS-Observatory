@@ -367,9 +367,9 @@ def cli(
                 row = json.loads(line)
                 if (
                     row["hour_gpst"] in hourly
-                    and row["svId"] == sbas_prn
+                    and row["prn"] == sbas_prn
                     and row["coverage"] >= 0.25
-                    and (row["gnssId"], row["sigId"], row["freqId"]) == (1, 0, 0)
+                    and (row["constellation"], row["signal"]) == ("SBAS", "L1CA")
                 ):
                     background[row["hour_gpst"]].append(row)
         lon, lat = station_lonlat(groups[0]["station_ecef"])

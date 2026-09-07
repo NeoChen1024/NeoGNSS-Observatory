@@ -9,22 +9,21 @@ continuity comparison, see [Era A recording provenance](era-a-recording-provenan
 The historical acquisition did not use the old C++ logger; the source of its
 frequent gaps remains unconfirmed.
 
-Build the CMake applications first. The archive-index worker additionally
-requires OpenSSL Crypto development files for source SHA-256 calculation.
-Install the Python package to expose the `ubx-restitch` command.
+Install the Python package with its native extension. OpenSSL Crypto development
+files are required when building the native source-integrity calculation.
 
 ```sh
-ubx-restitch inventory --input-dir /path/to/ubx24h --state-dir /path/to/state \
-  --indexer /path/to/cppubx2_archive_index
+ubx-restitch inventory --input-dir /path/to/ubx24h --state-dir /path/to/state
 ubx-restitch run --input-dir /path/to/ubx24h --state-dir /path/to/state \
-  --indexer /path/to/cppubx2_archive_index --output-dir /path/to/era-a --plan-only
+  --output-dir /path/to/era-a --plan-only
 ubx-restitch run --input-dir /path/to/ubx24h --state-dir /path/to/state \
-  --indexer /path/to/cppubx2_archive_index --output-dir /path/to/era-a
+  --output-dir /path/to/era-a
 ```
 
 Inventory caches are keyed by resolved source path, size, modification time,
-and worker executable SHA-256. Each index records the full source SHA-256 and
-is itself checksummed. Three native workers scan files concurrently; progress
+and native index-policy identifier. Each index records the full source SHA-256 and
+is itself checksummed. Three Python threads call the GIL-released native scanner
+concurrently; progress
 uses tqdm on stderr. The input directory's `*.ubx` files are selected directly,
 not recursively by default. Pass `--recursive` to either command to include
 expanded `.ubx` files in subdirectories, such as Era B's monthly directories.
@@ -105,8 +104,11 @@ New indexes use `UBXIDX04` with integer `gpst_ms`; plans use schema 3.
 Artifact bounds include exact `start_gpst_ms` / `end_gpst_ms`, `nav_epochs`,
 and `max_observed_interval_ms`. The existing `start_gpst` / `end_gpst` fields
 remain seconds, now possibly fractional, for downstream calendar calculations.
-Rebuild the native indexer before inventory. The cache identity includes the
-index format and worker hash, so old second-based indexes are not reused.
+Rebuild/reinstall the native extension after changing indexing policy. The cache
+identity includes the index format and native policy identifier, so old
+second-based indexes are not reused. Native code makes GPST segmentation and
+quarantine decisions; Python retains overlap byte I/O, publication and coverage
+accounting checks.
 Old outputs are not renamed or overwritten: use a new output directory for
 the new plan. Downstream readers can still inspect existing GPST products by
 their explicitly identified format; no UTC compatibility mode is added.

@@ -12,9 +12,10 @@ import click
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from .research_output import staged_output
+from .research_output import staged_output, write_json
 from .sbas_grid_parquet import SCHEMA
-from .sbas_grid_render import extent_for, parse_hour, render_job, write_json
+from .sbas_grid_render import extent_for, parse_hour, render_job
+from .sbas_streams import IDENTITY
 
 
 def hourly_rows(path, day, start=None, end=None):
@@ -33,7 +34,7 @@ def hourly_rows(path, day, start=None, end=None):
             begin, finish = row["start_gpst_ms"], row["end_gpst_ms"]
             if not day <= begin < finish <= day + 86400000:
                 raise ValueError("SBAS interval outside its GPST day")
-            key = tuple(row[k] for k in ("gnssId", "svId", "sigId", "freqId", "band", "mask_bit"))
+            key = tuple(row[k] for k in (*IDENTITY, "band", "mask_bit"))
             if begin < last_end.get(key, begin):
                 raise ValueError("Overlapping or reversed SBAS grid intervals")
             last_end[key] = finish
@@ -54,7 +55,7 @@ def hourly_rows(path, day, start=None, end=None):
             raise ValueError("Invalid SBAS hourly coverage")
         result.append(
             dict(
-                zip(("gnssId", "svId", "sigId", "freqId", "band", "mask_bit"), key),
+                zip((*IDENTITY, "band", "mask_bit"), key),
                 hour_gpst=hour // 1000,
                 latitude=row["latitude"],
                 longitude=row["longitude"],
@@ -123,7 +124,7 @@ def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, work
                     for line in stream:
                         row = json.loads(line)
                         if row["coverage"] >= min_coverage:
-                            grouped[tuple(row[k] for k in ("gnssId", "svId", "sigId", "freqId", "hour_gpst"))].append(row)
+                            grouped[tuple(row[k] for k in (*IDENTITY, "hour_gpst"))].append(row)
                 jobs = [
                     (cells, coastline, output, vmin, vmax, min_coverage, extent, png_compression)
                     for _, cells in sorted(grouped.items())

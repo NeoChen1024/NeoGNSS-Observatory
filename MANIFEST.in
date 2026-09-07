@@ -2,4 +2,12 @@ include config/products.example.toml
 include docs/cddis-downloader.md
 include docs/ubx-restitch.md
 include docs/offline-processing-plan.md
+include docs/native-architecture.md
 include AGENTS.md
+include CMakeLists.txt requirements.txt
+recursive-include libcppgnss *.txt *.hpp *.cpp *.py *.md LICENSE
+recursive-include libneognss-obs *.txt *.hpp *.cpp *.md
+recursive-include contrib/pyubx2/src *.py
+recursive-include contrib/pysbf2/src *.py
+recursive-include contrib/json/include *.hpp
+include contrib/pyubx2/LICENSE contrib/pysbf2/LICENSE contrib/json/LICENSE.MIT

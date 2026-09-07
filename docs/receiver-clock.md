@@ -8,23 +8,21 @@ sizes are checked against reconstruction metadata.
 
 ## Build and run
 
-Install the project and its dependencies, then build the native scanner:
+Install the project and its native extension, then run:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target cppubx2_clock_scan -j
-receiver-clock --input-dir /data/gnss/era-a \
-  --worker build/libcppubx2/cppubx2_clock_scan \
-  --output work/era-a-clock
+receiver-clock --input-dir /data/gnss/era-a --output work/era-a-clock
 ```
 
 Research runs publish their output directory only after success. Use `--overwrite`
 to replace an existing run and retain it as a backup. Failed temporary directories
 are reported for inspection; automatic resume is not implemented.
 
-The C++ scanner validates framing and UBX checksums. Only NAV-CLOCK, NAV-TIMEGPS, NAV-EOE,
-MON-SYS and the RAWX header cross the process boundary. Python performs
-bounded-memory state tracking and batched Zstandard-compressed Parquet writes.
+The C++ library validates framing and UBX checksums, associates NAV-TIMEGPS/RAWX
+with NAV-CLOCK and MON-SYS, and maintains clock/temperature/restart state. Python
+feeds read-only byte batches and receives batches of final samples, events and
+telemetry without subprocesses or text serialization. It writes Zstandard-compressed
+Parquet and JSON Lines. Native processing releases the GIL.
 One receiver stream is intentionally processed sequentially: file boundaries
 are not independent tasks and must not reset its state. Independent receiver
 runs can execute concurrently in separate output directories.
