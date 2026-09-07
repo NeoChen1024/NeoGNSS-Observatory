@@ -4,14 +4,14 @@
 import hashlib
 import json
 import os
-import shutil
 import subprocess
-import sys
 from collections import Counter
 from pathlib import Path
 
 import click
 from tqdm import tqdm
+
+from .research_output import staged_output
 
 
 def digest(path):
@@ -51,10 +51,25 @@ def inventory(root):
             stat = (root / name).stat()
             if stat.st_size != meta["size"]:
                 raise ValueError(f"Source size changed: {name}")
-            if meta["end_gpst"] - meta["start_gpst"] + 1 != meta["nav_seconds"]:
+            if "start_gpst_ms" in meta:
+                start, end = meta["start_gpst_ms"], meta["end_gpst_ms"]
+                count, maximum = meta["nav_epochs"], meta["max_observed_interval_ms"]
+                if (
+                    start / 1000 != meta["start_gpst"]
+                    or end / 1000 != meta["end_gpst"]
+                    or count < 1
+                    or end < start
+                    or not 0 <= maximum <= meta["gap_timeout_ms"]
+                    or (count == 1 and (start != end or maximum != 0))
+                    or (count > 1 and not count - 1 <= end - start <= (count - 1) * maximum)
+                ):
+                    raise ValueError(f"Invalid millisecond segment coverage: {name}")
+            elif meta["end_gpst"] - meta["start_gpst"] + 1 != meta["nav_seconds"]:
                 raise ValueError(f"Non-contiguous segment: {name}")
             segments.append({k: meta[k] for k in ("name", "size", "sha256", "start_gpst", "end_gpst")})
             segments[-1]["mtime_ns"] = stat.st_mtime_ns
+            if "start_gpst_ms" in meta:
+                segments[-1].update({k: meta[k] for k in ("start_gpst_ms", "end_gpst_ms", "gap_timeout_ms")})
     if len(segments) != completed["gpst_segments"] or {p.name for p in root.glob("*.ubx")} != {s["name"] for s in segments}:
         raise ValueError("Segment inventory does not match reconstruction")
     return segments, completed
@@ -65,7 +80,8 @@ def continuous_groups(segments):
     for segment in sorted(segments, key=lambda s: s["start_gpst"]):
         if groups and segment["start_gpst"] <= groups[-1][-1]["end_gpst"]:
             raise ValueError("Overlapping or reversed segment timestamps")
-        if not groups or segment["start_gpst"] != groups[-1][-1]["end_gpst"] + 1:
+        timeout = min(segment.get("gap_timeout_ms", 1000), groups[-1][-1].get("gap_timeout_ms", 1000)) if groups else 1000
+        if not groups or round((segment["start_gpst"] - groups[-1][-1]["end_gpst"]) * 1000) > timeout:
             groups.append([])
         groups[-1].append(segment)
     return groups
@@ -83,19 +99,17 @@ def extract_group(root, group, output, worker, progress):
         try:
             for source in group:
                 path = root / source["name"]
-                hashed = hashlib.sha256()
                 size = 0
                 with path.open("rb") as stream:
                     before = os.fstat(stream.fileno())
                     if (before.st_size, before.st_mtime_ns) != (source["size"], source["mtime_ns"]):
                         raise ValueError(f"Source changed: {path}")
                     while block := stream.read(1024 * 1024):
-                        hashed.update(block)
                         process.stdin.write(block)
                         size += len(block)
                         progress.update(len(block))
                     after = os.fstat(stream.fileno())
-                if size != source["size"] or hashed.hexdigest() != source["sha256"] or before.st_mtime_ns != after.st_mtime_ns:
+                if size != source["size"] or before.st_mtime_ns != after.st_mtime_ns:
                     raise ValueError(f"Source verification failed: {path}")
                 sources.append(dict(source, stream_begin=stream_offset, stream_end=stream_offset + size))
                 stream_offset += size
@@ -123,8 +137,6 @@ def extract_group(root, group, output, worker, progress):
             "end_gpst": group[-1]["end_gpst"],
         },
     )
-    checksums = {p.name: digest(p) for p in sorted(output.iterdir()) if p.is_file()}
-    write_json(output / "verified.json", {"status": "complete", "sha256": checksums})
     return summary
 
 
@@ -147,6 +159,8 @@ class tempfile_logs:
 @click.option("--input-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New output directory; never overwrites a run.")
 @click.option("--worker", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
+@click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")
+@staged_output
 def cli(input_dir, output, worker):
     """Extract all SBAS from reconstructed GPST segments, excluding unassigned/."""
     try:
@@ -154,49 +168,7 @@ def cli(input_dir, output, worker):
         segments, completed = inventory(root)
         groups = continuous_groups(segments)
         output.mkdir(parents=False, exist_ok=False)
-        provenance = output / "provenance"
-        provenance.mkdir()
-        shutil.copy2(worker, provenance / "cppubx2_subframes")
-        repo = Path(__file__).resolve().parents[2]
-        files = [
-            Path(__file__).resolve(),
-            *sorted((repo / "libcppubx2").rglob("*.cpp")),
-            *sorted((repo / "libcppubx2").rglob("*.hpp")),
-            repo / "libcppubx2/CMakeLists.txt",
-            repo / "libcppubx2/scripts/generate_ubx_parsers.py",
-            repo / "build/CMakeCache.txt",
-        ]
-        for path in files:
-            if path.is_file():
-                dest = provenance / path.relative_to(repo)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, dest)
-        revision = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
-        submodules = subprocess.check_output(["git", "-C", str(repo), "submodule", "status"], text=True)
-        write_json(
-            output / "run.json",
-            {
-                "schema": 2,
-                "time_scale": "GPST",
-                "time_origin": "1980-01-06 00:00:00 GPST",
-                "source_root": str(root),
-                "reconstruction": completed,
-                "plan_file_sha256": digest(root / "plan.jsonl"),
-                "worker_sha256": digest(worker),
-                "git_revision": revision,
-                "submodules": submodules,
-                "python": sys.version,
-                "segments": len(segments),
-                "continuous_groups": len(groups),
-                "continuous_file_boundaries": len(segments) - len(groups),
-                "excluded": "unassigned/",
-                "arguments": sys.argv,
-            },
-        )
-        write_json(
-            provenance / "sha256.json",
-            {str(p.relative_to(provenance)): digest(p) for p in sorted(provenance.rglob("*")) if p.is_file()},
-        )
+        write_json(output / "run.json", {"time_scale": "GPST", "source_root": str(root)})
         totals, types, statuses, satellites = Counter(), Counter(), Counter(), Counter()
         click.echo(
             f"{len(segments)} segments; {len(groups)} continuous groups; {len(segments)-len(groups)} joined boundaries", err=True
@@ -207,7 +179,7 @@ def cli(input_dir, output, worker):
         ):
             for number, group in enumerate(groups):
                 name = f"group-{number:05d}"
-                summary = extract_group(root, group, output / name, provenance / "cppubx2_subframes", progress)
+                summary = extract_group(root, group, output / name, worker, progress)
                 for key in ("source_bytes", "ubx_frames", "malformed", "discarded_noise_bytes"):
                     totals[key] += summary[key]
                 statuses.update(summary["sbas_status"])

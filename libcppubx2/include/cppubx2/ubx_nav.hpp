@@ -14,6 +14,8 @@ namespace UBX
 // Generated parser validity only covers frame identity, payload length and
 // structural decoding. These helpers apply application-level NAV semantics.
 bool ubx_nav_pvt_semantically_valid(const ubx_nav_pvt &pvt);
+// A usable GNSS solution includes TIME-only, not just a position fix.
+bool ubx_nav_pvt_fix_ok(const ubx_nav_pvt &pvt);
 bool ubx_nav_eoe_semantically_valid(const ubx_nav_eoe &eoe);
 
 std::string ubx_nav_pvt_fix_type(const ubx_nav_pvt &pvt);

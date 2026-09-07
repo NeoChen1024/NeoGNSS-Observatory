@@ -3,7 +3,6 @@
 
 import bisect
 import hashlib
-import importlib.metadata
 import json
 import mmap
 import multiprocessing
@@ -13,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from io import BytesIO
 from pathlib import Path
@@ -22,6 +21,7 @@ import click
 
 from .gpst import label as gpst_label
 from .gpst import parse_hour as parse_gpst_hour
+from .research_output import staged_output
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / f"neognss-matplotlib-{os.getuid()}"))
 import matplotlib
@@ -58,13 +58,21 @@ class EpochIndex:
         if sha256(path) != expected_sha256:
             raise ValueError(f"Reconstruction epoch index checksum mismatch: {path}")
         self.stream = path.open("rb")
-        self.data = mmap.mmap(self.stream.fileno(), 0, access=mmap.ACCESS_READ)
-        if self.data[:8] != b"UBXIDX03" or (len(self.data) - INDEX_HEADER_SIZE) % RECORD.size:
+        try:
+            self.data = mmap.mmap(self.stream.fileno(), 0, access=mmap.ACCESS_READ)
+        except BaseException:
+            self.stream.close()
+            raise
+        if self.data[:8] not in (b"UBXIDX03", b"UBXIDX04") or (len(self.data) - INDEX_HEADER_SIZE) % RECORD.size:
+            self.close()
             raise ValueError(f"Invalid reconstruction epoch index: {path}")
         self.count = (len(self.data) - INDEX_HEADER_SIZE) // RECORD.size
 
     def record(self, number):
-        return RECORD.unpack_from(self.data, INDEX_HEADER_SIZE + number * RECORD.size)
+        row = list(RECORD.unpack_from(self.data, INDEX_HEADER_SIZE + number * RECORD.size))
+        if self.data[:8] == b"UBXIDX04" and row[2] != UNKNOWN:
+            row[2] /= 1000  # Rendering uses GPST seconds, not index milliseconds.
+        return row
 
     def locate(self, offset, hint=None):
         if hint is not None:
@@ -96,11 +104,15 @@ class EpochIndex:
 
 
 class EraATimeMapper:
-    def __init__(self, reconstruction):
+    def __init__(self, reconstruction, max_open_indexes=16):
+        if max_open_indexes < 1:
+            raise ValueError("Index cache capacity must be positive")
+        self.max_open_indexes = max_open_indexes
         self.reconstruction = reconstruction
         self.source_indexes = {}
-        self.indexes = {}
+        self.indexes = OrderedDict()
         self.artifacts = {}
+        self.time_overrides = {}
         with (reconstruction / "plan.jsonl").open() as stream:
             for line in stream:
                 record = json.loads(line)
@@ -109,11 +121,23 @@ class EraATimeMapper:
                     self.source_indexes[record["path"]] = (path, record["index_sha256"])
                 elif record.get("record_type") == "artifacts" and record.get("kind") == "gpst_segment":
                     self.artifacts[record["name"]] = record
+                elif (
+                    record.get("record_type") == "joins"
+                    and record.get("kind") == "split_epoch_continuation"
+                    and "anchor_gpst_ms" in record
+                ):
+                    self.time_overrides[record["previous"], record["previous_epoch_begin"]] = record["anchor_gpst_ms"] / 1000
 
     def index(self, source):
         if source not in self.indexes:
+            # Each mapping can retain both a file and an mmap descriptor.
+            # Evict before opening, independently of archive size/group count.
+            if len(self.indexes) >= self.max_open_indexes:
+                _, oldest = self.indexes.popitem(last=False)
+                oldest.close()
             path, digest = self.source_indexes[source]
             self.indexes[source] = EpochIndex(path, digest)
+        self.indexes.move_to_end(source)
         return self.indexes[source]
 
     def artifact_cursor(self, name):
@@ -129,6 +153,7 @@ class EraATimeMapper:
     def close(self):
         for index in self.indexes.values():
             index.close()
+        self.indexes.clear()
 
 
 class ArtifactCursor:
@@ -145,6 +170,7 @@ class ArtifactCursor:
         original = span["begin"] + local_offset - local_begin
         index = self.mapper.index(span["source"])
         hint, gpst = index.locate(original, self.hints.get(span["source"]))
+        gpst = self.mapper.time_overrides.get((span["source"], index.record(hint)[0]), gpst)
         self.hints[span["source"]] = hint
         if not self.artifact["start_gpst"] <= gpst <= self.artifact["end_gpst"]:
             raise ValueError(f"Mapped GPST outside artifact: {self.artifact['name']}")
@@ -325,7 +351,6 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
         manifest.append(
             dict(
                 path=str(path.relative_to(output)),
-                sha256=sha256(path),
                 hour_gpst=hour,
                 gnssId=gnss,
                 svId=sv,
@@ -390,6 +415,8 @@ def parse_hour(_context, _parameter, value):
 @click.option("--min-coverage", type=click.FloatRange(0, 1), default=0.25, show_default=True)
 @click.option("--workers", type=click.IntRange(1, 32), default=min(4, os.cpu_count() or 1), show_default=True)
 @click.option("--png-compression", type=click.IntRange(0, 9), default=3, show_default=True)
+@click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")
+@staged_output
 def cli(sbas_dir, reconstruction_dir, coastline, output, start, end, vmin, vmax, min_coverage, workers, png_compression):
     """Export time-weighted hourly SBAS VTEC maps as PNG files."""
     try:
@@ -403,30 +430,12 @@ def cli(sbas_dir, reconstruction_dir, coastline, output, start, end, vmin, vmax,
             for row in rows:
                 stream.write(json.dumps(row, sort_keys=True) + "\n")
         manifest, extent = render(rows, coastline.resolve(), output, vmin, vmax, min_coverage, workers, png_compression)
-        source_files = [
-            Path(__file__).resolve(),
-            Path(__file__).with_name("sbas_grid.py").resolve(),
-            Path(__file__).with_name("gpst.py").resolve(),
-        ]
-        provenance = output / "provenance"
-        provenance.mkdir()
-        for source in source_files:
-            shutil.copy2(source, provenance / source.name)
         run = dict(
             schema=2,
             time_scale="GPST",
             time_origin="1980-01-06 00:00:00 GPST",
             status="complete",
             arguments=sys.argv,
-            git_revision=subprocess.check_output(
-                ["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "HEAD"], text=True
-            ).strip(),
-            source_sha256={path.name: sha256(path) for path in source_files},
-            sbas_completed_sha256=sha256(sbas_dir / "completed.json"),
-            reconstruction_completed_sha256=sha256(reconstruction_dir / "completed.json"),
-            coastline=str(coastline.resolve()),
-            coastline_sha256=sha256(coastline),
-            dependencies={name: importlib.metadata.version(name) for name in ("matplotlib", "numpy", "pyshp")},
             policy=dict(
                 correction_age_seconds=600,
                 mask_age_seconds=1200,

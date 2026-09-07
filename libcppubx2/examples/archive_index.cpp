@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
         if(access(argv[2], F_OK) == 0) throw std::runtime_error("Index already exists");
         std::ofstream out(argv[2], std::ios::binary);
         out.exceptions(std::ios::failbit | std::ios::badbit);
-        out.write("UBXIDX03", 8);
+        out.write("UBXIDX04", 8);
         using Digest = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
         Digest ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
         if(!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1 ||
@@ -44,7 +44,7 @@ int main(int argc, char **argv) {
         out.write(reinterpret_cast<const char *>(hash), 32);
         write_le<uint64_t>(out, bytes.size());
         UBX::scan_archive(bytes, [&](const UBX::ArchiveEpoch &e) {
-            write_le(out, e.begin); write_le(out, e.end); write_le(out, e.gpst);
+            write_le(out, e.begin); write_le(out, e.end); write_le(out, e.gpst_ms);
             write_le(out, e.tow_ms); write_le(out, e.fingerprint);
             write_le(out, e.flags); write_le(out, e.frames); write_le(out, e.nav_frames);
             write_le(out, e.gps_week);

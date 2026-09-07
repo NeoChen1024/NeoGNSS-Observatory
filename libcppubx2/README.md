@@ -35,7 +35,7 @@ The library can also be configured directly with `cmake -S libcppubx2 -B build/u
 Use `-DCPPUBX2_BUILD_EXAMPLES=OFF` for a library-only build and
 `-DBUILD_TESTING=OFF` to omit tests. Static builds are the default;
 `-DBUILD_SHARED_LIBS=ON` builds a shared library. The logger and current
-integration tests target POSIX systems. Cross-compilation of tests is not
+reader checks target POSIX systems. Cross-compilation of tests is not
 supported. No install/export package or stable ABI is promised in this version.
 
 ## Using the library
@@ -88,13 +88,30 @@ API examples, limitations, and the `cppubx2_subframes` JSON Lines exporter.
 | `-n` | Disable recording |
 | `-d` | Dump every frame to stderr |
 | `-q` | Suppress live status; retain periodic statistics |
+| `--expected-period-ms N` | Expected navigation cadence; default 1000 ms, use 100 for 10 Hz or 33 for approximately 30 Hz |
+| `--epoch-interval-ms N` | Alias for `--expected-period-ms` |
+| `--epoch-tolerance-percent N` | Symmetric interval tolerance; default ±20%, configurable from 0 to 99% |
+| `--expect-nav-clock` | Warn when an EOE interval contains no valid-length NAV-CLOCK |
+| `OUTPUT_DIR` | Optional first positional argument; recording root, default `./` |
+
+The periodic `FIX` percentage counts usable 2D, 3D, GNSS+dead-reckoning and
+TIME-only solutions (`fixType` 2–5), always requiring `gnssFixOK`. A receiver
+operating in timing mode can therefore report `FIX 100%` without a 2D/3D
+position solution. No-fix, dead-reckoning-only, reserved types and solutions
+without `gnssFixOK` are not counted as successes. The denominator remains
+the semantically valid NAV-PVT messages received during the statistics period.
+
+The output root and monthly subdirectories are created when the first complete
+epoch is recorded. Relative and absolute paths are supported. `-n` does not
+create the output directory. More than one positional argument is an error.
 
 `-f`/`-t` and `-d`/`-q` remain mutually exclusive. Frames are buffered until
 NAV-EOE. Every EOE requires a fresh valid NAV-TIMEGPS with the same iTOW;
 missing, invalid, conflicting or non-increasing time causes a nonzero exit.
 The entire epoch, including EOE, is written to its GPST day. NAV-PVT calendar
 fields never select the output date. Outputs are named
-`YYYY-MM/GPST-%Y-%m-%d--%H-%M-%S.ubx`, using the first recorded epoch.
+`YYYY-MM/GPST-%Y-%m-%d--%H-%M-%S-mmm.ubx`, using the first recorded epoch
+with exactly three millisecond digits, including `000`.
 Nominal iTOW defines the epoch boundary; fTOW remains unchanged in the raw
 message and is not used to move a nominal epoch across a day boundary.
 EOF with an incomplete recording epoch fails without publishing that epoch.
@@ -103,6 +120,47 @@ Truncated file input and output flush/close failures return nonzero. TCP uses
 the existing byte-at-a-time read and five-second receive timeout, discarding
 partial frames on timeout before resynchronizing. This application is not a
 lossless offline archive normalizer.
+
+### Overnight continuity diagnostics
+
+```sh
+neoubxlogger -q -t RECEIVER_HOST:PORT --expect-nav-clock /data/receiver-test \
+  2> receiver-test.log
+```
+
+Enable NAV-TIMEGPS and NAV-EOE on the receiver's selected output stream;
+enable NAV-CLOCK when using `--expect-nav-clock`. The logger does not configure
+the receiver. Add `-n` for diagnostics without recording. Keep the diagnostic
+log outside a not-yet-created output root, since the shell opens it first.
+
+`[logger qc] epoch_gap` reports previous/current full GPST labels, epoch interval,
+expected interval, and the monotonic host EOE arrival interval. Missing epoch
+counts are estimates under the configured fixed cadence, reported only when
+the interval matches a multiple of that cadence within tolerance. Off-cadence
+intervals are reported separately; cadence changes are not automatically learned.
+The accepted interval range is inclusive: 800–1200 ms at the default 1000 ms
+period, or 26.4–39.6 ms at a 33 ms period. Comparisons retain these fractional
+bounds even though iTOW itself has integer-millisecond resolution. For estimated
+missing counts, the residual from the nearest multiple must be within ±20%
+of one expected period (or the configured percentage), not of the whole outage.
+This check is independent of re-stitch's 50-second segmentation timeout: at
+1 Hz a missing second must remain visible in the diagnostic log.
+
+NAV-CLOCK absence (opt-in), duplicate messages and a last CLOCK iTOW differing
+from EOE are warnings. TCP timeouts/reconnection attempts and checksum failures
+carry a monotonic elapsed time and last accepted GPST epoch. Existing discarded
+byte and parsing diagnostics remain enabled. Totals are printed with periodic
+statistics and on normal C++ scope exit, including ordinary fatal errors.
+Default SIGINT/SIGTERM handling is unchanged: retain periodic totals and
+individual warnings; a final summary is not guaranteed on signal termination.
+
+Warnings do not drop frames, insert epochs, change rotation, or stop recording.
+Missing/mismatched TIMEGPS, missing EOE and non-increasing GPST remain fatal
+according to the recording policy; diagnostics do not silently recover them.
+The host arrival interval measures application reception, not UART transmission
+or network latency in isolation. A gap cannot by itself identify the receiver,
+bridge, network, or gpsd as the cause. Compare equivalent receiver configurations
+and retain raw UBX alongside the log for investigation.
 
 ## Source provenance and licensing
 

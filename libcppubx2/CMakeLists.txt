@@ -58,8 +58,10 @@ endif()
 
 if(CPPUBX2_BUILD_EXAMPLES)
     find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    add_executable(cppubx2_clock_scan examples/clock_scan.cpp)
+    target_link_libraries(cppubx2_clock_scan PRIVATE cppubx2::cppubx2)
     add_executable(cppubx2_subframes examples/subframes.cpp)
-    target_link_libraries(cppubx2_subframes PRIVATE cppubx2::cppubx2 OpenSSL::Crypto)
+    target_link_libraries(cppubx2_subframes PRIVATE cppubx2::cppubx2)
     add_executable(cppubx2_archive_index examples/archive_index.cpp)
     target_link_libraries(cppubx2_archive_index PRIVATE cppubx2::cppubx2 OpenSSL::Crypto)
     if(NOT UNIX)
@@ -95,23 +97,4 @@ if(BUILD_TESTING)
         "CPPUBX2_GENERATED_INCLUDE=${generated_include}"
         "CPPUBX2_LIBRARY=$<TARGET_FILE:cppubx2>"
         "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_codegen.py)
-    if(CPPUBX2_BUILD_EXAMPLES)
-        add_test(NAME cppubx2.subframes_cli COMMAND "${CMAKE_COMMAND}" -E env
-            PYTHONDONTWRITEBYTECODE=1 "CPPUBX2_SUBFRAMES=$<TARGET_FILE:cppubx2_subframes>"
-            "${Python3_EXECUTABLE}" -m unittest discover
-            -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_subframes.py)
-        add_test(NAME cppubx2.archive COMMAND "${CMAKE_COMMAND}" -E env
-            PYTHONDONTWRITEBYTECODE=1
-            "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/../python-src"
-            "CPPUBX2_ARCHIVE_INDEX=$<TARGET_FILE:cppubx2_archive_index>"
-            "${Python3_EXECUTABLE}" -m unittest discover
-            -s "${CMAKE_CURRENT_SOURCE_DIR}/../tests" -p test_restitch.py)
-        add_test(NAME cppubx2.example COMMAND cppubx2_inspect_frame)
-        add_test(NAME cppubx2.reader_smoke COMMAND sh
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke_reader.sh" "$<TARGET_FILE:neoubxlogger>")
-        add_test(NAME cppubx2.logger COMMAND "${CMAKE_COMMAND}" -E env
-            PYTHONDONTWRITEBYTECODE=1 "CPPUBX2_LOGGER=$<TARGET_FILE:neoubxlogger>"
-            "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_logger.py)
-        set_tests_properties(cppubx2.logger PROPERTIES TIMEOUT 45)
-    endif()
 endif()

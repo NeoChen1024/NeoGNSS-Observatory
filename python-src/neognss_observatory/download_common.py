@@ -5,12 +5,9 @@ import contextlib
 import datetime as dt
 import fcntl
 import hashlib
-import importlib.metadata
 import json
 import os
-import platform
 import sqlite3
-import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
@@ -82,33 +79,7 @@ def days(start, end):
 
 
 def tool_identity():
-    identity = {"python": platform.python_version(), "dependencies": {}}
-    for package in (
-        "neognss-observatory",
-        "requests",
-        "urllib3",
-        "certifi",
-        "charset-normalizer",
-        "idna",
-        "click",
-        "rich",
-        "markdown-it-py",
-        "mdurl",
-        "pygments",
-        "tqdm",
-    ):
-        try:
-            identity["dependencies"][package] = importlib.metadata.version(package)
-        except importlib.metadata.PackageNotFoundError:
-            identity["dependencies"][package] = "not-installed"
-    identity["source_sha512"] = {path.name: digest_file(path) for path in sorted(Path(__file__).parent.glob("*.py"))}
-    try:
-        identity["git_commit"] = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent, stderr=subprocess.DEVNULL, text=True
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        identity["git_commit"] = None
-    return identity
+    return {"name": "cddis-download"}
 
 
 @contextlib.contextmanager

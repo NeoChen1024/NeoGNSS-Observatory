@@ -14,6 +14,30 @@
   constrain communication with users; use the language appropriate for the
   current conversation.
 
+## Development stage and scope
+
+- This is a pre-Alpha research project. Algorithms, CLIs, intermediate schemas,
+  and output layouts are experimental and may change freely.
+- Prioritize clear scientific computation and fast iteration over compatibility,
+  generalized infrastructure, and production-grade artifact management.
+- Do not add or expand automated tests unless explicitly requested by the user.
+  A feature or bug fix does not implicitly authorize new regression tests.
+- Validate changes proportionately using builds, small representative inputs,
+  and direct inspection of results. Report what was actually checked. Do not
+  turn one-off validation into a new permanent test framework.
+- Do not preserve obsolete interfaces or output formats solely to satisfy tests.
+- Do not introduce provenance bundles, source/binary snapshots, dependency
+  inventories, or chains of artifact hashes unless explicitly requested.
+- Retain metadata needed to interpret or process data correctly: time scales,
+  units, signal identities, validity flags, calculation parameters, and necessary
+  source offset mappings. Keep reconstruction overlap proofs and downloader
+  recovery/integrity checks that serve an actual processing purpose.
+- Preserve raw archives and basic protection against accidental data loss.
+- Experimental analysis outputs should be directly readable without provenance
+  sidecars. Publish finished files or directories by rename; allow explicit
+  overwrite without silently deleting unrelated files. Do not build a generic
+  resume system; retain useful existing reuse paths.
+
 ## Documentation audience
 
 - README files are public-facing documentation. Keep them focused on purpose,
@@ -38,8 +62,8 @@
   do not decompress XZ during processing or silently fall back to `/hdd`.
   Ignore retained `.xz` copies and report missing expanded inputs explicitly.
 - Keep generated and large observation products out of Git.
-- Every derived artifact must be reproducible from source data, pinned tools,
-  versioned configuration, and recorded provenance.
+- Experimental artifacts need sufficient scientific metadata for interpretation,
+  not a complete execution-environment snapshot.
 - Never infer observation coverage or time scale solely from filenames; inspect
   payload timestamps and preserve original GNSS fields as provenance.
 
@@ -49,14 +73,19 @@
   map labels and derived artifact metadata use GPST. No optional UTC mode or
   compatibility reading of old UTC-derived products is maintained.
 - Scalar `gpst`, `start_gpst`, `end_gpst` and `hour_gpst` values are continuous
-  seconds since 1980-01-06 00:00:00 GPST, not Unix timestamps. Integer-second
-  indexes describe nominal receiver epochs; raw fractional time remains intact.
-- Name assigned UBX outputs `GPST-%Y-%m-%d--%H-%M-%S.ubx`. Never use a UTC `Z`
+  seconds since 1980-01-06 00:00:00 GPST, not Unix timestamps. Archive indexes
+  use integer `gpst_ms`; receiver-clock samples use `gpst_ns`. Raw fractional
+  time remains intact. Do not snap navigation epochs to whole seconds.
+- Name assigned UBX outputs `GPST-%Y-%m-%d--%H-%M-%S-mmm.ubx`, where `mmm`
+  is exactly three millisecond digits (including `000`). Never use a UTC `Z`
   or `+0000` suffix for GPST. Keep native protocol fields and external product
   formats unchanged; decode their specified scales at the input boundary.
 - Logger epochs are buffered until EOE. Every EOE requires a fresh valid
   NAV-TIMEGPS with matching iTOW; otherwise fail. Rotate before writing the
   complete first epoch of the new GPST day, including its EOE.
+- Re-stitch splits at GPST midnight or a NAV-to-NAV interval greater than the
+  configured timeout (default 50 seconds). A segment does not imply gapless
+  sampling. Preserve subsecond epochs and do not fabricate missing observations.
 - Old UTC analysis/reconstruction outputs were explicitly cleared. Preserve
   archives, downloaded products, downloader plans/configuration and map assets.
   Rebuild derived outputs with GPST tools; do not relabel old timestamps.
@@ -65,10 +94,11 @@
 
 - This workspace has Septentrio RxTools under `~/.local/RxTools`; its SBF to
   RINEX converter is `bin/sbf2rin`. Read the installed tool's help and record
-  its version and binary hash for each run. Do not vendor the installation.
+  its version when investigating converter behavior. Do not vendor the installation.
 - References to RTKLIB mean the RTKLIB-EX `main` branch from
   `rtklibexplorer/RTKLIB`, not upstream `tomojitakasu/RTKLIB`.
-- Pin exact tool revisions or container digests for production processing.
+- Pin exact tool revisions or container digests when production processing is
+  explicitly requested, not for every exploratory run.
 - Preserve original observation codes and receiver message provenance during
   normalization.
 
@@ -114,8 +144,8 @@ configuring `libcppubx2/` directly.
 - Keep machine-readable output separate from status messages; send progress
   and diagnostics to stderr when stdout carries data.
 - Declare Python dependencies with minimum versions (`>=`) in
-  `requirements.txt`, allowing upgrades without a lockfile. Record the actual
-  installed versions in each processing run's provenance.
+  `requirements.txt`, allowing upgrades without a lockfile. Do not automatically
+  inventory installed versions for experimental runs.
 
 ## Dependencies and licensing
 

@@ -2,8 +2,6 @@
 """Experimental arc-relative dSTEC and hourly ionospheric pierce-point maps."""
 
 import csv
-import hashlib
-import importlib.metadata
 import json
 import math
 import multiprocessing
@@ -18,14 +16,10 @@ import click
 from tqdm import tqdm
 
 from .gpst import label as gpst_label
+from .research_output import staged_output
 
 LIGHT_SPEED = 299792458.0
 os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / f"neognss-matplotlib-{os.getuid()}"))
-
-
-def sha256(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def phase_gf(phase1, phase2, frequency1, frequency2):
@@ -151,16 +145,12 @@ def process_group(job):
             counts["valid_points"] += 1
     return dict(
         obs=str(obs),
-        obs_sha256=sha256(obs),
         nav=str(nav),
-        nav_sha256=sha256(nav),
         command=command,
         station_ecef=position,
         station_source=station_source,
         geometry_csv=str(csv_path),
-        geometry_sha256=sha256(csv_path),
         tracks=str(tracks),
-        tracks_sha256=sha256(tracks),
         counts=dict(counts),
         diagnostics=dict(tracker.diagnostics),
         arcs=sum(tracker.counts.values()),
@@ -261,7 +251,6 @@ def plot_hour(job):
     plt.close(fig)
     return dict(
         path=str(path.relative_to(options["output"])),
-        sha256=sha256(path),
         hour_gpst=hour,
         points=len(points),
         arcs=len(arcs),
@@ -301,6 +290,8 @@ def parallel_map(function, jobs, workers, description):
 @click.option("--background-alpha", type=click.FloatRange(0, 1), default=0.18, show_default=True)
 @click.option("--sbas-prn", type=int, default=137, show_default=True)
 @click.option("--png-compression", type=click.IntRange(0, 9), default=3, show_default=True)
+@click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")
+@staged_output
 def cli(
     obs,
     nav,
@@ -432,27 +423,18 @@ def cli(
             groups=groups,
             policy=policy,
             images=len(images),
-            source_sha256=sha256(__file__),
-            time_source_sha256=sha256(Path(__file__).with_name("gpst.py")),
-            geometry_worker_sha256=sha256(geometry_worker),
-            sbas_hourly_sha256=sha256(sbas_hourly),
-            coastline_sha256=sha256(coastline),
-            dependencies={name: importlib.metadata.version(name) for name in ("matplotlib", "numpy", "pyshp", "click")},
         )
-        root = Path(__file__).resolve().parents[2]
-        report["rtklib_revision"] = subprocess.check_output(
-            ["git", "-C", str(root / "contrib/RTKLIB"), "rev-parse", "HEAD"], text=True
-        ).strip()
-        report["geometry_source_sha256"] = sha256(root / "native/rinex_geometry.c")
-        report["geometry_build_sha256"] = sha256(root / "native/CMakeLists.txt")
-        report["render_source_sha256"] = sha256(Path(__file__).with_name("sbas_grid_render.py"))
+        policy.pop("output")
+        for group in groups:
+            group.pop("command", None)
+            for key in ("geometry_csv", "tracks"):
+                group[key] = str(Path(group[key]).relative_to(output))
         (output / "completed.json").write_text(json.dumps(report, indent=2) + "\n")
         click.echo(
             json.dumps(
                 dict(
                     status="complete",
                     images=len(images),
-                    output=str(output),
                     valid_points=sum(g["counts"].get("valid_points", 0) for g in groups),
                 )
             )

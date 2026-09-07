@@ -29,6 +29,12 @@ bool ubx_nav_pvt_semantically_valid(const ubx_nav_pvt &pvt)
 	return data.second <= 60;
 }
 
+bool ubx_nav_pvt_fix_ok(const ubx_nav_pvt &pvt)
+{
+	return ubx_nav_pvt_semantically_valid(pvt) && (pvt.data.flags_bit & 1) &&
+		pvt.data.fixType >= 2 && pvt.data.fixType <= 5;
+}
+
 bool ubx_nav_eoe_semantically_valid(const ubx_nav_eoe &eoe)
 {
 	return eoe.valid && eoe.data.iTOW <= UINT32_C(86400) * 1000 * 7;

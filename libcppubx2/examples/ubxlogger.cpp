@@ -27,6 +27,8 @@
 #include <ctime>
 #include <format>
 #include <chrono>
+#include <filesystem>
+#include "logger_diagnostics.hpp"
 
 #define RETURN_ERR \
 	return 1
@@ -202,6 +204,7 @@ int main(int argc, char *argv[])
 	FILE *readin = stdin;
 	OutputFile output;
 	const char *input_path = nullptr;
+	std::filesystem::path output_root = ".";
 
 	bool tcp_mode = false;
 	std::string tcp_host;
@@ -213,11 +216,35 @@ int main(int argc, char *argv[])
 	setvbuf(stderr, NULL, _IONBF, 0);
 
 	int opt;
+	LoggerDiagnostics diagnostics;
+	const option long_options[] = {
+		{"expected-period-ms", required_argument, nullptr, 1000},
+		{"epoch-interval-ms", required_argument, nullptr, 1000},
+		{"epoch-tolerance-percent", required_argument, nullptr, 1001},
+		{"expect-nav-clock", no_argument, nullptr, 1002},
+		{nullptr, 0, nullptr, 0}
+	};
 
-	while((opt = getopt(argc, argv, "f:t:dnq")) != -1)
+	while((opt = getopt_long(argc, argv, "f:t:dnq", long_options, nullptr)) != -1)
 	{
 		switch(opt)
 		{
+		case 1000:
+		case 1001: {
+			int64_t value = -1;
+			const auto end = optarg + strlen(optarg);
+			const auto parsed = std::from_chars(optarg, end, value);
+			if(parsed.ec != std::errc{} || parsed.ptr != end || value < (opt == 1000 ? 1 : 0) || value >= (opt == 1000 ? 604800000 : 100)) {
+				fputs("Invalid expected period (1..604799999 ms) or tolerance (0..99 percent)\n", stderr);
+				RETURN_ERR;
+			}
+			if(opt == 1000) diagnostics.interval_ms = value;
+			else diagnostics.tolerance_percent = value;
+			break;
+		}
+		case 1002:
+			diagnostics.expect_clock = true;
+			break;
 		case 'f':
 			input_path = optarg;
 			break;
@@ -261,7 +288,8 @@ int main(int argc, char *argv[])
 			quiet = true;
 			break;
 		default:
-			fprintf(stderr, "Usage: %s [-f input_file] [-t HOST:PORT] [-n] [-d] [-q]\n", argv[0]);
+			fprintf(stderr, "Usage: %s [-f input_file] [-t HOST:PORT] [-n] [-d] [-q] "
+				"[--expected-period-ms 1000] [--epoch-tolerance-percent 20] [--expect-nav-clock] [OUTPUT_DIR]\n", argv[0]);
 			RETURN_ERR;
 		}
 	}
@@ -276,11 +304,12 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "-d and -q are mutually exclusive\n");
 		RETURN_ERR;
 	}
-	if(optind != argc)
+	if(argc - optind > 1)
 	{
-		fprintf(stderr, "Unexpected argument: %s\n", argv[optind]);
+		fprintf(stderr, "Unexpected argument: %s (only one OUTPUT_DIR is allowed)\n", argv[optind + 1]);
 		RETURN_ERR;
 	}
+	if(optind < argc) output_root = argv[optind];
 	if(input_path)
 	{
 		readin = fopen(input_path, "rb");
@@ -301,6 +330,7 @@ int main(int argc, char *argv[])
 	int64_t epoch_gpst_ms = -1, last_gpst_ms = -1, output_day = -1;
 	uint32_t epoch_tow = 0;
 	bool have_timegps = false;
+	uint32_t epoch_clock_count = 0, epoch_clock_tow = 0;
 	time_t stats_next = time(NULL) + 60;
 
 	while(1)
@@ -312,12 +342,16 @@ int main(int argc, char *argv[])
 			ReadResult ret = read_logged_frame(&sockfd, tcp_read_byte, buf);
 			if(ret == ReadResult::timeout)
 			{
+				++diagnostics.timeouts;
+				diagnostics.transport("TCP_timeout");
 				fprintf(stderr, "\nTCP %s:%d: read timeout; discarding partial frame and resynchronizing\n",
 					tcp_host.c_str(), tcp_port);
 				continue;
 			}
 			if(ret != ReadResult::ok)
 			{
+				++diagnostics.reconnects;
+				diagnostics.transport("TCP_reconnect_attempt");
 				if(ret == ReadResult::error) perror("TCP read");
 				fprintf(stderr, "\nTCP %s:%d: connection lost, reconnecting in 2s...\n",
 					tcp_host.c_str(), tcp_port);
@@ -351,6 +385,8 @@ int main(int argc, char *argv[])
 		ubx_frame frame(buf);
 		if(!frame.valid)
 		{
+			++diagnostics.invalid_checksums;
+			diagnostics.transport("invalid_checksum");
 			fprintf(stderr, "Invalid frame!\n");
 			frame.dump(stderr);
 			continue;
@@ -358,12 +394,16 @@ int main(int argc, char *argv[])
 
 		if(debug && !ubx_nav_dump_custom(frame, stderr))
 			ubx_dump_any(frame, stderr);
+		if(frame.class_id == 1 && frame.msg_id == 0x22 && frame.payload.size() == 20) {
+			++epoch_clock_count;
+			epoch_clock_tow = read_le<uint32_t>(frame.payload, 0);
+		}
 
 		ubx_nav_pvt pvt(frame);
 		if(ubx_nav_pvt_semantically_valid(pvt))
 		{
 			stats.period_pvt++;
-			if((pvt.data.flags_bit & 1) && pvt.data.fixType >= 2 && pvt.data.fixType <= 4)
+			if(ubx_nav_pvt_fix_ok(pvt))
 				stats.period_fix++;
 			if(!quiet) print_status_line(pvt);
 		}
@@ -387,6 +427,9 @@ int main(int argc, char *argv[])
 			const auto tow = read_le<uint32_t>(p, 0);
 			const int64_t value = int64_t(read_le<int16_t>(p, 8)) * 604800000 + tow;
 			if(have_timegps && value != epoch_gpst_ms) {
+				const auto detail = std::format("[logger qc] missing_EOE_or_conflicting_TIMEGPS previous={} incoming={}\n",
+					LoggerDiagnostics::label(epoch_gpst_ms), LoggerDiagnostics::label(value));
+				fputs(detail.c_str(), stderr);
 				fputs("Conflicting NAV-TIMEGPS before EOE\n", stderr);
 				RETURN_ERR;
 			}
@@ -398,23 +441,33 @@ int main(int argc, char *argv[])
 		if(ubx_nav_eoe_semantically_valid(eoe))
 		{
 			if(!have_timegps || epoch_tow != eoe.data.iTOW) {
+				fprintf(stderr, "[logger qc] invalid_epoch have_TIMEGPS=%d TIMEGPS_iTOW_ms=%u EOE_iTOW_ms=%u\n",
+					have_timegps, epoch_tow, eoe.data.iTOW);
 				fputs("EOE requires matching valid NAV-TIMEGPS in this epoch\n", stderr);
 				RETURN_ERR;
 			}
 			if(epoch_gpst_ms <= last_gpst_ms) {
+				const auto detail = std::format("[logger qc] non_increasing_epoch previous={} incoming={}\n",
+					LoggerDiagnostics::label(last_gpst_ms), LoggerDiagnostics::label(epoch_gpst_ms));
+				fputs(detail.c_str(), stderr);
 				fputs("Non-increasing GPST epoch\n", stderr);
 				RETURN_ERR;
 			}
+			diagnostics.epoch(epoch_gpst_ms, epoch_clock_count, epoch_clock_tow);
+			epoch_clock_count = 0;
 			const auto day = epoch_gpst_ms / 86400000;
 			if(!no_write && day != output_day) {
 				if(!output.close()) RETURN_ERR;
 				using namespace std::chrono;
 				const auto calendar = sys_days{year{1980}/1/6} + milliseconds{epoch_gpst_ms};
-				const auto dirname = std::format("{:%Y-%m}", calendar);
-				if(mkdir(dirname.c_str(), 0755) != 0 && errno != EEXIST) {
-					perror(dirname.c_str()); RETURN_ERR;
+				const auto dirname = output_root / std::format("{:%Y-%m}", calendar);
+				std::error_code directory_error;
+				std::filesystem::create_directories(dirname, directory_error);
+				if(directory_error) {
+					fprintf(stderr, "Cannot create output directory %s: %s\n", dirname.c_str(), directory_error.message().c_str());
+					RETURN_ERR;
 				}
-				const auto filename = dirname + "/" + std::format("GPST-{:%Y-%m-%d--%H-%M-%S}.ubx", floor<seconds>(calendar));
+				const auto filename = dirname / std::format("GPST-{:%Y-%m-%d--%H-%M-%S}-{:03}.ubx", floor<seconds>(calendar), epoch_gpst_ms % 1000);
 				if(!output.open(filename.c_str())) RETURN_ERR;
 				output_day = day;
 				if(!quiet) fprintf(stderr, "\nOpened file %s\n", filename.c_str());
@@ -435,6 +488,7 @@ int main(int argc, char *argv[])
 		if(now >= stats_next)
 		{
 			print_stats(stats, now);
+			diagnostics.summary();
 			stats_next = now + 60;
 		}
 	}

@@ -18,7 +18,7 @@ from pathlib import Path
 import click
 from tqdm import tqdm
 
-from .gpst import label as gpst_label
+from .gpst import label_ms as gpst_label
 
 RECORD = struct.Struct("<QQqqQIIIi")
 UNKNOWN = -(1 << 63)
@@ -46,6 +46,8 @@ def write_plan(path, plan):
                     "schema": plan["schema"],
                     "time_scale": "GPST",
                     "time_origin": "1980-01-06 00:00:00 GPST",
+                    "index_time_unit": "millisecond",
+                    "gap_timeout_ms": plan["gap_timeout_ms"],
                     "byte_accounting": plan["byte_accounting"],
                 }
             )
@@ -69,7 +71,7 @@ def write_plan(path, plan):
 class Epoch:
     begin: int
     end: int
-    gpst: int
+    gpst_ms: int
     tow: int
     fingerprint: int
     flags: int
@@ -81,8 +83,8 @@ class Epoch:
 @contextmanager
 def read_index(path):
     with path.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
-        if mapped[:8] != b"UBXIDX03" or (len(mapped) - 48) % RECORD.size:
-            raise ValueError(f"Invalid index: {path}")
+        if mapped[:8] != b"UBXIDX04" or (len(mapped) - 48) % RECORD.size:
+            raise ValueError(f"Expected a millisecond UBXIDX04 index; rebuild the indexer and inventory: {path}")
         yield mapped
 
 
@@ -99,7 +101,7 @@ def source_identity(path):
 
 def inventory_source(path, state_dir, indexer, tool_sha):
     identity = source_identity(path)
-    key = hashlib.sha256(json.dumps([identity, tool_sha], sort_keys=True).encode()).hexdigest()
+    key = hashlib.sha256(json.dumps([identity, tool_sha, "UBXIDX04"], sort_keys=True).encode()).hexdigest()
     directory = state_dir / key
     index_path = directory / "epochs.idx"
     summary_path = directory / "source.json"
@@ -120,14 +122,17 @@ def inventory_source(path, state_dir, indexer, tool_sha):
         counts["frames"] += e.frames
         if e.flags & NOISE:
             counts["excluded_bytes"] += e.end - e.begin
-        elif e.gpst == UNKNOWN:
+        elif e.gpst_ms == UNKNOWN:
             counts["untimed_bytes"] += e.end - e.begin
         else:
-            first = e.gpst if first is None else min(first, e.gpst)
-            last = e.gpst if last is None else max(last, e.gpst)
-            if previous is not None and e.gpst < previous:
-                counts["time_reversals"] += 1
-            previous = e.gpst
+            first = e.gpst_ms if first is None else min(first, e.gpst_ms)
+            last = e.gpst_ms if last is None else max(last, e.gpst_ms)
+            # RAWX-only runs are quarantined measurement times, not NAV epochs.
+            # Their receiver-clock offset cannot prove navigation time reversal.
+            if e.nav:
+                if previous is not None and e.gpst_ms < previous:
+                    counts["time_reversals"] += 1
+                previous = e.gpst_ms
         if e.flags & CONFLICT:
             counts["time_conflicts"] += 1
         if e.flags & PARTIAL:
@@ -140,8 +145,8 @@ def inventory_source(path, state_dir, indexer, tool_sha):
         "indexer_sha256": tool_sha,
         "index": str(index_path.resolve()),
         "index_sha256": sha256(temporary),
-        "first_gpst": first,
-        "last_gpst": last,
+        "first_gpst_ms": first,
+        "last_gpst_ms": last,
         **counts,
     }
     os.replace(temporary, index_path)
@@ -166,7 +171,7 @@ def inventory(input_dir, state_dir, indexer, recursive=False):
             sources.append(source)
             progress.update(source["size"])
             progress.set_postfix(files=len(sources), refresh=False)
-    return sorted(sources, key=lambda s: (s["first_gpst"] is None, s["first_gpst"] or 0, s["path"]))
+    return sorted(sources, key=lambda s: (s["first_gpst_ms"] is None, s["first_gpst_ms"] or 0, s["path"]))
 
 
 @click.group()
@@ -203,7 +208,14 @@ def inventory_command(input_dir, state_dir, indexer, recursive):
 @common_options
 @click.option("--output-dir", required=True, type=click.Path(file_okay=False, path_type=Path))
 @click.option("--plan-only", is_flag=True, help="Write the validated plan in the state directory without touching output.")
-def run_command(input_dir, state_dir, indexer, recursive, output_dir, plan_only):
+@click.option(
+    "--gap-timeout",
+    type=click.FloatRange(min=0.001),
+    default=50.0,
+    show_default=True,
+    help="Split when consecutive available NAV epochs are more than this many seconds apart.",
+)
+def run_command(input_dir, state_dir, indexer, recursive, output_dir, plan_only, gap_timeout):
     """Prove overlaps, split at GPST days/NAV gaps, and publish verified outputs."""
     from .ubx_output import publish
     from .ubx_reconstruction import build_plan, segment_plan
@@ -213,7 +225,7 @@ def run_command(input_dir, state_dir, indexer, recursive, output_dir, plan_only)
         if output_dir == input_dir or input_dir in output_dir.parents or output_dir in input_dir.parents:
             raise ValueError("Input and output directories must not overlap")
         sources = inventory(input_dir, state_dir, indexer, recursive=recursive)
-        plan = segment_plan(build_plan(sources))
+        plan = segment_plan(build_plan(sources), gap_timeout_ms=round(gap_timeout * 1000))
         if plan_only:
             path = state_dir / f"plan-{uuid.uuid4().hex}.jsonl"
             write_plan(path, plan)

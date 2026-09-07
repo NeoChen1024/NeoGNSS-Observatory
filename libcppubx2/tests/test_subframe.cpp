@@ -23,7 +23,7 @@ int main() {
     assert(bits.signed_at(0, 8) == -128);
     NavigationSubframe subframe;
     subframe.signal = {1, 137, 0, 0}; subframe.version = 2;
-    // Real MT18 from the fixture documented in test_subframes.py.
+    // Real MT18 vector retained for core field/CRC decoding checks.
     subframe.words = {0x5348a300, 0x03ffc001, 0xffc000ff, 0xf0003ff0,
                      0x000ffc00, 0x03fc0000, 0x18000000, 0x2b2e7000, 0xdeadbeef};
     auto result = SBAS::parse(subframe);

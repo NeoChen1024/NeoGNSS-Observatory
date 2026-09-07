@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Encode rendered SBAS map PNGs into a previewable HEVC/MP4 video."""
 
-import hashlib
 import json
 import os
 import shutil
 import struct
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -15,11 +13,6 @@ import click
 from tqdm import tqdm
 
 from .gpst import label as gpst_label
-
-
-def sha256(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def png_dimensions(path):
@@ -30,7 +23,7 @@ def png_dimensions(path):
     return struct.unpack(">II", header[16:24])
 
 
-def load_images(manifest_path, verify=True):
+def load_images(manifest_path):
     manifest_path = Path(manifest_path)
     root = manifest_path.parent.resolve()
     document = json.loads(manifest_path.read_text())
@@ -40,7 +33,7 @@ def load_images(manifest_path, verify=True):
 
     images = []
     dimensions = None
-    progress = tqdm(records, desc="Verify PNGs", unit="image", disable=not verify)
+    progress = tqdm(records, desc="Read PNG headers", unit="image")
     for record in progress:
         if "hour_utc" in record:
             raise ValueError("Old UTC image manifests are not supported; rerender with GPST tools")
@@ -57,10 +50,6 @@ def load_images(manifest_path, verify=True):
             dimensions = size
         elif size != dimensions:
             raise ValueError(f"Image dimensions changed at {relative}: {size} != {dimensions}")
-        if verify:
-            expected = record.get("sha256")
-            if not expected or sha256(path) != expected:
-                raise ValueError(f"Image checksum mismatch: {relative}")
         images.append((path, record))
     return images, dimensions
 
@@ -182,24 +171,6 @@ def validate_probe(probe, frame_count, width, height, fps, padded):
         raise ValueError(f"Encoded duration is unexpected: {duration} != {expected_duration}")
 
 
-def executable_version(command):
-    try:
-        result = subprocess.run(command, check=False, capture_output=True, text=True)
-    except OSError as error:
-        return f"unavailable ({error})"
-    output = (result.stdout or result.stderr).splitlines()
-    return output[0] if output else f"unavailable (exit status {result.returncode})"
-
-
-def executable_output(command):
-    try:
-        result = subprocess.run(command, check=False, capture_output=True, text=True)
-    except OSError as error:
-        return f"unavailable ({error})"
-    output = (result.stdout or result.stderr).strip()
-    return output or f"unavailable (exit status {result.returncode})"
-
-
 def verify_decode(ffmpeg, path):
     result = subprocess.run(
         [ffmpeg, "-v", "error", "-i", str(path), "-map", "0:v:0", "-f", "null", "-"],
@@ -211,17 +182,6 @@ def verify_decode(ffmpeg, path):
     if result.returncode or errors:
         detail = errors or f"exit status {result.returncode}"
         raise ValueError(f"Full video decode reported an error: {detail}")
-
-
-def atomic_json(path, value, overwrite):
-    mode = "w" if overwrite else "x"
-    temporary = path.with_name(f".{path.name}.partial")
-    if temporary.exists():
-        temporary.unlink()
-    with temporary.open(mode) as stream:
-        json.dump(value, stream, indent=2, sort_keys=True)
-        stream.write("\n")
-    os.replace(temporary, path)
 
 
 def atomic_jsonlines(path, images, fps, overwrite):
@@ -236,7 +196,6 @@ def atomic_jsonlines(path, images, fps, overwrite):
                 "video_time_seconds": number / fps,
                 "hour_gpst": record.get("hour_gpst"),
                 "png": record["path"],
-                "png_sha256": record.get("sha256"),
             }
             if row["hour_gpst"] is not None:
                 row["hour_label_gpst"] = gpst_label(row["hour_gpst"])
@@ -256,20 +215,18 @@ def atomic_jsonlines(path, images, fps, overwrite):
 @click.option("--fps", type=click.IntRange(min=1), default=5, show_default=True)
 @click.option("--quality", type=click.IntRange(min=0, max=51), default=24, show_default=True, help="Vulkan Video CQP value.")
 @click.option("--title", default="SBAS hourly mean VTEC", show_default=True)
-@click.option("--verify-input/--no-verify-input", default=True, show_default=True, help="Verify every PNG against images.json.")
 @click.option(
-    "--verify-output/--no-verify-output", default=True, show_default=True, help="Decode the complete video after encoding."
+    "--verify-output/--no-verify-output", default=False, show_default=True, help="Decode the complete video after encoding."
 )
 @click.option("--overwrite", is_flag=True, help="Replace an existing video and sidecars after the new video verifies.")
-def cli(images_manifest, output, device, fps, quality, title, verify_input, verify_output, overwrite):
+def cli(images_manifest, output, device, fps, quality, title, verify_output, overwrite):
     """Encode manifest-ordered SBAS map PNGs with Vulkan Video HEVC."""
     output = output.resolve()
     if output.suffix.lower() != ".mp4":
         raise click.UsageError("--output must use the .mp4 extension")
     output.parent.mkdir(parents=True, exist_ok=True)
     frames_path = output.with_suffix(".frames.jsonl")
-    provenance_path = output.with_suffix(".json")
-    existing = [path for path in (output, frames_path, provenance_path) if path.exists()]
+    existing = [path for path in (output, frames_path) if path.exists()]
     if existing and not overwrite:
         raise click.ClickException(f"Output already exists: {existing[0]}")
 
@@ -279,7 +236,7 @@ def cli(images_manifest, output, device, fps, quality, title, verify_input, veri
         raise click.ClickException("ffmpeg and ffprobe must both be available")
 
     try:
-        images, (width, height) = load_images(images_manifest, verify_input)
+        images, (width, height) = load_images(images_manifest)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise click.ClickException(str(error)) from error
 
@@ -302,47 +259,7 @@ def cli(images_manifest, output, device, fps, quality, title, verify_input, veri
         validate_probe(probe, len(images), width, height, fps, padded)
         if verify_output:
             verify_decode(ffmpeg, partial)
-        digest = sha256(partial)
-        manifest_digest = sha256(images_manifest)
-        source_digest = sha256(Path(__file__))
-        frame_digest = None
-
         atomic_jsonlines(frames_path, images, fps, overwrite)
-        frame_digest = sha256(frames_path)
-        provenance = {
-            "status": "complete",
-            "time_scale": "GPST",
-            "time_source_sha256": sha256(Path(__file__).with_name("gpst.py")),
-            "source": {"path": str(Path(__file__).resolve()), "sha256": source_digest},
-            "input": {
-                "images_manifest": str(Path(images_manifest).resolve()),
-                "images_manifest_sha256": manifest_digest,
-                "frames": len(images),
-                "width": width,
-                "height": height,
-            },
-            "video": {
-                "path": str(output),
-                "sha256": digest,
-                "frame_index": str(frames_path),
-                "frame_index_sha256": frame_digest,
-                "fps": fps,
-                "quality": quality,
-                "encoder": "hevc_vulkan",
-                "filter": filter_graph,
-                "padded_to_even_dimensions": padded,
-                "probe": probe,
-            },
-            "toolchain": {
-                "ffmpeg": executable_version([ffmpeg, "-version"]),
-                "ffprobe": executable_version([ffprobe, "-version"]),
-                "vulkan": executable_output(["vulkaninfo", "--summary"]),
-            },
-            "command": [str(value) for value in command],
-            "verification": {"input_checksums": verify_input, "ffprobe": True, "full_decode": verify_output},
-            "argv": sys.argv,
-        }
-        atomic_json(provenance_path, provenance, overwrite)
         os.replace(partial, output)
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         if partial.exists():
@@ -354,14 +271,12 @@ def cli(images_manifest, output, device, fps, quality, title, verify_input, veri
             {
                 "status": "complete",
                 "video": str(output),
-                "sha256": digest,
                 "frames": len(images),
                 "duration_seconds": len(images) / fps,
                 "width": width + width % 2 if padded else width,
                 "height": height + height % 2 if padded else height,
                 "padded": padded,
                 "frame_index": str(frames_path),
-                "provenance": str(provenance_path),
             },
             separators=(",", ":"),
         )

@@ -1,5 +1,6 @@
 """Exact overlap proofs and GPST segment plans for UBX archives."""
 
+from dataclasses import replace
 from pathlib import Path
 
 from tqdm import tqdm
@@ -46,9 +47,9 @@ def join_sources(previous, incoming):
     # Accept only complementary, physically adjacent boundary intervals.
     a, b = old[-1], new[0]
     if (
-        a.gpst == b.gpst != UNKNOWN
-        and a.tow == b.tow
-        and previous["last_gpst"] == incoming["first_gpst"]
+        a.gpst_ms != UNKNOWN
+        and b.gpst_ms != UNKNOWN
+        and abs(a.gpst_ms - b.gpst_ms) <= 500
         and a.end == previous["size"]
         and b.begin == 0
         and a.flags & PARTIAL
@@ -64,22 +65,24 @@ def join_sources(previous, incoming):
         return {
             "previous": previous["path"],
             "incoming": incoming["path"],
-            "anchor_gpst": b.gpst,
+            "anchor_gpst_ms": b.gpst_ms,
+            "previous_epoch_begin": a.begin,
+            "previous_measurement_gpst_ms": a.gpst_ms,
             "previous_cut": previous["end"],
             "incoming_cut": incoming["begin"],
-            "proof": "complementary same-GPST/iTOW RAWX tail and NAV-PVT/EOE head; all bytes retained",
+            "proof": "complementary RAWX tail and NAV-PVT/EOE head within 500 ms; all bytes retained; NAV time retained",
             "kind": "split_epoch_continuation",
         }
-    lookup = {(e.gpst, e.tow, e.fingerprint, e.end - e.begin): i for i, e in enumerate(old) if e.flags & EOE}
+    lookup = {(e.gpst_ms, e.tow, e.fingerprint, e.end - e.begin): i for i, e in enumerate(old) if e.flags & EOE}
     for j in range(1, len(new)):
         b0, b1 = new[j - 1 : j + 1]
-        if not (b0.flags & EOE and b1.flags & EOE) or b0.end != b1.begin or b1.gpst != b0.gpst + 1:
+        if not (b0.flags & EOE and b1.flags & EOE) or b0.end != b1.begin or b1.gpst_ms <= b0.gpst_ms:
             continue
-        i = lookup.get((b1.gpst, b1.tow, b1.fingerprint, b1.end - b1.begin), -1)
+        i = lookup.get((b1.gpst_ms, b1.tow, b1.fingerprint, b1.end - b1.begin), -1)
         if i < 1:
             continue
         a0, a1 = old[i - 1 : i + 1]
-        if a0.end != a1.begin or a0.gpst != b0.gpst or a0.fingerprint != b0.fingerprint:
+        if a0.end != a1.begin or a0.gpst_ms != b0.gpst_ms or a0.fingerprint != b0.fingerprint:
             continue
         if not equal_ranges(previous["path"], a0.begin, incoming["path"], b0.begin, b1.end - b0.begin):
             continue
@@ -101,7 +104,7 @@ def join_sources(previous, incoming):
         return {
             "previous": previous["path"],
             "incoming": incoming["path"],
-            "anchor_gpst": b1.gpst,
+            "anchor_gpst_ms": b1.gpst_ms,
             "previous_cut": a1.end,
             "incoming_cut": b1.end,
             "incoming_duplicate": [new[0].begin, b1.end],
@@ -115,23 +118,35 @@ def join_sources(previous, incoming):
 
 def build_plan(sources):
     selected, joins = [], []
+    previous_tail = None
     for source in tqdm(sources, desc="Overlap proofs", unit="file"):
         if source.get("time_reversals") or source.get("time_conflicts"):
-            raise ValueError(f"Conflicting source timestamps: {source['path']}")
+            raise ValueError(
+                f"Conflicting source timestamps: {source['path']} "
+                f"(reversals={source.get('time_reversals', 0)}, anchor_conflicts={source.get('time_conflicts', 0)})"
+            )
         rows = useful_rows(source)
-        if not rows or source["first_gpst"] is None:
+        if not rows or source["first_gpst_ms"] is None:
             raise ValueError(f"No reliably timed frames: {source['path']}")
         current = {**source, "begin": rows[0].begin, "end": rows[-1].end}
-        if selected and current["first_gpst"] <= selected[-1]["last_gpst"]:
+        split_candidate = (
+            selected
+            and previous_tail.nav == 0
+            and previous_tail.flags & RAWX
+            and previous_tail.flags & PARTIAL
+            and abs(current["first_gpst_ms"] - selected[-1]["last_gpst_ms"]) <= 500
+        )
+        if selected and (current["first_gpst_ms"] <= selected[-1]["last_gpst_ms"] or split_candidate):
             previous = selected[-1]
-            if current["last_gpst"] <= previous["last_gpst"]:
+            if current["last_gpst_ms"] <= previous["last_gpst_ms"]:
                 raise ValueError(f"Contained or nested overlap requires review: {current['path']}")
             join = join_sources(previous, current)
             previous["end"] = join["previous_cut"]
             current["begin"] = join["incoming_cut"]
             joins.append(join)
         selected.append(current)
-    return {"schema": 2, "time_scale": "GPST", "sources": selected, "joins": joins}
+        previous_tail = rows[-1]
+    return {"schema": 3, "time_scale": "GPST", "sources": selected, "joins": joins}
 
 
 def append_span(spans, path, begin, end):
@@ -141,8 +156,15 @@ def append_span(spans, path, begin, end):
         spans.append({"source": path, "begin": begin, "end": end})
 
 
-def segment_plan(plan):
-    """Apply the NAV-per-second policy without dropping unassigned UBX bytes."""
+def segment_plan(plan, *, gap_timeout_ms=50000):
+    """Apply NAV timeout coverage without dropping unassigned UBX bytes."""
+    if not isinstance(gap_timeout_ms, int) or gap_timeout_ms < 1:
+        raise ValueError("Gap timeout must be a positive integer number of milliseconds")
+    overrides = {
+        (j["previous"], j["previous_epoch_begin"]): j["anchor_gpst_ms"]
+        for j in plan["joins"]
+        if j.get("kind") == "split_epoch_continuation"
+    }
     artifacts, events, names = [], [], set()
     segment = None
     group = []
@@ -159,7 +181,7 @@ def segment_plan(plan):
                 "source": path,
                 "begin": epoch.begin,
                 "end": epoch.end,
-                "gpst": None if epoch.gpst == UNKNOWN else epoch.gpst,
+                "gpst_ms": None if epoch.gpst_ms == UNKNOWN else epoch.gpst_ms,
             }
         )
 
@@ -167,12 +189,10 @@ def segment_plan(plan):
         nonlocal segment, last_gpst, pending_reason
         if not group:
             return
-        timestamp = group[0][1].gpst
+        timestamp = group[0][1].gpst_ms
         if not sum(e.nav for _, e in group):
             for path, e in group:
                 quarantine(path, e, "no_nav_interval")
-            segment = None
-            pending_reason = "no_nav_interval"
             group.clear()
             return
         if any(e.flags & CONFLICT for _, e in group):
@@ -180,19 +200,20 @@ def segment_plan(plan):
         if last_gpst is not None and timestamp < last_gpst:
             raise ValueError("Reconstructed time runs backwards")
         reason = pending_reason
-        if last_gpst is not None and timestamp > last_gpst + 1:
+        if last_gpst is not None and timestamp > last_gpst + gap_timeout_ms:
             reason = "missing_interval"
             events.append(
                 {
                     "type": "missing_interval",
-                    "after_gpst": last_gpst,
-                    "next_gpst": timestamp,
-                    "missing_seconds": timestamp - last_gpst - 1,
+                    "after_gpst_ms": last_gpst,
+                    "next_gpst_ms": timestamp,
+                    "interval_ms": timestamp - last_gpst,
+                    "gap_timeout_ms": gap_timeout_ms,
                 }
             )
             segment = None
-        if last_gpst is not None and timestamp // 86400 != last_gpst // 86400:
-            reason = "gpst_midnight" if timestamp == last_gpst + 1 else reason
+        if last_gpst is not None and timestamp // 86400000 != last_gpst // 86400000:
+            reason = "gpst_midnight" if segment is not None else reason
             segment = None
         if segment is None:
             name = gpst_label(timestamp) + ".ubx"
@@ -202,19 +223,26 @@ def segment_plan(plan):
             segment = {
                 "name": name,
                 "kind": "gpst_segment",
-                "start_gpst": timestamp,
-                "end_gpst": timestamp,
+                "start_gpst_ms": timestamp,
+                "end_gpst_ms": timestamp,
+                "start_gpst": timestamp / 1000,
+                "end_gpst": timestamp / 1000,
+                "gap_timeout_ms": gap_timeout_ms,
+                "max_observed_interval_ms": 0,
                 "reason": reason,
                 "frames": 0,
-                "nav_seconds": 0,
+                "nav_epochs": 0,
                 "spans": [],
             }
             artifacts.append(segment)
         for path, e in group:
             append_span(segment["spans"], path, e.begin, e.end)
             segment["frames"] += e.frames
-        segment["nav_seconds"] += 1
-        segment["end_gpst"] = timestamp
+        if segment["nav_epochs"]:
+            segment["max_observed_interval_ms"] = max(segment["max_observed_interval_ms"], timestamp - segment["end_gpst_ms"])
+        segment["nav_epochs"] += 1
+        segment["end_gpst_ms"] = timestamp
+        segment["end_gpst"] = timestamp / 1000
         last_gpst = timestamp
         pending_reason = "continuation"
         group.clear()
@@ -222,16 +250,18 @@ def segment_plan(plan):
     for source in tqdm(plan["sources"], desc="GPST segments", unit="file"):
         path = source["path"]
         for e in epochs(Path(source["index"])):
+            if (path, e.begin) in overrides:
+                e = replace(e, gpst_ms=overrides[path, e.begin])
             if e.flags & NOISE:
                 events.append({"type": "non_ubx_or_corrupt_bytes", "source": path, "begin": e.begin, "end": e.end})
                 continue
             if e.begin < source["begin"] or e.end > source["end"]:
                 continue
-            if e.gpst == UNKNOWN:
+            if e.gpst_ms == UNKNOWN:
                 # Do not invent an epoch for untimed tails or damaged runs.
                 quarantine(path, e, "unknown_time")
                 continue
-            if group and e.gpst != group[0][1].gpst:
+            if group and e.gpst_ms != group[0][1].gpst_ms:
                 flush()
             group.append((path, e))
     flush()
@@ -267,4 +297,4 @@ def segment_plan(plan):
         "non_ubx_or_corrupt_bytes": excluded,
     }
     accounting["verified_duplicate_bytes"] = accounting["source_bytes"] - output_bytes - excluded
-    return {**plan, "artifacts": artifacts, "events": events, "byte_accounting": accounting}
+    return {**plan, "gap_timeout_ms": gap_timeout_ms, "artifacts": artifacts, "events": events, "byte_accounting": accounting}

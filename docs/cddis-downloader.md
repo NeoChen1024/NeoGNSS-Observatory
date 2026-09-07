@@ -10,7 +10,7 @@ Use Python 3.11 or newer on Linux (the root lock uses `flock`). Install with
 `python -m pip install -e .`. `gzip` is additionally required for `.Z` inputs.
 Runtime dependencies use minimum versions (`>=`) in `requirements.txt`, with
 no lockfile. To upgrade, run `python -m pip install --upgrade -e .`. Each run
-records actual installed dependency versions and source hashes in provenance.
+does not automatically collect dependency inventories or source snapshots.
 
 Create or update `~/.netrc` locally, then set its permissions to `0600`:
 
@@ -143,7 +143,7 @@ reading parses lines individually rather than loading a giant JSON string.
 The planner and executor still retain their working file/slot collections in
 memory; JSON Lines does not make the entire pipeline constant-memory.
 
-The snapshot includes listing fingerprints, tool source hashes, dependency versions, resolved
+The snapshot includes listing fingerprints, resolved
 product configuration, slots, missing inputs, and candidate URLs. Keep it with
 the run. Changed upstream files require a new plan; there is no silent fallback
 to another center, solution class, or mirror.

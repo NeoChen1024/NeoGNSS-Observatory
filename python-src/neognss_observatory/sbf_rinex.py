@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Preservation-oriented RxTools conversion; source files remain read-only."""
 
-import hashlib
-import importlib.metadata
 import json
 import multiprocessing
-import platform
 import subprocess
 import time
 from collections import Counter
@@ -18,11 +15,7 @@ import click
 from tqdm import tqdm
 
 from .gpst import EPOCH
-
-
-def sha256(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+from .research_output import staged_output
 
 
 def conversion_command(tool, source, version):
@@ -34,7 +27,6 @@ def observation_summary(path):
     header, types, satellites, steps, flags = [], {}, Counter(), Counter(), Counter()
     first = last = previous = None
     epochs = 0
-    body_hash = hashlib.sha256()
     with Path(path).open() as stream:
         for line in stream:
             header.append(line.rstrip("\n"))
@@ -52,14 +44,13 @@ def observation_summary(path):
         if scale != "GPS":
             raise ValueError(f"Project processing requires explicit GPS observation time, found {scale!r}: {path}")
         for line in stream:
-            body_hash.update(line.encode())
             if line.startswith(">"):
                 fields = line[1:].split()
                 flag = int(fields[6])
                 flags[str(flag)] += 1
                 if flag not in (0, 1):
                     for _ in range(int(fields[7])):
-                        body_hash.update(next(stream).encode())
+                        next(stream)
                     continue
                 stamp = " ".join(fields[:6])
                 # This integer is only a calendar-difference anchor, not UTC.
@@ -83,13 +74,12 @@ def observation_summary(path):
         epoch_step_seconds=dict(steps),
         epoch_flags=dict(flags),
         satellite_records=dict(sorted(satellites.items())),
-        body_sha256=body_hash.hexdigest(),
         scope="epoch/header inventory only; not a complete per-observable integrity proof",
     )
 
 
 def audit_observation(path):
-    return dict(path=str(path), sha256=sha256(path), summary=observation_summary(path))
+    return dict(path=str(path), summary=observation_summary(path))
 
 
 @click.command()
@@ -102,7 +92,7 @@ def audit_cli(obs, output, workers):
         with output.open("x") as stream:
             with ProcessPoolExecutor(max_workers=min(workers, len(obs)), mp_context=multiprocessing.get_context("spawn")) as pool:
                 reports = list(tqdm(pool.map(audit_observation, [p.resolve() for p in obs]), total=len(obs), desc="Audit RINEX"))
-            json.dump(dict(audit_source_sha256=sha256(__file__), files=reports), stream, indent=2)
+            json.dump(dict(files=reports), stream, indent=2)
             stream.write("\n")
         click.echo(json.dumps(dict(status="complete", output=str(output))))
     except (OSError, ValueError) as error:
@@ -110,24 +100,17 @@ def audit_cli(obs, output, workers):
 
 
 def convert(job):
-    source, output, tool, version, tool_version, tool_hash = job
+    source, output, tool, version, tool_version = job
     output.mkdir()
     command = conversion_command(tool, source, version)
     report = dict(
         status="running",
         source=str(source),
         source_bytes=source.stat().st_size,
-        source_sha256=sha256(source),
         tool=str(tool),
         tool_version=tool_version,
-        tool_sha256=tool_hash,
         command=command,
-        cwd=str(output),
-        wrapper_sha256=sha256(__file__),
-        time_source_sha256=sha256(Path(__file__).with_name("gpst.py")),
-        platform=platform.platform(),
-        python=platform.python_version(),
-        dependencies={name: importlib.metadata.version(name) for name in ("click", "tqdm")},
+        cwd=".",
         policy=dict(
             rinex_version=version,
             interval="native; no resampling",
@@ -148,7 +131,7 @@ def convert(job):
     with (output / "converter.log").open("xb") as log:
         result = subprocess.run(command, cwd=output, stdout=log, stderr=subprocess.STDOUT)
     artifacts = [
-        dict(path=p.name, bytes=p.stat().st_size, sha256=sha256(p))
+        dict(path=p.name, bytes=p.stat().st_size)
         for p in sorted(output.iterdir())
         if p.name not in ("conversion.json", "converter.log") and p.is_file()
     ]
@@ -157,7 +140,6 @@ def convert(job):
         returncode=result.returncode,
         elapsed_seconds=time.monotonic() - started,
         artifacts=artifacts,
-        log_sha256=sha256(output / "converter.log"),
     )
     if report["status"] == "complete":
         try:
@@ -173,7 +155,7 @@ def convert(job):
     manifest.write_text(json.dumps(report, indent=2) + "\n")
     if report["status"] != "complete":
         raise ValueError(f"Conversion failed; see {output / 'converter.log'}")
-    return dict(source=str(source), output=str(output), artifacts=len(artifacts))
+    return dict(source=str(source), output=output.name, artifacts=len(artifacts))
 
 
 @click.command()
@@ -186,6 +168,8 @@ def convert(job):
 )
 @click.option("--rinex-version", type=click.Choice(["3.04", "3.05", "4.00", "4.01"]), default="4.01", show_default=True)
 @click.option("--workers", type=click.IntRange(1, 32), default=4, show_default=True)
+@click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")
+@staged_output
 def cli(source, tool, output, rinex_version, workers):
     """Convert expanded SBF files without resampling or signal filtering."""
     try:
@@ -196,14 +180,13 @@ def cli(source, tool, output, rinex_version, workers):
             raise ValueError("Expected expanded .sbf or .25_ inputs; compressed inputs are not accepted")
         tool, output = tool.resolve(), output.resolve()
         version = subprocess.check_output([str(tool), "-V"], text=True, stderr=subprocess.STDOUT).strip()
-        tool_hash = sha256(tool)
         output.mkdir(parents=True, exist_ok=False)
-        jobs = [(p, output / f"source-{i:05d}", tool, rinex_version, version, tool_hash) for i, p in enumerate(sources)]
+        jobs = [(p, output / f"source-{i:05d}", tool, rinex_version, version) for i, p in enumerate(sources)]
         # The CPU-heavy work runs in separate native processes; threads only orchestrate them.
         with ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
             results = list(tqdm(pool.map(convert, jobs), total=len(jobs), desc="SBF to RINEX", unit="file"))
         (output / "completed.json").write_text(json.dumps(dict(status="complete", groups=results), indent=2) + "\n")
-        click.echo(json.dumps(dict(status="complete", files=len(results), output=str(output))))
+        click.echo(json.dumps(dict(status="complete", files=len(results))))
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise click.ClickException(str(error)) from error
 

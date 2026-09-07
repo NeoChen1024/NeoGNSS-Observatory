@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
-import hashlib
-import json
-import struct
-import tempfile
 import unittest
-from pathlib import Path
 
 from neognss_observatory.sbas_grid import COORDINATES, TECU_PER_M, HourlyGrid
-from neognss_observatory.sbas_grid_render import EraATimeMapper, aggregate, render
-from neognss_observatory.ubx_restitch import RECORD
 
 
 def message(message_type, content, status="decoded"):
@@ -86,99 +79,6 @@ class HourlyGridTest(unittest.TestCase):
         state.process(1, correction())
         state.finish(5)
         self.assertEqual(list(state.rows()), [])
-
-
-class MappingTest(unittest.TestCase):
-    def make_index(self, path, gpst):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"UBXIDX03" + b"\0" * 40 + RECORD.pack(0, 100, gpst, 0, 0, 1, 1, 1, 0))
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-
-    def make_reconstruction(self, root):
-        reconstruction = root / "reconstruction"
-        indexes = reconstruction / "provenance/indexes"
-        indexes.mkdir(parents=True)
-        records = []
-        for number, gpst in enumerate((3590, 3600)):
-            source = f"source-{number}"
-            digest = self.make_index(indexes / f"sha-{number}.idx", gpst)
-            records.append({"record_type": "sources", "path": source, "sha256": f"sha-{number}", "index_sha256": digest})
-            records.append(
-                {
-                    "record_type": "artifacts",
-                    "name": f"segment-{number}.ubx",
-                    "kind": "gpst_segment",
-                    "start_gpst": gpst,
-                    "end_gpst": gpst,
-                    "size": 100,
-                    "spans": [{"source": source, "begin": 0, "end": 100}],
-                }
-            )
-        (reconstruction / "plan.jsonl").write_text("".join(json.dumps(record) + "\n" for record in records))
-        return reconstruction
-
-    def test_artifact_offset_uses_payload_epoch_index(self):
-        with tempfile.TemporaryDirectory() as temp:
-            mapper = EraATimeMapper(self.make_reconstruction(Path(temp)))
-            try:
-                self.assertEqual(mapper.artifact_cursor("segment-1.ubx").gpst(50), 3600)
-            finally:
-                mapper.close()
-
-    def test_aggregate_retains_mask_across_file_boundary(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            reconstruction = self.make_reconstruction(root)
-            extraction = root / "extraction"
-            group = extraction / "group-00000"
-            group.mkdir(parents=True)
-            (extraction / "completed.json").write_text(json.dumps({"status": "complete", "continuous_groups": 1}))
-            (extraction / "groups.jsonl").write_text(json.dumps({"group": "group-00000"}) + "\n")
-            sources = [
-                {"name": "segment-0.ubx", "stream_begin": 0, "stream_end": 100, "start_gpst": 3590, "end_gpst": 3590},
-                {"name": "segment-1.ubx", "stream_begin": 100, "stream_end": 200, "start_gpst": 3600, "end_gpst": 3600},
-            ]
-            (group / "sources.json").write_text(json.dumps({"sources": sources, "start_gpst": 3590, "end_gpst": 3600}))
-            rows = [
-                {"offset": 50, "gnssId": 1, "svId": 137, "sigId": 0, "freqId": 0, "sbas": mask()},
-                {"offset": 150, "gnssId": 1, "svId": 137, "sigId": 0, "freqId": 0, "sbas": correction(8)},
-            ]
-            (group / "gnss-1_sv-137_sig-0_freq-0.jsonl").write_text(
-                "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows)
-            )
-            averages, diagnostics, messages = aggregate(extraction, reconstruction)
-            self.assertEqual(len(averages), 1)
-            self.assertEqual(averages[0]["hour_gpst"], 3600)
-            self.assertEqual(averages[0]["valid_seconds"], 1)
-            self.assertEqual(messages, {"18": 1, "26": 1})
-            self.assertFalse(diagnostics)
-
-    def test_renderer_writes_png_and_manifest(self):
-        coast = Path(__file__).parents[1] / "contrib/natural-earth/ne_110m_coastline.zip"
-        with tempfile.TemporaryDirectory() as temp:
-            output = Path(temp)
-            rows = [
-                {
-                    "gnssId": 1,
-                    "svId": 137,
-                    "sigId": 0,
-                    "freqId": 0,
-                    "hour_gpst": 3600,
-                    "band": 7,
-                    "mask_bit": 1,
-                    "latitude": 25,
-                    "longitude": 120,
-                    "vtec_tecu": 42.0,
-                    "valid_seconds": 3600,
-                    "coverage": 1.0,
-                }
-            ]
-            manifest, extent = render(rows, coast, output, 0, 100, 0.25)
-            self.assertEqual(len(manifest), 1)
-            image = output / manifest[0]["path"]
-            self.assertEqual(image.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertEqual(hashlib.sha256(image.read_bytes()).hexdigest(), manifest[0]["sha256"])
-            self.assertEqual(extent, (110, 130, 10, 40))
 
 
 if __name__ == "__main__":

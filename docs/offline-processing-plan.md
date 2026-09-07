@@ -83,9 +83,10 @@ Missing expanded peers are inventory gaps that must be reported.
 Expansion of this dataset may still be in progress. Re-inventory after it
 finishes; temporary missing peers are not evidence of missing preservation data.
 
-Raw archives are always read-only. Every output must be reproducible from raw
-data, a pinned toolchain, and versioned configuration, with a provenance record
-for each artifact.
+Raw archives are always read-only. During pre-Alpha exploration, outputs retain
+scientific metadata rather than per-artifact execution provenance. Detailed
+production reproducibility gates below are future goals, not requirements for
+each experimental script change.
 
 ```text
 /hdd/...                         immutable preservation masters
@@ -416,8 +417,8 @@ window.
 Generate daily QC, availability, one-minute aggregates, hourly IPP coverage,
 and a TID candidate list.
 
-Gate: failed days can be rerun independently, and every result has a provenance
-manifest.
+Future production gate: failed days can be rerun independently, with execution
+provenance added when production processing is explicitly requested.
 
 ### P4: normalize Eras A and B
 

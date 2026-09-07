@@ -25,8 +25,39 @@ void scan_archive(std::span<const uint8_t> b, const std::function<void(const Arc
     ArchiveEpoch epoch;
     bool active = false;
     int64_t anchor_tow = -1, anchor_gpst = unknown_gpst;
+    int64_t rawx_gpst = unknown_gpst;
+    auto mapped = [&](int64_t tow) {
+        if(tow < 0 || anchor_gpst == unknown_gpst) return unknown_gpst;
+        int64_t delta = tow - anchor_tow;
+        if(delta < -week_ms / 2) delta += week_ms;
+        if(delta > week_ms / 2) delta -= week_ms;
+        if(std::abs(delta) > 60000) return unknown_gpst;
+        return anchor_gpst + delta;
+    };
     auto finish = [&](uint32_t extra) {
         if(!active) return;
+        // NAV/EOE describes the navigation epoch; RAWX is a measurement on
+        // the steered receiver clock and need not have an identical TOW.
+        if(epoch.gpst_ms == unknown_gpst && rawx_gpst != unknown_gpst) {
+            epoch.gpst_ms = rawx_gpst;
+            if(epoch.tow_ms >= 0) {
+                int64_t delta = epoch.tow_ms - rawx_gpst % week_ms;
+                if(delta < -week_ms / 2) delta += week_ms;
+                if(delta > week_ms / 2) delta -= week_ms;
+                epoch.gpst_ms += delta;
+            } else epoch.tow_ms = rawx_gpst % week_ms;
+        }
+        if(epoch.gpst_ms == unknown_gpst && epoch.tow_ms >= 0) {
+            epoch.gpst_ms = mapped(epoch.tow_ms);
+            if(epoch.gpst_ms != unknown_gpst) epoch.flags |= archive_inferred_time;
+        }
+        if(epoch.gpst_ms != unknown_gpst) {
+            if(rawx_gpst != unknown_gpst && std::abs(epoch.gpst_ms - rawx_gpst) > 500)
+                epoch.flags |= archive_time_conflict;
+            epoch.gps_week = epoch.gpst_ms / week_ms;
+            anchor_tow = epoch.tow_ms;
+            anchor_gpst = epoch.gpst_ms;
+        }
         epoch.flags |= extra;
         if(!epoch.nav_frames) epoch.flags |= archive_no_nav;
         uint64_t h = 14695981039346656037ull;
@@ -34,16 +65,8 @@ void scan_archive(std::span<const uint8_t> b, const std::function<void(const Arc
         epoch.fingerprint = h;
         emit(epoch);
         epoch = {};
+        rawx_gpst = unknown_gpst;
         active = false;
-    };
-    auto mapped = [&](int64_t tow) {
-        if(tow < 0 || anchor_gpst == unknown_gpst) return unknown_gpst;
-        int64_t delta = tow - anchor_tow;
-        if(delta < -week_ms / 2) delta += week_ms;
-        if(delta > week_ms / 2) delta -= week_ms;
-        // Do not extrapolate across long unanchored outages.
-        if(std::abs(delta) > 60000 || delta % 1000) return unknown_gpst;
-        return anchor_gpst + delta / 1000;
     };
     size_t pos = 0, noise = 0;
     while(pos < b.size()) {
@@ -69,45 +92,45 @@ void scan_archive(std::span<const uint8_t> b, const std::function<void(const Arc
         }
         const auto p = b.subspan(pos+6, length-8);
         const uint8_t cls = b[pos+2], id = b[pos+3];
-        int64_t tow = cls == 1 ? nav_tow(id, p) : -1;
-        if(cls == 2 && id == 0x15 && p.size() >= 16) {
-            double t = read_le<double>(p, 0);
+        const int64_t raw_nav_tow = cls == 1 ? nav_tow(id, p) : -1;
+        const int64_t tow = raw_nav_tow >= 0 && raw_nav_tow <= week_ms
+            ? raw_nav_tow % week_ms : -1;
+        // Empty measurement reports can carry startup week/TOW placeholders.
+        // Preserve their bytes, but never use them to split or anchor epochs.
+        const bool timed_rawx = cls == 2 && id == 0x15 && p.size() >= 16 &&
+            p[11] > 0 && p[13] == 1 && p.size() == 16 + size_t(p[11]) * 32;
+        int64_t measurement = unknown_gpst;
+        if(timed_rawx) {
+            const double t = read_le<double>(p, 0);
             if(std::isfinite(t) && t >= 0 && t < 604800)
-                // RAWX receiver clock steering can put the measurement just
-                // below/above the nominal NAV epoch. Group by nearest second,
-                // retaining the original floating timestamp in the source bytes.
-                tow = (std::llround(t) * 1000) % week_ms;
+                measurement = int64_t(read_le<uint16_t>(p, 8)) * week_ms + std::llround(t * 1000);
         }
-        if(tow >= week_ms) tow = -1;
         int64_t gpst = unknown_gpst;
         int32_t full_week = -1;
         if(cls == 1 && id == 0x20 && p.size() == 16 && (p[11] & 3) == 3 && tow >= 0) {
             full_week = read_le<int16_t>(p, 8);
-            if(full_week >= 0) gpst = int64_t(full_week) * 604800 + tow / 1000;
+            if(full_week >= 0) {
+                gpst = int64_t(full_week) * week_ms + raw_nav_tow;
+            }
         }
-        if(cls == 2 && id == 0x15 && p.size() >= 16 && tow >= 0) {
-            full_week = read_le<uint16_t>(p, 8);
-            const double t = read_le<double>(p, 0);
-            gpst = int64_t(full_week) * 604800 + std::llround(t);
-            full_week = gpst / 604800;
-        }
-        if(active && epoch.tow_ms >= 0 && tow >= 0 && epoch.tow_ms / 1000 != tow / 1000)
+        int64_t measurement_delta = measurement == unknown_gpst || epoch.tow_ms < 0
+            ? 0 : measurement % week_ms - epoch.tow_ms;
+        if(measurement_delta < -week_ms / 2) measurement_delta += week_ms;
+        if(measurement_delta > week_ms / 2) measurement_delta -= week_ms;
+        if(active && ((epoch.tow_ms >= 0 && tow >= 0 && epoch.tow_ms != tow) ||
+                     (measurement != unknown_gpst && (rawx_gpst != unknown_gpst || std::abs(measurement_delta) > 500))))
             finish(archive_partial);
         if(!active) { epoch.begin = pos; active = true; }
         epoch.end = pos + length;
-        if(full_week >= 0) epoch.gps_week = full_week;
+        if(measurement != unknown_gpst) rawx_gpst = measurement;
         if(cls == 2 && id == 0x15) epoch.flags |= archive_rawx;
         if(cls == 1 && id == 7 && p.size() == 92) epoch.flags |= archive_pvt;
         ++epoch.frames;
         if(cls == 1) ++epoch.nav_frames;
         if(tow >= 0) epoch.tow_ms = tow;
         if(gpst != unknown_gpst && tow >= 0) {
-            if(epoch.gpst != unknown_gpst && epoch.gpst != gpst) epoch.flags |= archive_time_conflict;
-            epoch.gpst = gpst;
-            anchor_tow = tow; anchor_gpst = gpst;
-        } else if(epoch.gpst == unknown_gpst && tow >= 0) {
-            epoch.gpst = mapped(tow);
-            if(epoch.gpst != unknown_gpst) epoch.flags |= archive_inferred_time;
+            if(epoch.gpst_ms != unknown_gpst && epoch.gpst_ms != gpst) epoch.flags |= archive_time_conflict;
+            epoch.gpst_ms = gpst;
         }
         pos += length;
         noise = pos;

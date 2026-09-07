@@ -18,5 +18,10 @@ def label(seconds):
     return calendar(seconds).strftime("GPST-%Y-%m-%d--%H-%M-%S")
 
 
+def label_ms(milliseconds):
+    seconds, fraction = divmod(milliseconds, 1000)
+    return f"{label(seconds)}-{fraction:03d}"
+
+
 def parse_hour(value):
     return int((datetime.strptime(value, "%Y-%m-%dT%H") - EPOCH).total_seconds())

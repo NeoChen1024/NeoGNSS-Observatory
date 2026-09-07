@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <cppubx2/sbas.hpp>
 #include <cppubx2/ubx_reader.hpp>
-#include <openssl/evp.h>
 #include <filesystem>
 #include <format>
 #include <iostream>
@@ -99,7 +98,6 @@ static void write(FILE *f, const std::string &line) {
 }
 struct Reader {
     FILE *file;
-    EVP_MD_CTX *digest;
     std::array<uint8_t, 65536> buffer{};
     size_t cursor = 0, size = 0;
     uint64_t offset = 0;
@@ -109,8 +107,6 @@ struct Reader {
             r.size = fread(r.buffer.data(), 1, r.buffer.size(), r.file);
             r.cursor = 0;
             if(!r.size) return {ferror(r.file) ? ReadResult::error : ReadResult::end};
-            if(EVP_DigestUpdate(r.digest, r.buffer.data(), r.size) != 1)
-                throw std::runtime_error("Input hash failed");
         }
         ++r.offset;
         return {ReadResult::ok, r.buffer[r.cursor++]};
@@ -127,10 +123,7 @@ int main(int argc, char **argv) {
         if(!input) throw std::runtime_error("Cannot open input");
         fs::path output(argv[2]);
         if(!fs::create_directory(output)) throw std::runtime_error("Output directory must not already exist");
-        std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> digest(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-        if(!digest || EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) != 1)
-            throw std::runtime_error("Cannot initialize input hash");
-        Reader reader{input.get(), digest.get()};
+        Reader reader{input.get()};
         SubframeDemultiplexer demux;
         std::map<SignalKey, File> streams;
         std::map<SBAS::Status, uint64_t> sbas_status;
@@ -200,14 +193,10 @@ int main(int argc, char **argv) {
         for(auto &[key, file] : streams)
             if(fclose(file.release()) != 0) throw std::runtime_error("Signal output close failed");
         if(fclose(errors.release()) != 0) throw std::runtime_error("Error output close failed");
-        std::array<uint8_t, 32> hash{};
-        unsigned length = 0;
-        if(EVP_DigestFinal_ex(digest.get(), hash.data(), &length) != 1 || length != hash.size())
-            throw std::runtime_error("Input hash finalization failed");
         std::ostringstream summary;
         summary << "{\"schema\":1,\"status\":\"complete\",\"source\":" << quote(fs::absolute(argv[1]).string())
                 << ",\"sbas_only\":" << (sbas_only ? "true" : "false")
-                << ",\"source_sha256\":" << quote(hex(hash)) << ",\"source_bytes\":" << reader.offset
+                << ",\"source_bytes\":" << reader.offset
                 << ",\"ubx_frames\":" << frames << ",\"malformed\":" << malformed
                 << ",\"discarded_noise_bytes\":" << discarded << ",\"streams\":[";
         bool first = true;

@@ -106,6 +106,7 @@ from 0 through 9. Native output size is 1800x1200. SBAS-only `sbas-grid-render`
 also supports these two options; its stateful aggregation remains sequential.
 
 Outputs include `images.json`, per-group geometry and track files, logs, and
-`completed.json` with input/binary/source checksums, the pinned RTKLIB revision,
-station-position source, policy and diagnostic counts. The output directory
-must be new; interrupted runs are not automatically resumed.
+`completed.json` with station-position source, calculation policy and diagnostic
+counts. No artifact hash inventory is generated. Outputs publish by rename;
+`--overwrite` retains the previous directory as a backup. Interrupted runs are
+not automatically resumed.

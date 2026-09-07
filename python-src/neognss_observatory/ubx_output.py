@@ -2,60 +2,15 @@
 
 import fcntl
 import hashlib
-import importlib.metadata
 import json
 import os
 import shutil
-import subprocess
-import sys
 import uuid
 from pathlib import Path
 
 from tqdm import tqdm
 
 from .ubx_restitch import sha256, source_identity, write_json, write_plan
-
-
-def snapshot_tools(output, indexer):
-    root = Path(__file__).resolve().parents[2]
-    directory = output / "provenance"
-    directory.mkdir()
-    paths = [root / "CMakeLists.txt", root / "requirements.txt", root / "pyproject.toml"]
-    paths += [
-        p
-        for p in (root / "libcppubx2").rglob("*")
-        if p.is_file() and not any(x in {"build", "__pycache__"} for x in p.relative_to(root).parts)
-    ]
-    paths += list((root / "python-src/neognss_observatory").glob("*.py"))
-    hashes = {}
-    for path in paths:
-        target = directory / "source" / path.relative_to(root)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, target)
-        hashes[str(path.relative_to(root))] = sha256(target)
-    shutil.copyfile(indexer, directory / "cppubx2_archive_index")
-    for parent in indexer.parents:
-        if (parent / "CMakeCache.txt").exists():
-            shutil.copyfile(parent / "CMakeCache.txt", directory / "CMakeCache.txt")
-            break
-    commands = {}
-    for label, command in {
-        "git_head": ["git", "rev-parse", "HEAD"],
-        "submodules": ["git", "submodule", "status"],
-        "compiler": ["c++", "--version"],
-    }.items():
-        commands[label] = subprocess.check_output(command, cwd=root, text=True).strip()
-    write_json(
-        directory / "tools.json",
-        {
-            **commands,
-            "source_sha256": hashes,
-            "indexer_sha256": sha256(indexer),
-            "python": sys.version,
-            "command": sys.argv,
-            "python_dependencies": {n: importlib.metadata.version(n) for n in ("click", "tqdm")},
-        },
-    )
 
 
 def publish(plan, output, indexer):
@@ -72,11 +27,10 @@ def publish(plan, output, indexer):
         else:
             if any(p.name != lock.name for p in output.iterdir()):
                 raise ValueError("Output directory is not empty and has no matching run manifest")
-            write_json(run, {"schema": 2, "time_scale": "GPST", "plan_sha256": plan_hash, "status": "started"})
+            write_json(run, {"schema": plan["schema"], "time_scale": "GPST", "plan_sha256": plan_hash, "status": "started"})
             write_plan(output / "plan.jsonl", plan)
-            snapshot_tools(output, indexer)
             indexes = output / "provenance/indexes"
-            indexes.mkdir()
+            indexes.mkdir(parents=True)
             for source in plan["sources"]:
                 destination = indexes / (source["sha256"] + ".idx")
                 shutil.copyfile(source["index"], destination)

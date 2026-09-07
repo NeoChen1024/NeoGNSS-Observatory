@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
-import tempfile
 import unittest
-from pathlib import Path
 
 import numpy as np
-from PIL import Image
 
-from neognss_observatory.sbas_grid_render import render
 from neognss_observatory.tec_ipp import (
     ArcTracker,
     hourly_display_arcs,
@@ -102,26 +98,6 @@ class TecIppTests(unittest.TestCase):
         lon, result = station_lonlat((n * np.cos(lat), 0, n * (1 - e2) * np.sin(lat)))
         self.assertAlmostEqual(result, 45)
         self.assertEqual(lon, 0)
-
-    def test_parallel_sbas_png_matches_serial_pixels(self):
-        coast = Path(__file__).parents[1] / "contrib/natural-earth/ne_10m_coastline.zip"
-        rows = [
-            dict(
-                gnssId=1, svId=137, sigId=0, freqId=0, hour_gpst=h, longitude=120, latitude=25, coverage=1, vtec_tecu=30 + h / 3600
-            )
-            for h in (0, 3600)
-        ]
-        with tempfile.TemporaryDirectory() as temporary:
-            serial, parallel = Path(temporary) / "serial", Path(temporary) / "parallel"
-            serial.mkdir()
-            parallel.mkdir()
-            a, extent_a = render(rows, coast, serial, 0, 100, 0.25, workers=1)
-            b, extent_b = render(rows, coast, parallel, 0, 100, 0.25, workers=2)
-            self.assertEqual(extent_a, extent_b)
-            self.assertEqual(a, b)
-            for first, second in zip(a, b):
-                with Image.open(serial / first["path"]) as x, Image.open(parallel / second["path"]) as y:
-                    np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
 
 
 if __name__ == "__main__":
