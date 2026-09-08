@@ -41,10 +41,10 @@ compatibility with the solver and observation metadata must be verified before
 scientific processing; downloading a matching filename does not establish them.
 
 ```sh
-cddis-download plan --config work/products.toml --output work/plan.jsonl
-cddis-download fetch --plan work/plan.jsonl --root work/products
-cddis-download status --root work/products
-cddis-download verify --root work/products
+ngo-cddis-download plan --config work/products.toml --output work/plan.jsonl
+ngo-cddis-download fetch --plan work/plan.jsonl --root work/products
+ngo-cddis-download status --root work/products
+ngo-cddis-download verify --root work/products
 ```
 
 `--profile` aliases `--config`. `plan --start YYYY-MM-DD --end YYYY-MM-DD`

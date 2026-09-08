@@ -10,18 +10,18 @@ authors = [{ name = "Neo_Chen", email = "chenkolei@gmail.com" }]
 dynamic = ["dependencies"]
 
 [project.scripts]
-receiver-clock = "neognss_observatory.receiver_clock:cli"
-receiver-clock-plot = "neognss_observatory.receiver_clock_plot:cli"
-receiver-clock-reunwrap = "neognss_observatory.receiver_clock_reunwrap:cli"
-cddis-download = "neognss_observatory.cddis_download:cli"
+ngo-receiver-clock = "neognss_observatory.receiver_clock:cli"
+ngo-receiver-clock-plot = "neognss_observatory.receiver_clock_plot:cli"
+ngo-receiver-clock-reunwrap = "neognss_observatory.receiver_clock_reunwrap:cli"
+ngo-cddis-download = "neognss_observatory.cddis_download:cli"
 ngo-dataset-qa = "neognss_observatory.dataset_qa:cli"
-sbas-frame-parquet = "neognss_observatory.sbas_extract:cli"
-sbas-grid-parquet = "neognss_observatory.sbas_grid_parquet:cli"
-sbas-grid-plot = "neognss_observatory.sbas_grid_plot:cli"
-sbas-map-video = "neognss_observatory.sbas_map_video:cli"
-tec-ipp-map = "neognss_observatory.tec_ipp:cli"
-sbf-rinex = "neognss_observatory.sbf_rinex:cli"
-rinex-observation-audit = "neognss_observatory.sbf_rinex:audit_cli"
+ngo-sbas-frame-parquet = "neognss_observatory.sbas_extract:cli"
+ngo-sbas-grid-parquet = "neognss_observatory.sbas_grid_parquet:cli"
+ngo-sbas-grid-plot = "neognss_observatory.sbas_grid_plot:cli"
+ngo-sbas-map-video = "neognss_observatory.sbas_map_video:cli"
+ngo-tec-ipp-map = "neognss_observatory.tec_ipp:cli"
+ngo-sbf-rinex = "neognss_observatory.sbf_rinex:cli"
+ngo-rinex-observation-audit = "neognss_observatory.sbf_rinex:audit_cli"
 
 [build-system]
 requires = ["setuptools>=77.0.3", "pybind11>=3.1.0", "click>=8.5.0", "pynmeagps>=1.1.7", "pyrtcm>=1.2.0"]

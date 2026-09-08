@@ -79,7 +79,7 @@ def days(start, end):
 
 
 def tool_identity():
-    return {"name": "cddis-download"}
+    return {"name": "ngo-cddis-download"}
 
 
 @contextlib.contextmanager

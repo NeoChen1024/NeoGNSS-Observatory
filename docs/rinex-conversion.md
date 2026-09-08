@@ -52,7 +52,7 @@ station coordinates are not surveyed station metadata.
 Use a separately installed Septentrio `sbf2rin`; the installation is not vendored.
 
 ```sh
-sbf-rinex --tool /path/to/RxTools/bin/sbf2rin \
+ngo-sbf-rinex --tool /path/to/RxTools/bin/sbf2rin \
   --source /data/recording.25_ --output /data/rinex-export \
   --rinex-version 4.01 --workers 4
 ```
@@ -84,7 +84,7 @@ data was recorded.
 ## Observation audit
 
 ```sh
-rinex-observation-audit --obs /data/export.25O --obs /data/reference.25o \
+ngo-rinex-observation-audit --obs /data/export.25O --obs /data/reference.25o \
   --output /data/observation-audit.json --workers 2
 ```
 

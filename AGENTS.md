@@ -162,8 +162,8 @@ configuring `libcppgnss/` directly.
   or reconstruction indexes in downstream readers, and do not rerun complete QA
   there. Share epoch/field interpretation in native code; retain necessary
   parser bounds, usable time and scientific validity checks.
-- New project CLI names use the `ngo-` prefix. Existing other entry points are
-  migrated separately, not renamed implicitly during unrelated changes.
+- All installed project Python CLI names use the `ngo-` prefix. Keep examples
+  aligned with the registered entry points; do not install unprefixed aliases.
 
 - Raw processing CLIs expose `--protocol/-p ubx|sbf` (default `ubx`). Validate
   complete foreign-protocol frames before skipping them atomically; report

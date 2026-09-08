@@ -9,6 +9,7 @@ only when they affect present interpretation or processing.
 - [Processing overview](processing-overview.md): supported paths and research boundaries.
 - [GPST policy](time-policy.md): units, timestamps and partitions.
 - [Dataset notes](dataset-notes.md): overlap and acquisition caveats that affect analysis.
+- [Implementation TODO](TODO.md): agreed raw-observation STEC design and unchecked implementation tasks, not current functionality.
 
 ## Tools
 

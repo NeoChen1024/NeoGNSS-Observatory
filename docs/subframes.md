@@ -8,13 +8,13 @@ The processing boundary is the SBAS message, not its UBX/SBF transport.
 # Optional read-only QA; extraction does not require evidence of this run.
 ngo-dataset-qa --input-dir /data/ubx
 # Choose expanded raw UBX or SBF only at extraction.
-sbas-frame-parquet -p ubx --input-dir /data/ubx --output /data/sbas-frames
+ngo-sbas-frame-parquet -p ubx --input-dir /data/ubx --output /data/sbas-frames
 # Alternatively:
-sbas-frame-parquet -p sbf --input-dir /data/raw-sbf --output /data/sbas-frames
+ngo-sbas-frame-parquet -p sbf --input-dir /data/raw-sbf --output /data/sbas-frames
 
-sbas-grid-parquet --input-dir /data/sbas-frames --output /data/sbas-grid
+ngo-sbas-grid-parquet --input-dir /data/sbas-frames --output /data/sbas-grid
 
-sbas-grid-plot --input-dir /data/sbas-grid --output /data/sbas-maps \
+ngo-sbas-grid-plot --input-dir /data/sbas-grid --output /data/sbas-maps \
   --coastline contrib/natural-earth/ne_10m_coastline.zip
 ```
 
@@ -25,7 +25,7 @@ carry the information required for independent downstream processing.
 
 ### Explicit wire protocol
 
-Only `sbas-frame-parquet` uses `--protocol/-p ubx|sbf` (default UBX,
+Only `ngo-sbas-frame-parquet` uses `--protocol/-p ubx|sbf` (default UBX,
 case-insensitive). Complete checksum-valid foreign frames are skipped atomically
 with throttled stderr warnings and skipped frame/byte counts. Invalid wire
 frames follow the decoder's corruption/resynchronization policy; corrupt lengths
@@ -101,7 +101,7 @@ publication is atomic; `--overwrite` retains the previous output as a backup.
 Concise completion summaries are informational; grid reads frame schemas and
 end records directly without requiring completion JSON or raw sources.
 
-`sbas-grid-plot` uses only grid Parquet and a coastline asset. It computes
+`ngo-sbas-grid-plot` uses only grid Parquet and a coastline asset. It computes
 valid-duration-weighted hourly means; `--min-coverage` defaults to 0.25.
 `--start/--end YYYY-MM-DDTHH` select GPST hours with an exclusive end.
 Missing cells stay absent. Rendering/PNG compression use independent worker
@@ -190,7 +190,7 @@ matching and aging independently per SBAS signal.
 Encode the PNG manifest in its recorded order with a Vulkan Video HEVC encoder:
 
 ```sh
-./scripts/encode-sbas-map-video \
+ngo-sbas-map-video \
   --images-manifest work/era-a-vtec-hourly/images.json \
   --output work/era-a-vtec-hourly/era-a-prn137-hourly-vtec-5fps-hevc.mp4 \
   --title "Era A SBAS PRN 137 hourly mean VTEC"

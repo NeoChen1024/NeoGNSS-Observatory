@@ -1,8 +1,5 @@
 include config/products.example.toml
-include docs/cddis-downloader.md
-include docs/ubx-restitch.md
-include docs/offline-processing-plan.md
-include docs/native-architecture.md
+recursive-include docs *.md
 include AGENTS.md
 include CMakeLists.txt requirements.txt
 recursive-include libcppgnss *.txt *.hpp *.cpp *.py *.md LICENSE

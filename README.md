@@ -28,20 +28,24 @@ experimental script contracts. Raw archives remain read-only.
 
 ## Python tools
 
+All installed Python commands use the `ngo-` prefix. With the installation's
+executable directory on `PATH`, type `ngo-` and use shell command completion
+to list them. Each command provides `--help`.
+
 The Python package requires Python 3.11 or newer. Runtime dependencies are
-declared in `requirements.txt`. The `cddis-download` command inventories,
+declared in `requirements.txt`. The `ngo-cddis-download` command inventories,
 downloads and verifies external GNSS products. `ngo-dataset-qa` performs optional
 read-only QA by default; `--profile restitch` reconstructs overlapping UBX
 archives such as Era A. Nonoverlapping Era B/C inputs need no reconstruction.
-`sbas-frame-parquet -p ubx|sbf` extracts raw or reconstructed UBX or
+`ngo-sbas-frame-parquet -p ubx|sbf` extracts raw or reconstructed UBX or
 expanded SBF into source-independent daily SBAS frame Parquet.
-`sbas-grid-parquet` reads only these frames to calculate daily GPST
-grid validity intervals; `sbas-grid-plot` reads those
+`ngo-sbas-grid-parquet` reads only these frames to calculate daily GPST
+grid validity intervals; `ngo-sbas-grid-plot` reads those
 daily files to produce experimental hourly VTEC maps without reopening raw recordings.
-`sbas-map-video` encodes
+`ngo-sbas-map-video` encodes
 maps as a manifest-ordered HEVC/MP4 preview.
-`sbf-rinex` wraps an installed Septentrio RxTools converter for native-rate SBF
-exports; `rinex-observation-audit` inventories the resulting observations.
+`ngo-sbf-rinex` wraps an installed Septentrio RxTools converter for native-rate SBF
+exports; `ngo-rinex-observation-audit` inventories the resulting observations.
 See the [RINEX conversion guide](docs/rinex-conversion.md) for options and limitations.
 
 ```sh
@@ -67,15 +71,15 @@ over pale SBAS backgrounds, with parallel hourly PNG export.
 The [receiver clock pipeline](docs/receiver-clock.md) separates extraction,
 clock reconstruction, and plotting:
 
-- `receiver-clock` uses a native UBX scanner to export NAV-CLOCK samples to
+- `ngo-receiver-clock` uses a native UBX scanner to export NAV-CLOCK samples to
   Parquet, together with clock-adjustment events and available MON-SYS
   temperature/runtime telemetry. Runtime decreases identify observed restarts;
   missing MON-SYS does not imply uninterrupted receiver operation.
-- `receiver-clock-reunwrap` recalculates clock arcs and accumulated bias
+- `ngo-receiver-clock-reunwrap` recalculates clock arcs and accumulated bias
   corrections from existing Parquet, without rescanning UBX. Short gaps retain
   the accumulated correction; the default timeout is 50 seconds. Unresolved
   jumps remain explicit uncertainty boundaries, not inferred reboots.
-- `receiver-clock-plot` produces parallel hourly detail PNGs and daily overviews
+- `ngo-receiver-clock-plot` produces parallel hourly detail PNGs and daily overviews
   showing raw/unwrapped bias, drift, accuracy, adjustment rates and coverage.
   Missing temperature is labeled `unavailable`. The unwrapped curve is not
   manually rebased at arc, file or hour boundaries. Display reduction preserves

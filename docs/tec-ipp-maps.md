@@ -1,6 +1,6 @@
 # Experimental hourly IPP tracks
 
-`tec-ipp-map` computes broadcast-orbit geometry from RINEX and renders hourly
+`ngo-tec-ipp-map` computes broadcast-orbit geometry from RINEX and renders hourly
 ionospheric pierce-point (IPP) tracks over pale SBAS hourly VTEC cells. Track
 colors represent slant TEC change relative to the first accepted observation
 in each continuous satellite/signal arc within the displayed GPST hour.
@@ -28,7 +28,7 @@ frames in time order. Conversion state must persist across daily file cuts:
 build/native/neognss_convbin -r ubx -v 3.04 -od -os -oi -ot -ol \
   -o group.obs -n group.nav 'ordered-group/*.ubx'
 
-tec-ipp-map \
+ngo-tec-ipp-map \
   --obs group.obs --nav group.nav \
   --geometry-worker build/native/neognss_rinex_geometry \
   --sbas-hourly /data/sbas-maps/hourly/GPST-2025-04-01.jsonl \
@@ -103,7 +103,7 @@ One continuous group's decoding and arc tracking remain sequential. Large
 RINEX groups are loaded into native memory, so reduce workers if needed.
 
 PNG compression defaults to level 3 and can be set with `--png-compression`
-from 0 through 9. Native output size is 1800x1200. SBAS-only `sbas-grid-plot`
+from 0 through 9. Native output size is 1800x1200. SBAS-only `ngo-sbas-grid-plot`
 also supports these two options; hourly aggregation reads the daily grid products.
 
 Outputs include `images.json`, per-group geometry and track files, logs, and

@@ -27,13 +27,13 @@ extraction state. See [dataset QA](dataset-qa.md) and [dataset notes](dataset-no
 
 | Input | Processing | Products |
 | --- | --- | --- |
-| UBX or SBF | `sbas-frame-parquet` → `sbas-grid-parquet` → `sbas-grid-plot` | Daily SBAS body and IGP-interval Parquet; hourly VTEC maps |
-| UBX NAV-CLOCK/MON-SYS | `receiver-clock` → `receiver-clock-plot` | Clock Parquet, events, telemetry and plots |
-| Existing clock Parquet | `receiver-clock-reunwrap` | Recomputed clock arcs and bias corrections |
+| UBX or SBF | `ngo-sbas-frame-parquet` → `ngo-sbas-grid-parquet` → `ngo-sbas-grid-plot` | Daily SBAS body and IGP-interval Parquet; hourly VTEC maps |
+| UBX NAV-CLOCK/MON-SYS | `ngo-receiver-clock` → `ngo-receiver-clock-plot` | Clock Parquet, events, telemetry and plots |
+| Existing clock Parquet | `ngo-receiver-clock-reunwrap` | Recomputed clock arcs and bias corrections |
 | UBX | RTKLIB-EX `neognss_convbin` | RINEX OBS/NAV supported by the pinned converter |
-| SBF | `sbf-rinex` with installed RxTools | Native-rate RINEX and applicable auxiliary outputs |
-| RINEX OBS/NAV and SBAS hourly cells | `tec-ipp-map` | Broadcast-orbit IPP tracks, arc-relative dSTEC and maps |
-| CDDIS listings/products | `cddis-download` | Explicit product plans and integrity-checked downloads |
+| SBF | `ngo-sbf-rinex` with installed RxTools | Native-rate RINEX and applicable auxiliary outputs |
+| RINEX OBS/NAV and SBAS hourly cells | `ngo-tec-ipp-map` | Broadcast-orbit IPP tracks, arc-relative dSTEC and maps |
+| CDDIS listings/products | `ngo-cddis-download` | Explicit product plans and integrity-checked downloads |
 
 RINEX conversion is not lossless preservation of raw protocols and does not
 automatically prove cross-file continuity. Follow the [conversion guide](rinex-conversion.md).
@@ -63,7 +63,7 @@ recovery and reconstruction overlap proofs serve distinct integrity needs.
   Absolute TEC requires ambiguity/bias treatment compatible with the actual
   observation codes; downloaded bias products are not automatically applied.
 - Current IPP geometry uses broadcast NAV. Precise SP3/CLK consumption is an
-  extension point, not an option already wired into `tec-ipp-map`.
+  extension point, not an option already wired into `ngo-tec-ipp-map`.
 - SBAS broadcast equivalent VTEC is an operational correction field, not a
   direct high-rate ionospheric measurement at the receiver.
 - ROT/ROTI, detrending, automated TID detection, PPP and absolute TEC need

@@ -1,6 +1,6 @@
 # Receiver clock telemetry pipeline
 
-The `receiver-clock` command exports receiver clock samples, temperature
+The `ngo-receiver-clock` command exports receiver clock samples, temperature
 telemetry, restart events and inferred integer-millisecond clock adjustments.
 It consumes expanded raw or reconstructed UBX recordings directly, recursively
 in path order. `unassigned/` is excluded. Inputs are read-only; no QA stamp,
@@ -15,7 +15,7 @@ files; recorded local offsets refer to the file where each frame starts.
 Install the project and its native extension, then run:
 
 ```sh
-receiver-clock --input-dir /data/gnss/era-a --output work/era-a-clock
+ngo-receiver-clock --input-dir /data/gnss/era-a --output work/era-a-clock
 ```
 
 Research runs publish their output directory only after success. Use `--overwrite`
@@ -121,7 +121,7 @@ Detailed plotting is a downstream consumer, not part of this extraction CLI.
 ## Plotting completed telemetry
 
 ```sh
-receiver-clock-plot --input-dir /data/clock-telemetry --output /data/clock-plots \
+ngo-receiver-clock-plot --input-dir /data/clock-telemetry --output /data/clock-plots \
   --title "Era A receiver clock" --workers 8
 ```
 
@@ -162,9 +162,9 @@ temperature age. `run.json` and `summary.json` are informational, not read gates
 ### Recompute existing clock products without scanning UBX
 
 ```sh
-receiver-clock-reunwrap --input-dir /data/clock-telemetry \
+ngo-receiver-clock-reunwrap --input-dir /data/clock-telemetry \
   --output /data/clock-telemetry-gap50 --max-gap 50
-receiver-clock-plot --input-dir /data/clock-telemetry-gap50 \
+ngo-receiver-clock-plot --input-dir /data/clock-telemetry-gap50 \
   --output /data/clock-plots-gap50 --workers 8
 ```
 

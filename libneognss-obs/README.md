@@ -20,9 +20,9 @@ Install the repository Python package to build and install the extension:
 ```sh
 git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json
 python -m pip install .
-receiver-clock --input-dir /data/reconstructed --output /data/clock
-sbas-frame-parquet -p ubx --input-dir /data/reconstructed --output /data/sbas-frames
-sbas-grid-parquet --input-dir /data/sbas-frames --output /data/sbas-grid
+ngo-receiver-clock --input-dir /data/reconstructed --output /data/clock
+ngo-sbas-frame-parquet -p ubx --input-dir /data/reconstructed --output /data/sbas-frames
+ngo-sbas-grid-parquet --input-dir /data/sbas-frames --output /data/sbas-grid
 ```
 
 No `--worker` or `--indexer` executable paths are used. The old internal
