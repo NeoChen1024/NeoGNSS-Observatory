@@ -1,29 +1,19 @@
 # NeoGNSS Observatory
 
-This project builds a reproducible offline ionospheric-observation and static
-PPP pipeline from the existing GNSS raw archive. The repository stores code,
-configuration, manifests, and compact result summaries. Raw archives remain
+This pre-Alpha project provides offline GNSS research tools for receiver
+telemetry, SBAS grids and relative carrier-phase TEC. The repository stores
+code and configuration. Raw archives remain
 read-only preservation masters, and large derived data stays out of Git.
 
 Era A-C processing reads expanded input files directly, without an XZ
 decompression stage.
 Both the expanded dataset and preservation masters remain read-only.
 
-See [docs/offline-processing-plan.md](docs/offline-processing-plan.md) for the
-verified data inventory and proposed implementation sequence.
-
+See the [documentation index](docs/README.md) for current tools and the
+[processing overview](docs/processing-overview.md) for implemented paths and
+scientific limits. PPP and calibrated absolute TEC remain extension goals.
 All observation processing uses [one GPST time policy](docs/time-policy.md),
 including day/hour boundaries and GPST-prefixed derived filenames.
-
-The broader scientific validation plan remains staged rather than treating
-full-archive processing as proof of scientific validity:
-
-1. Generate one GPST day of canonical RINEX from Era C's 1 Hz SBF data.
-2. Cross-check it against the receiver-generated 30 s RINEX.
-3. Produce availability, gap, cycle-slip, and signal-pair QC.
-4. Produce carrier-phase relative dTEC, ROT/ROTI, and IPP time series.
-5. Expand to all 147 Era C days only after the golden-day gate passes, then
-   ingest Eras A and B.
 
 All references to RTKLIB mean the RTKLIB-EX `main` branch from
 [`rtklibexplorer/RTKLIB`](https://github.com/rtklibexplorer/RTKLIB), not the
@@ -40,18 +30,19 @@ experimental script contracts. Raw archives remain read-only.
 
 The Python package requires Python 3.11 or newer. Runtime dependencies are
 declared in `requirements.txt`. The `cddis-download` command inventories,
-downloads and verifies external GNSS products. `ubx-restitch` reconstructs Era A/B
-GPST segments. `sbas-frame-parquet -p ubx|sbf` extracts reconstructed UBX or
+downloads and verifies external GNSS products. `ngo-dataset-qa` performs optional
+read-only QA by default; `--profile restitch` reconstructs overlapping UBX
+archives such as Era A. Nonoverlapping Era B/C inputs need no reconstruction.
+`sbas-frame-parquet -p ubx|sbf` extracts raw or reconstructed UBX or
 expanded SBF into source-independent daily SBAS frame Parquet.
 `sbas-grid-parquet` reads only these frames to calculate daily GPST
 grid validity intervals; `sbas-grid-plot` reads those
 daily files to produce experimental hourly VTEC maps without reopening raw recordings.
-The earlier combined raw-to-map command is removed. `sbas-map-video` encodes
+`sbas-map-video` encodes
 maps as a manifest-ordered HEVC/MP4 preview.
 `sbf-rinex` wraps an installed Septentrio RxTools converter for native-rate SBF
 exports; `rinex-observation-audit` inventories the resulting observations.
-See the [RxTools conversion experiment](docs/era-c-rxtools-experiment.md) for
-preservation options, validation results and current limits.
+See the [RINEX conversion guide](docs/rinex-conversion.md) for options and limitations.
 
 ```sh
 git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json
@@ -60,8 +51,8 @@ python -m pip install .
 
 Python dependencies use minimum versions to allow upgrades. Building the package
 also requires CMake 3.24+, a C++20 compiler/standard library with `std::format`,
-and OpenSSL Crypto development files. Installation builds the native extension;
-processing commands no longer accept `--worker` or `--indexer` executable paths.
+and OpenSSL Crypto development files. Installation builds the native extension used by UBX/SBF processing. The
+optional RINEX geometry backend is built separately.
 
 See [the downloader guide](docs/cddis-downloader.md) and
 [example configuration](config/products.example.toml) for Earthdata setup,
@@ -98,7 +89,7 @@ hash chains are not generated.
 ## Native libraries
 
 [`libcppgnss/`](libcppgnss/README.md) contains the maintained C++20 UBX
-and SBF protocol library and the original logger as `examples/ubxlogger.cpp`.
+and SBF protocol library and the maintained logger as `examples/ubxlogger.cpp`.
 CMake exposes `cppgnss::cppgnss`; codegen covers UBX and all available pinned
 `contrib/pysbf2` block definitions. The generic library has no Python runtime
 dependency. SBAS L1 decoding accepts receiver-independent air-frame bits.
@@ -106,21 +97,19 @@ dependency. SBAS L1 decoding accepts receiver-independent air-frame bits.
 [`libneognss-obs/`](libneognss-obs/README.md) contains Observatory-specific
 archive segmentation, clock reconstruction and SBAS grid state. Its pybind11
 extension passes batches directly to Python, releasing the GIL during native
-processing. Python owns orchestration, file/Parquet I/O and plotting. The old
-indexer, clock-scan, subframe-export and inspection executables are removed;
-`neoubxlogger` remains a standalone application.
+processing. Python owns orchestration, file/Parquet I/O and plotting.
+`neoubxlogger` is a standalone application.
 
 See the [architecture guide](docs/native-architecture.md) for API boundaries
 and SBF schema limitations.
 
-The [UBX reconstruction tool](docs/ubx-restitch.md) inventories expanded archives,
-proves cross-file overlaps, and writes GPST segments without modifying inputs.
+The [dataset QA tool](docs/dataset-qa.md) defaults to a read-only scan.
+Its explicit restitch profile proves overlaps and writes GPST segments.
 Its millisecond indexes preserve subsecond navigation epochs. It splits at
 GPST midnight or a NAV-to-NAV interval exceeding `--gap-timeout` (default
 50 seconds), supporting both high-rate and 30-second low-rate input without
-fabricating missing observations. Era B's nested inputs can be selected with
-`--recursive`. New indexes and plans are versioned separately from the older
-second-based format.
+fabricating missing observations. Nonoverlapping inputs need no reconstruction;
+input traversal is recursive by default.
 
 ### Logger recording and diagnostics
 
@@ -161,7 +150,7 @@ RTKLIB.
 
 `contrib/pyubx2` is also pinned to an exact revision and is used only for
 C++ parser generation. The logger and parser source are maintained directly
-in this repository, not through a submodule of the historical logger project.
+in this repository.
 
 ## License
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <neognss_obs/processing.hpp>
 #include <set>
 
@@ -26,6 +27,8 @@ struct ClockProcessor::State {
     cppgnss::StreamDecoder reader{cppgnss::Protocol::ubx};
     double max_gap, tolerance, temp_age;
     std::string source;
+    std::string input_source;
+    std::deque<std::pair<uint64_t, std::string>> sources;
     std::vector<Record> epoch;
     std::optional<int64_t> tow, uptime, last_reset;
     Json temperature, previous;
@@ -305,12 +308,16 @@ ClockProcessor::ClockProcessor(double gap, double tolerance, double age) : state
 }
 ClockProcessor::~ClockProcessor() = default;
 Json ClockProcessor::feed(std::span<const uint8_t> data, const std::string &source) {
-    if (!state_->source.empty() && source != state_->source)
-        throw std::runtime_error("Call end_file before changing clock source");
-    state_->source = source;
-    state_->reader.feed(data, [&](const cppgnss::FrameView &frame) { state_->accept(frame); });
-    if (state_->reader.invalid || state_->reader.noise)
-        throw std::runtime_error("Invalid framing in reconstructed clock input: " + source);
+    if (state_->sources.empty() || source != state_->input_source) {
+        state_->sources.emplace_back(state_->reader.bytes, source);
+        state_->input_source = source;
+    }
+    state_->reader.feed(data, [&](cppgnss::FrameView frame) {
+        while (state_->sources.size() > 1 && state_->sources[1].first <= frame.offset) state_->sources.pop_front();
+        state_->source = state_->sources.front().second;
+        frame.offset -= state_->sources.front().first;
+        state_->accept(frame);
+    });
     return state_->drain();
 }
 Json ClockProcessor::end_file() {
@@ -320,6 +327,8 @@ Json ClockProcessor::end_file() {
     out["frames"] = state_->reader.frames;
     state_->reader = cppgnss::StreamDecoder(cppgnss::Protocol::ubx);
     state_->source.clear();
+    state_->input_source.clear();
+    state_->sources.clear();
     return out;
 }
 Json ClockProcessor::finish() {

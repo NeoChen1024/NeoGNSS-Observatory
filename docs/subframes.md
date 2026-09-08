@@ -5,8 +5,10 @@ The processing boundary is the SBAS message, not its UBX/SBF transport.
 ## Daily Parquet pipeline
 
 ```sh
-# Choose UBX reconstruction or expanded raw SBF only at extraction.
-sbas-frame-parquet -p ubx --input-dir /data/reconstructed --output /data/sbas-frames
+# Optional read-only QA; extraction does not require evidence of this run.
+ngo-dataset-qa --input-dir /data/ubx
+# Choose expanded raw UBX or SBF only at extraction.
+sbas-frame-parquet -p ubx --input-dir /data/ubx --output /data/sbas-frames
 # Alternatively:
 sbas-frame-parquet -p sbf --input-dir /data/raw-sbf --output /data/sbas-frames
 
@@ -18,9 +20,8 @@ sbas-grid-plot --input-dir /data/sbas-grid --output /data/sbas-maps \
 
 Extraction, grid calculation and plotting are separate commands. Grid accepts
 only frame Parquet and has no protocol selection, raw-data path, reconstruction
-dependency, or source-offset lookup. The earlier raw JSONL intermediate and
-combined `sbas-grid-render` CLI are removed. Old products must be regenerated;
-there is no compatibility reader or automatic deletion of existing products.
+dependency, or source-offset lookup. Input schemas and stream end records
+carry the information required for independent downstream processing.
 
 ### Explicit wire protocol
 
@@ -30,15 +31,20 @@ with throttled stderr warnings and skipped frame/byte counts. Invalid wire
 frames follow the decoder's corruption/resynchronization policy; corrupt lengths
 can still result in a truncated-tail error.
 
-UBX input is a completed GPST reconstruction, excluding unassigned data.
-Reconstruction epoch mappings resolve the SFRBX time at extraction. SBF input
+UBX input can be raw nonoverlapping recordings or reconstructed files;
+`unassigned/` is excluded. No completion manifest or reconstruction index is
+opened. A shared native epoch assembler resolves SFRBX GPST from NAV-TIMEGPS
+and supported RAWX anchors while streaming, buffering messages until their
+epoch is resolved. It is also used by QA/reconstruction, but extraction does
+not collect or rerun full QA diagnostics. Files are traversed recursively in
+path order; filenames never supply time. SBF input
 recursively selects expanded `.sbf`, `.YY_`, and `.ubx` candidates in path
 order; arrange files in stream order and do not mix overlapping recordings.
 No XZ decompression occurs. SBF uses GEORawL1 TOW/WNc directly. Missing time
 and reversed timestamps fail rather than receiving invented timestamps.
 
-Continuous file/day boundaries preserve framing and signal state. UBX uses
-reconstruction continuous groups. SBF starts a new per-signal stream after a
+Continuous file/day boundaries preserve framing and signal state. UBX starts
+a new stream after a navigation-epoch gap greater than `--gap-timeout`. SBF starts a new per-signal stream after a
 gap greater than `--gap-timeout` (default 50 seconds), considering every SBAS
 message type. This is a conservative signal-coverage rule, not proof of reboot.
 At a gap or EOF, stream closure stops at the last observed time; UBX may close
@@ -136,9 +142,9 @@ The router retains counts, not a growing history. Callers own buffering, files,
 and parser state. Add future constellation parsers beside `sbas.hpp`; do not
 reinterpret another GNSS merely because its frame resembles SBAS.
 
-RXM-SFRBX supplies no reception timestamp. Source offsets are provenance, not
-time. Any later association with NAV timestamps must explicitly preserve its
-inference and time scale; filenames alone are insufficient.
+RXM-SFRBX supplies no reception timestamp. Source offsets are not time.
+The input adapter resolves navigation-epoch context before writing frame
+Parquet; filenames alone are insufficient.
 
 ## SBAS L1 content support
 
@@ -202,14 +208,10 @@ frame count and duration with `ffprobe`. Full decoding is opt-in with
 there is no environment/hash provenance bundle. Use `--overwrite` to replace an
 existing video after the new video passes the requested checks.
 
-## References and verification
+## References
 
 - [u-blox integration manual](https://www.u-blox.com/sites/default/files/ZED-F9P_IntegrationManual_UBX-18010802.pdf): RXM-SFRBX navigation-word arrangement.
 - [ESA Navipedia SBAS message format](https://gssc.esa.int/navipedia/index.php/The_EGNOS_SBAS_Message_Format_Explained): message contents and correction semantics.
 - [ESA Navipedia ionospheric delay](https://gssc.esa.int/navipedia/index.php/Ionospheric_Delay): first-order delay/TEC relationship.
 - [Natural Earth 1:10m coastline](https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-coastline/): public-domain coastline source.
 - [Pinned RTKLIB SBAS implementation](../contrib/RTKLIB/src/sbas.c): field-layout cross-reference; dependency revision is the repository gitlink.
-
-Existing core C++ checks cover field extraction, CRC, signal separation and
-invalid/unsupported frames. Script output contracts are intentionally not frozen
-by integration tests during pre-Alpha development.

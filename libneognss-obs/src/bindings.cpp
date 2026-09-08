@@ -103,6 +103,16 @@ struct SbfBatch {
 };
 } // namespace
 PYBIND11_MODULE(_native, m) {
+    using Scan = Guarded<neognss_obs::DatasetScan>;
+    py::class_<Scan>(m, "DatasetScan")
+        .def(py::init<std::string, bool, double>(), py::arg("protocol") = "ubx", py::arg("qa") = true,
+             py::arg("gap_timeout") = 50)
+        .def("feed", [](Scan &s, py::buffer data) {
+            auto info = data.request(); auto b = view(info);
+            return run(s, [&](auto &p) { return p.feed(b); });
+        })
+        .def("finish", [](Scan &s) { return run(s, [](auto &p) { return p.finish(); }); })
+        .def("summary", [](Scan &s) { return run(s, [](auto &p) { return p.summary(); }); });
     m.doc() = "Batched native GNSS processing; file/Parquet I/O belongs to Python.";
     m.attr("archive_schema") = "UBXIDX04-native-2-protocol-filter";
     m.def("archive_index", [](py::buffer data) {

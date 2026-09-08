@@ -15,31 +15,31 @@ The logger depends directly on `libcppgnss`.
 | Source selection, overlap byte I/O/proofs, publication and Parquet | Python |
 | Numerical table reductions, rendering and parallel PNG export | Python/NumPy |
 
-This split does not require moving efficient array operations or external-tool
-orchestration into C++. RTKLIB conversion, RxTools and FFmpeg remain external
-tools; they are not the removed internal UBX worker protocol. The separate
-experimental RTKLIB RINEX-geometry executable has not yet been migrated into
-this binding; it is not a protocol-library application.
-
-The Python pipeline now calls native processing directly rather than launching
-archive-index, clock-scan or subframe-export worker executables. Those CLI shells
-and the unused inspection example are removed. The actual UBX logger and its
-existing CLI behavior remain.
+Python calls native processing through batch bindings. RTKLIB conversion,
+RxTools, FFmpeg and the RTKLIB RINEX-geometry executable are external tools.
+The geometry executable belongs to Observatory analysis, not the protocol
+library. `neoubxlogger` is the standalone recording application.
 
 ## Batch and state semantics
 
 Python reads bounded chunks and writes output products. Native code performs
 framing, decoding and per-message state updates without calling Python for each
 raw frame. pybind11 releases the GIL during native processing and converts final
-record batches after reacquiring it. The initial representation uses owned
+record batches after reacquiring it. The representation uses owned
 records/byte buffers, not C++ Arrow, a promised zero-copy ABI or Python classes
 for every wire message. Memory use depends on caller-selected batch sizes.
 
 Batch boundaries have no scientific meaning. File and GPST-day boundaries do
 not reset clock or SBAS history. Explicit timeout, observed MON-SYS runtime
-decrease, SBAS message/mask validity and reconstruction continuous-group policy
+decrease, SBAS message/mask validity and explicit continuous-stream policy
 control resets. Unknown time stays unknown. GPST remains the only project time
 axis; native receiver fields remain in raw archives and protocol decoder APIs.
+
+`ngo-dataset-qa` offers read-only `scan` (default) and explicit `restitch`.
+Both share native UBX epoch interpretation, but only reconstruction computes
+overlap fingerprints/indexes. SBAS extraction also uses that epoch assembler
+without QA diagnostics; it requires neither reconstruction nor proof of a QA
+run. Receiver-clock reads raw or reconstructed recordings directly too.
 
 SBAS frame Parquet is the source-independent boundary: 250-bit message body,
 GPST, canonical signal identity, CRC/acceptance, and explicit continuity/end
@@ -73,12 +73,11 @@ parser/batch API feeds `sbas-frame-parquet -p sbf`, using native TOW/WNc and
 receiver CRC status. UBX and SBF adapters share the same grid processor and
 protocol-neutral Parquet identity fields (`constellation`, `prn`, `signal`).
 The SBF path uses a configurable per-signal reception-gap policy; file and
-GPST day boundaries do not reset state. Full Era C validation remains separate
-from small-sample pipeline validation.
+GPST day boundaries do not reset state. Schema coverage does not establish
+full-archive scientific validity.
 
-The word layout is cross-checked against the pinned RTKLIB-EX
-`src/rcv/septentrio.c` GEORaw decoder; field definitions come from pinned pysbf2.
-No upstream sources were modified.
+SBF word layout follows the pinned RTKLIB-EX `src/rcv/septentrio.c`
+GEORaw decoder; field definitions come from pinned pysbf2.
 
 ## Build dependencies
 

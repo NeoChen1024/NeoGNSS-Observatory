@@ -47,23 +47,3 @@ values alone are rebased to each arc's first valid sample in the GPST hour.
   system settings still matter; GPST does not make receiver clocks perfect.
 - External product timestamps, download protocols and source metadata retain
   their specified semantics. Standard-format UTC fields are not relabeled.
-
-## Migration and reproducibility
-
-The archive index magic is `UBXIDX04` (integer milliseconds); reconstruction
-rejects old second-based indexes and uses a format-specific inventory cache.
-Reconstruction plans use schema 3 and `gpst_segment` artifacts. Existing
-GPST schema-2 products remain readable downstream with explicit unit conversion
-where needed; new plans require a new output directory, not relabeling.
-Analysis uses
-`hour_gpst` and GPST-labeled filenames. Old UTC products must be recomputed,
-not reused or relabeled.
-
-The user authorized deletion of prior Era A/B reconstruction outputs and
-analysis products, caches and run logs under `work/`. Original archives,
-downloaded external products, downloader plans/configuration and map assets
-were preserved. Source SBF/UBX and native protocol fields remain unchanged.
-
-This migration does not claim that full-archive reconstruction or RINEX
-cross-file phase continuity has already been rerun and validated. Those are
-new processing runs, with fresh GPST provenance and independent QC gates.

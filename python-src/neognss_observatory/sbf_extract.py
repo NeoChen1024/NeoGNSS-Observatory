@@ -2,19 +2,17 @@
 """SBF input adapter; discard the envelope after obtaining SBAS and GPST."""
 
 import os
-import re
 
 from tqdm import tqdm
 
 from . import _native
+from .dataset_inputs import recordings
 from .protocol import ProtocolWarnings
 from .sbas_frames import FrameStreams
 
 
 def extract(root, sink, gap_ms):
-    paths = sorted(
-        p for p in root.rglob("*") if p.is_file() and (p.suffix.lower() in (".sbf", ".ubx") or re.fullmatch(r"\.\d{2}_", p.suffix))
-    )
+    paths = recordings(root, "sbf")
     if not paths:
         raise ValueError("No expanded raw .sbf, .ubx or .YY_ inputs")
     parser = _native.SbfParser(block_ids=[4020])

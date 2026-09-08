@@ -1,36 +1,69 @@
-# UBX archive reconstruction
+# Dataset QA and optional UBX reconstruction
 
-`ubx-restitch` reconstructs expanded UBX archives using a native C++ scanner,
-exact overlap proofs, and a Python/Click orchestration layer. It does not
-decompress inputs, decode navigation subframes, or modify source files.
+`ngo-dataset-qa` defaults to read-only dataset QA. Its explicit `restitch`
+profile reconstructs overlapping UBX archives using a native C++ scanner,
+exact overlap proofs, and a Python/Click orchestration layer. Neither profile
+decompresses inputs, decodes navigation subframes, or modifies source files.
 
-For the original Era A `gpspipe` recording command and the later direct TCP
-continuity comparison, see [Era A recording provenance](era-a-recording-provenance.md).
-The historical acquisition did not use the old C++ logger; the source of its
-frequent gaps remains unconfirmed.
+See [dataset notes](dataset-notes.md) for Era A's overlap and gap constraints.
 
 Install the Python package with its native extension. OpenSSL Crypto development
 files are required when building the native source-integrity calculation.
 
 ```sh
-ubx-restitch inventory --input-dir /path/to/ubx24h --state-dir /path/to/state
-ubx-restitch run --input-dir /path/to/ubx24h --state-dir /path/to/state \
+ngo-dataset-qa --input-dir /path/to/ubx
+ngo-dataset-qa -p sbf --input-dir /path/to/sbf
+ngo-dataset-qa --profile restitch --input-dir /path/to/ubx24h --state-dir /path/to/state \
   --output-dir /path/to/era-a --plan-only
-ubx-restitch run --input-dir /path/to/ubx24h --state-dir /path/to/state \
+ngo-dataset-qa --profile restitch --input-dir /path/to/ubx24h --state-dir /path/to/state \
   --output-dir /path/to/era-a
 ```
 
-Inventory caches are keyed by resolved source path, size, modification time,
-and native index-policy identifier. Each index records the full source SHA-256 and
-is itself checksummed. Three Python threads call the GIL-released native scanner
-concurrently; progress
-uses tqdm on stderr. The input directory's `*.ubx` files are selected directly,
-not recursively by default. Pass `--recursive` to either command to include
-expanded `.ubx` files in subdirectories, such as Era B's monthly directories.
-Compressed files are not selected. State storage must be writable and separate
-from input data.
+Inputs are selected recursively by default. Pass `--no-recursive` to restrict
+traversal. Era B's
+nonoverlapping monthly directories can be scanned or extracted directly.
+Compressed files are not selected. Progress uses tqdm on stderr.
+
+## Default scan profile
+
+Omitting `--profile` selects `scan`. It reads expanded recordings without
+writing indexes, fingerprints, QA stamps, manifests or reconstructed files.
+A JSON summary goes to stdout; progress and warnings go to stderr.
+State/output/plan options are rejected unless reconstruction is explicitly selected.
+A successful scan is not a certification or prerequisite checked by extraction.
+
+Scan carries framing and epoch state across file boundaries. UBX QA reports
+checksum/noise, unanchored/conflicting epochs, partial epochs, duplicate completed
+epochs, time reversals and gaps greater than `--gap-timeout` (default 50 s).
+Different NAV messages within one epoch are not duplicate epochs. A partial
+epoch or long sampling interval is reported without automatically proving loss.
+SBF validates framing and generated payload schemas, checks native TOW/WNc,
+and reports time reversals per block type. MeasEpoch (4027) and PVTGeodetic
+(4007) supply cadence/duplicate-epoch-block checks; repeated raw-navigation blocks
+at the same time can belong to different satellites and are not duplicates.
+Other SBF block types do not imply a sampling cadence. Unsupported schemas are
+not silently claimed as fully validated.
+
+Corruption, invalid/unknown time, reversal, duplicate or truncated-tail findings
+return exit status 1 after the summary; gaps/partial epochs alone are informational.
+I/O or fatal parsing errors return a nonzero error. Inputs must be stable and
+ordered; scan does not sort by payload by building a hidden index, and does not
+repair data.
+
+Only Era A's overlaps motivate reconstruction. Nonoverlapping UBX/SBF can go
+directly to extraction whether or not scan has been run. Extraction performs
+necessary parsing and scientific validity checks, not another diagnostic pass.
+UBX epoch association is shared by scan, reconstruction and SBAS extraction;
+fingerprints and overlap indexes are enabled only for reconstruction.
 
 ## Reconstruction policy
+
+The restitch profile selects expanded `*.ubx` files. Its inventory caches are
+keyed by resolved source path, size, modification time, and native index-policy
+identifier. Each index records the full source SHA-256 and is itself checksummed.
+Three Python threads call the GIL-released native scanner concurrently.
+State storage must be writable and separate from input data; the default scan
+profile does not create this cache.
 
 - Validate sync, declared length, and UBX checksum. After an invalid candidate,
   resume scanning one byte later instead of trusting its declared length.
@@ -84,7 +117,7 @@ have the same transmit time as the adjacent NAV solution. SBAS extraction is
 a separate downstream stage.
 
 The timeout is recorded in the plan and artifact metadata. To choose a
-different threshold, pass `--gap-timeout 50` to `ubx-restitch run`.
+different threshold, pass `--gap-timeout 50` to `ngo-dataset-qa --profile restitch`.
 Clock unwrapping and other scientific analyses retain their own gap/QC rules;
 a reconstruction timeout does not authorize interpolation across outages.
 
@@ -94,24 +127,21 @@ a reconstruction timeout does not authorize interpolation across outages.
 - `unassigned/*.ubx`: valid frames requiring further timing review.
 - `plan.jsonl`: source selections, exact overlap proofs, output byte spans,
   gap/anomaly events, and byte-accounting totals.
-- `provenance/indexes/`: source epoch indexes required by downstream time mapping.
-  This directory name is retained, but no implementation, worker or environment
-  snapshot is created.
+- `provenance/indexes/`: source epoch indexes for reconstruction investigation, not downstream requirements.
+  These are integrity/overlap artifacts, not extraction prerequisites.
 - `.artifacts/*.json`: per-output source spans, size, and verified SHA-256.
 - `completed.json`: written only after all artifacts have passed verification.
 
-New indexes use `UBXIDX04` with integer `gpst_ms`; plans use schema 3.
+Indexes use `UBXIDX04` with integer `gpst_ms`; plans use schema 3.
 Artifact bounds include exact `start_gpst_ms` / `end_gpst_ms`, `nav_epochs`,
-and `max_observed_interval_ms`. The existing `start_gpst` / `end_gpst` fields
-remain seconds, now possibly fractional, for downstream calendar calculations.
+and `max_observed_interval_ms`. Unsuffixed `start_gpst` / `end_gpst` fields
+are seconds and may be fractional, for downstream calendar calculations.
 Rebuild/reinstall the native extension after changing indexing policy. The cache
-identity includes the index format and native policy identifier, so old
-second-based indexes are not reused. Native code makes GPST segmentation and
-quarantine decisions; Python retains overlap byte I/O, publication and coverage
+identity includes the index format and native policy identifier. Native code
+makes GPST segmentation and quarantine decisions; Python retains overlap byte I/O, publication and coverage
 accounting checks.
-Old outputs are not renamed or overwritten: use a new output directory for
-the new plan. Downstream readers can still inspect existing GPST products by
-their explicitly identified format; no UTC compatibility mode is added.
+Use a new output directory for a different plan. Extraction reads the resulting
+UBX files directly without consuming the reconstruction manifests or indexes.
 
 Every selected byte is accounted for exactly once as output or a recorded
 non-UBX/corrupt span. Discarded duplicate bytes require explicit overlap proof.

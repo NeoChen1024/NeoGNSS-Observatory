@@ -35,6 +35,7 @@ The experimental extension is `neognss_observatory._native`:
 
 | Entry point | Input and result |
 | --- | --- |
+| `DatasetScan(protocol="ubx", qa=True, gap_timeout=50)` | Read-only streaming QA; `qa=False` supplies timed UBX SBAS batches without diagnostics |
 | `archive_index(buffer)` | Read-only UBX buffer to a packed `UBXIDX04` index |
 | `SegmentPlanner(joins, timeout_ms)` | Source index buffers to GPST segments/quarantined spans |
 | `ClockProcessor(...)` | UBX chunks to batches of samples, events and MON-SYS telemetry |
@@ -55,9 +56,10 @@ per-frame objects escaping into Python and no per-frame Python callbacks.
 Concurrent calls on the same processor are rejected; independent processors
 may run on independent threads. Batch sizes should be bounded by the caller.
 
-For clocks, call `end_file()` after each complete file to close framing and
-reset the local source offset, **without** clearing buffered epochs, clock
-state or MON-SYS history. Call `finish()` once at the end of the receiver
+For clocks, pass each file's name to `feed()` and retain one processor across
+files. Frame-start source attribution is preserved even for split frames.
+`end_file()` is an explicit framing reset for known complete streams, not
+required at ordinary file boundaries. Call `finish()` once at the end of the receiver
 stream. A `SubframeProcessor` spans a complete continuous group and is not
 finished at ordinary file/day boundaries. One `GridProcessor` represents one
 signal in one continuous group; `finish(end_gpst_ms)` stops at the last observed
@@ -72,13 +74,13 @@ stream end records. Grid output links to frame IDs, not raw byte offsets.
 
 The decoded-content interface `GridProcessor.process()` accepts `gpst_ms`, `offset` and `sbas`
 keys. These times are continuous milliseconds since 1980-01-06 GPST. For UBX,
-the reconstruction's epoch/offset mappings establish reception context. They
+the shared streaming epoch assembler establishes reception context. These times
 must not be confused with a measured SBAS transmission timestamp.
 
 SBF adapters use GEORawL1 TOW/WNc and reject receiver-failed CRC records for
 grid updates. A positive `gap_timeout` clears state after a per-signal message
 gap, closing intervals at the last observed time; zero disables this extra
-policy when reconstruction groups already define continuity. Feed all SBAS
+policy when explicit frame-stream end records already define continuity. Feed all SBAS
 message types for gap detection, not just mask/correction messages. Python
 attaches canonical `constellation`, `prn`, and `signal` identities to intervals.
 

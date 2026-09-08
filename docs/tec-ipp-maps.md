@@ -19,7 +19,7 @@ cmake --build build --target neognss_convbin neognss_rinex_geometry -j 4
 The CMake option is off by default. These targets use `NFREQ=4`, `NEXOBS=3`
 and enable GPS, GLONASS, Galileo, QZSS, BeiDou, IRNSS and SBAS as supported
 by the pinned source. This does not change upstream PRN limits; C59 remains
-excluded. See the [Era A conversion experiment](era-a-rinex-experiment.md).
+excluded. See [RINEX conversion limits](rinex-conversion.md#supported-satellite-and-signal-subset).
 
 Convert each continuous group with one convbin invocation and complete UBX
 frames in time order. Conversion state must persist across daily file cuts:
@@ -31,14 +31,14 @@ build/native/neognss_convbin -r ubx -v 3.04 -od -os -oi -ot -ol \
 tec-ipp-map \
   --obs group.obs --nav group.nav \
   --geometry-worker build/native/neognss_rinex_geometry \
-  --sbas-hourly hourly-sbas/hourly.jsonl \
+  --sbas-hourly /data/sbas-maps/hourly/GPST-2025-04-01.jsonl \
   --coastline contrib/natural-earth/ne_10m_coastline.zip \
   --output new-ipp-directory --workers 4 --color-limit 50
 ```
 
 `--station-ecef X Y Z` supplies station coordinates in metres. If omitted for a
 single group, the RINEX approximate position is used and explicitly identified
-as such in provenance; it is not a surveyed position. Multiple groups require
+as such in the output metadata; it is not a surveyed position. Multiple groups require
 one shared explicit station position.
 
 ## Geometry and arc policy
@@ -72,7 +72,8 @@ one shared explicit station position.
 
 ## Visualization and parallel processing
 
-The SBAS background defaults to PRN 137, GNSS/signal/frequency IDs 1/0/0, and a
+The SBAS background selects canonical constellation `SBAS`, signal `L1CA`,
+PRN 137 by default, and a
 25% hourly coverage threshold. Its 0-100 TECU colormap is blended with white at
 18% strength, including its own colorbar. It is only shown for hours with
 available SBAS grid data. The track uses a separate red/blue dSTEC colorbar.
@@ -90,7 +91,7 @@ arc/hour and arrows indicate increasing time. PRNs label track endpoints.
 There is no spatial interpolation or assigned satellite coverage area. Missing
 arcs are not connected. First and last output hours may be partial.
 
-All accepted 1 Hz points are retained in `tracks/*.jsonl`. Only display points
+All accepted observation points are retained in `tracks/*.jsonl`. Only display points
 are reduced to `--plot-step` (default 10 seconds), retaining arc/hour endpoints.
 The plotted line interpolates between retained display points in the same arc.
 Raw geometry and phase fields are retained in `tracks/*.csv`.
@@ -103,7 +104,7 @@ RINEX groups are loaded into native memory, so reduce workers if needed.
 
 PNG compression defaults to level 3 and can be set with `--png-compression`
 from 0 through 9. Native output size is 1800x1200. SBAS-only `sbas-grid-plot`
-also supports these two options; its stateful aggregation remains sequential.
+also supports these two options; hourly aggregation reads the daily grid products.
 
 Outputs include `images.json`, per-group geometry and track files, logs, and
 `completed.json` with station-position source, calculation policy and diagnostic

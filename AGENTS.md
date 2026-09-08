@@ -40,6 +40,13 @@
 
 ## Documentation audience
 
+- Keep `docs/` focused on the current implementation. Remove superseded
+  workflows, migration logs, obsolete pilot paths and run statistics instead
+  of preserving them as historical sections. Git history is the archive.
+  Retain concise dataset/converter constraints only when they materially affect
+  present behavior or scientific interpretation, and distinguish implemented
+  features from research extension points.
+
 - README files are public-facing documentation. Keep them focused on purpose,
   requirements, installation, building, APIs, usage, and limitations.
 - Keep local development-environment instructions here, not in README files.
@@ -148,6 +155,15 @@ configuring `libcppgnss/` directly.
   inventory installed versions for experimental runs.
 
 ## Native library boundaries
+
+- `ngo-dataset-qa` defaults to optional, read-only `scan`; `--profile restitch`
+  explicitly enables overlap indexes/proofs and reconstruction. QA is not a
+  prerequisite enforced by extraction. Do not require QA stamps, manifests,
+  or reconstruction indexes in downstream readers, and do not rerun complete QA
+  there. Share epoch/field interpretation in native code; retain necessary
+  parser bounds, usable time and scientific validity checks.
+- New project CLI names use the `ngo-` prefix. Existing other entry points are
+  migrated separately, not renamed implicitly during unrelated changes.
 
 - Raw processing CLIs expose `--protocol/-p ubx|sbf` (default `ubx`). Validate
   complete foreign-protocol frames before skipping them atomically; report

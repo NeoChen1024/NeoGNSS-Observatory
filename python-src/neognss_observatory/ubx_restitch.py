@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from . import _native
 from .gpst import label_ms as gpst_label
-from .protocol import ProtocolWarnings, protocol_option, require_ubx
+from .protocol import ProtocolWarnings, require_ubx
 
 RECORD = struct.Struct("<QQqqQIIIi")
 UNKNOWN = -(1 << 63)
@@ -182,49 +182,7 @@ def inventory(input_dir, state_dir, recursive=False):
     return sorted(sources, key=lambda s: (s["first_gpst_ms"] is None, s["first_gpst_ms"] or 0, s["path"]))
 
 
-@click.group()
-def cli():
-    """Index and reconstruct raw UBX archives without modifying input files."""
-
-
-def common_options(function):
-    function = protocol_option(function)
-    for option in reversed(
-        [
-            click.option("--input-dir", required=True, type=click.Path(exists=True, file_okay=False, path_type=Path)),
-            click.option("--state-dir", required=True, type=click.Path(file_okay=False, path_type=Path)),
-            click.option("--recursive", is_flag=True, help="Include expanded .ubx files in subdirectories."),
-        ]
-    ):
-        function = option(function)
-    return function
-
-
-@cli.command("inventory")
-@common_options
-def inventory_command(input_dir, state_dir, recursive, protocol="ubx"):
-    """Build resumable per-file frame/time indexes and report coverage."""
-    try:
-        require_ubx(protocol, "UBX archive reconstruction")
-        sources = inventory(input_dir.resolve(), state_dir.resolve(), recursive=recursive)
-        for source in sources:
-            click.echo(json.dumps(source))
-    except (OSError, ValueError, RuntimeError) as error:
-        raise click.ClickException(str(error)) from error
-
-
-@cli.command("run")
-@common_options
-@click.option("--output-dir", required=True, type=click.Path(file_okay=False, path_type=Path))
-@click.option("--plan-only", is_flag=True, help="Write the validated plan in the state directory without touching output.")
-@click.option(
-    "--gap-timeout",
-    type=click.FloatRange(min=0.001),
-    default=50.0,
-    show_default=True,
-    help="Split when consecutive available NAV epochs are more than this many seconds apart.",
-)
-def run_command(input_dir, state_dir, recursive, output_dir, plan_only, gap_timeout, protocol="ubx"):
+def run_restitch(input_dir, state_dir, recursive, output_dir, plan_only, gap_timeout, protocol="ubx"):
     """Prove overlaps, split at GPST days/NAV gaps, and publish verified outputs."""
     from .ubx_output import publish
     from .ubx_reconstruction import build_plan, segment_plan
@@ -244,7 +202,3 @@ def run_command(input_dir, state_dir, recursive, output_dir, plan_only, gap_time
             click.echo(json.dumps(publish(plan, output_dir)))
     except (OSError, ValueError, RuntimeError) as error:
         raise click.ClickException(str(error)) from error
-
-
-if __name__ == "__main__":
-    cli()

@@ -1,6 +1,6 @@
 # CDDIS product downloader
 
-This first version inventories and fetches an explicit product selection. It
+The downloader inventories and fetches an explicit product selection. It
 does not convert observations, solve PPP, estimate TEC, or certify payload time
 coverage. All original compressed bytes and filenames are preserved.
 
@@ -75,13 +75,11 @@ only that output's generated checkpoint, not its existing plan or downloads.
 An interrupted run otherwise keeps its earlier view, including any cached empty
 listings; refreshing is necessary to discover changes to those listings.
 
-Directory response-body interruptions and invalid UTF-8 now get bounded
-retries and backoff as well as the existing connection/status retries. A final
+Directory response-body interruptions, invalid UTF-8, connection errors and
+retryable HTTP statuses receive bounded retries and backoff. A final
 failure reports the affected archive path and error class without auth queries.
 Static input headers and the local checksum scan are repeated on resume; only
-directory queries are checkpointed. Existing plans made before this mechanism
-remain usable and do not require re-inventory, but their old runs cannot gain
-checkpoints retroactively.
+directory queries are checkpointed.
 
 `work` is ignored whether it is a directory or a symlink to another filesystem.
 Paths in the manifest are relative to the download root. Existing preservation
@@ -95,15 +93,14 @@ these calendar labels for directory lookup and rough progress only; this is
 not conversion of UTC observation epochs to GPST. Product nominal dates are
 filename-derived, and every file is marked `coverage_status = unverified`.
 Downstream processing must inspect payload epochs and follow the single GPST
-policy. This calendar-bucketing clarification does not change existing product
-filenames, downloads or plans; external formats keep their native time fields.
+policy. External formats keep their native time fields.
 
 Layouts are `week` (`base/<GPS-week>/`), `year` (`base/<year>/brdc/`), and `day`
 (`base/<year>/<DOY>/`). Patterns accept `{yyyy}`, `{yy}`, `{doy}` and `{week}`.
 Each dated product must match exactly one file per candidate day. Zero matches
-are missing; multiple matches are ambiguous and none is silently chosen. This
-version's example uses daily products; weekly/monthly validity expansion and
-legacy naming changes require explicit future selectors, not broad wildcards.
+are missing; multiple matches are ambiguous and none is silently chosen. The
+example uses daily products; weekly/monthly validity expansion and alternate
+naming conventions need explicit selectors, not broad wildcards.
 `static` inputs currently allow explicit IGS station/general HTTPS URLs.
 
 Without `end`, plan discovers numeric directories from live CDDIS indexes,
@@ -147,9 +144,8 @@ The snapshot includes listing fingerprints, resolved
 product configuration, slots, missing inputs, and candidate URLs. Keep it with
 the run. Changed upstream files require a new plan; there is no silent fallback
 to another center, solution class, or mirror.
-Previously generated schema-1 `.json` plans remain readable by fetch/status;
-new plans are always JSON Lines. Summary JSON on stdout and small `.part.json`
-sidecars retain their existing formats.
+Summary JSON on stdout and small `.part.json` sidecars are separate from the
+JSON Lines plan format.
 
 ## Optional upstream checksums
 
@@ -186,13 +182,11 @@ snapshot provenance, and prints a warning. It does not alone fail a transfer,
 quarantine bytes, or prevent reuse. Full compressed-stream integrity, size,
 format-header checks and recorded local SHA-512 checks still apply. Successful
 decompression does not prove scientific correctness or upstream authenticity.
-No automatic per-directory checksum retrieval is performed in this version.
+No automatic per-directory checksum retrieval is performed.
 
-Existing plans remain usable with this policy; there is no need to re-inventory
-just to relax snapshot verification. Re-run fetch to retry previously failed
-transfers. Existing quarantine files are left untouched, not automatically
-adopted or deleted. Verify also reports snapshot mismatches as warnings, while
-changes relative to the recorded local SHA-512 remain errors.
+Re-run fetch to retry failed transfers. Quarantine files are not automatically
+adopted or deleted. Verify reports snapshot mismatches as warnings; changes
+relative to the recorded local SHA-512 remain errors.
 
 ## Transfers and recovery
 
@@ -237,23 +231,8 @@ failure; 2 CLI/configuration errors; 3 authentication/authorization failure;
 gaps, so available files can still be fetched. Optional missing inputs generate
 reported gaps without making fetch fail.
 
-## Validation
+## References
 
-```sh
-python -m unittest discover -s tests -v
-black --check python-src tests
-isort --check-only python-src tests
-```
-
-The initial live validation on 2026-09-05 used Python 3.13 and the example's
-2025-04-06 through 2025-04-12 interval with one guard day on either side:
-55 files, 77,872,993 compressed bytes, all downloaded and verified. A second
-fetch reused all 55 files with HTTP disabled, and offline verification passed.
-The supplied archive-wide SHA512SUMS snapshot had no matching records for this
-selection, so upstream verification correctly remained unavailable. Fresh
-netrc login and open-ended recent-date discovery were also exercised. BLQ
-remained an explicitly reported optional input, not a downloaded product.
-
-References: [CDDIS archive access](https://www.earthdata.nasa.gov/centers/cddis-daac/archive-access),
+[CDDIS archive access](https://www.earthdata.nasa.gov/centers/cddis-daac/archive-access),
 [IGS MGEX products](https://igs.org/mgex/data-products/),
 [IGS antenna models](https://igs.org/wg/antenna/).

@@ -10,6 +10,17 @@ namespace neognss_obs {
 using Json = nlohmann::json;
 std::vector<uint8_t> archive_index(std::span<const uint8_t>);
 Json sbas_message(const cppgnss::SBAS::Result &);
+class DatasetScan {
+  public:
+    DatasetScan(const std::string &protocol, bool qa = true, double gap_timeout = 50);
+    ~DatasetScan();
+    Json feed(std::span<const uint8_t>);
+    Json finish();
+    Json summary() const;
+  private:
+    struct State;
+    std::unique_ptr<State> state_;
+};
 class SubframeProcessor {
   public:
     explicit SubframeProcessor(bool sbas_only = true) : sbas_only_(sbas_only) {}

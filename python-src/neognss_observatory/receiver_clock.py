@@ -11,9 +11,9 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
+from .dataset_inputs import recordings
 from .protocol import ProtocolWarnings, protocol_option, require_ubx
-from .research_output import staged_output
-from .sbas_extract import inventory, write_json
+from .research_output import staged_output, write_json
 
 SAMPLE_SCHEMA = pa.schema(
     [
@@ -85,27 +85,19 @@ def emit_batch(batch, samples, events, telemetry):
         stream.writelines(json.dumps(row, allow_nan=False) + "\n" for row in batch[key])
 
 
-def scan(path, tracker, progress, emit, expected=None):
-    before = path.stat()
-    warnings = ProtocolWarnings(path, "ubx")
+def scan(path, tracker, progress, emit, initial):
+    warnings = ProtocolWarnings(path, "ubx", initial)
+    size = 0
+    batch = initial
     with path.open("rb") as stream:
         while block := stream.read(4 * 1024 * 1024):
             batch = tracker.feed(block, str(path))
             warnings.update(batch)
             emit(batch)
+            size += len(block)
             progress.update(len(block))
-    batch = tracker.end_file()
     warnings.update(batch, final=True)
-    emit(batch)
-    after = path.stat()
-    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or batch["size"] != before.st_size:
-        raise ValueError(f"Source changed while reading: {path}")
-    if expected and batch["size"] != expected["size"]:
-        raise ValueError(f"Reconstruction size mismatch: {path}")
-    return {
-        "source": str(path),
-        **{key: batch[key] for key in ("size", "frames", "skipped_protocol_frames", "skipped_protocol_bytes")},
-    }
+    return dict(source=str(path), size=size), batch
 
 
 @click.command()
@@ -114,7 +106,7 @@ def scan(path, tracker, progress, emit, expected=None):
     "--input-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     required=True,
-    help="Completed GPST reconstruction directory; unassigned/ is excluded.",
+    help="Expanded UBX recordings in stream order; unassigned/ is excluded.",
 )
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New output directory.")
 @click.option("--max-gap", type=click.FloatRange(min=0, min_open=True), default=50.0, show_default=True)
@@ -127,12 +119,7 @@ def cli(input_dir, output, max_gap, jump_tolerance_ns, temperature_max_age, prot
     try:
         require_ubx(protocol, "NAV-CLOCK/MON-SYS analysis")
         root = input_dir.resolve()
-        segments, completed = inventory(root)
-        segments.sort(key=lambda s: s["start_gpst"])
-        if not segments:
-            raise ValueError("No reconstructed GPST segments")
-        if any(b["start_gpst"] <= a["end_gpst"] for a, b in zip(segments, segments[1:])):
-            raise ValueError("Overlapping reconstructed segments")
+        paths = recordings(root)
         output.mkdir(exist_ok=False)
         config = {"max_gap": max_gap, "jump_tolerance_ns": jump_tolerance_ns, "temperature_max_age": temperature_max_age}
         write_json(
@@ -160,12 +147,12 @@ def cli(input_dir, output, max_gap, jump_tolerance_ns, temperature_max_age, prot
                 temperature_max_age=temperature_max_age,
             )
             progress = stack.enter_context(
-                tqdm(total=sum(s["size"] for s in segments), desc="Receiver clock", unit="B", unit_scale=True)
+                tqdm(total=sum(p.stat().st_size for p in paths), desc="Receiver clock", unit="B", unit_scale=True)
             )
-            for segment in segments:
-                emit(sources)(
-                    scan(root / segment["name"], tracker, progress, lambda b: emit_batch(b, samples, events, telemetry), segment)
-                )
+            counters = {}
+            for path in paths:
+                record, counters = scan(path, tracker, progress, lambda b: emit_batch(b, samples, events, telemetry), counters)
+                emit(sources)(record)
             emit_batch(tracker.finish(), samples, events, telemetry)
         summary = {
             "status": "complete",

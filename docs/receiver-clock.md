@@ -2,9 +2,13 @@
 
 The `receiver-clock` command exports receiver clock samples, temperature
 telemetry, restart events and inferred integer-millisecond clock adjustments.
-It consumes completed, quality-controlled **GPST reconstruction** directories,
-not raw archives. `unassigned/` is excluded. Inputs are read-only and their
-sizes are checked against reconstruction metadata.
+It consumes expanded raw or reconstructed UBX recordings directly, recursively
+in path order. `unassigned/` is excluded. Inputs are read-only; no QA stamp,
+completion manifest or reconstruction index is required. Run optional
+`ngo-dataset-qa` beforehand when diagnostics are wanted. Clock extraction keeps
+only its necessary parser/time/clock-validity checks, not a full QA pass.
+Framing and clock state persist across files, including a frame split between
+files; recorded local offsets refer to the file where each frame starts.
 
 ## Build and run
 
@@ -34,7 +38,7 @@ runs can execute concurrently in separate output directories.
 | `samples.parquet` | One row per NAV-CLOCK, native units, associated temperature, session/arc IDs, unwrapped bias |
 | `events.jsonl` | Receiver restarts, clock arc boundaries and clock adjustments |
 | `mon-sys.jsonl` | Every MON-SYS payload, decoded runtime/temperature and association provenance |
-| `sources.jsonl` | Input paths, byte sizes and frame counts |
+| `sources.jsonl` | Input paths and bytes read |
 | `run.json` | Human-readable calculation parameters |
 | `summary.json` | Counts, ranges, temperature/drift bins and Pearson correlation |
 
@@ -121,7 +125,8 @@ receiver-clock-plot --input-dir /data/clock-telemetry --output /data/clock-plots
   --title "Era A receiver clock" --workers 8
 ```
 
-The output directory must be new. `hourly/` contains 1600 × 1200 PNGs with
+Use a new output directory, or `--overwrite` to replace a run with a retained
+backup. `hourly/` contains 1600 × 1200 PNGs with
 raw bias, unwrapped bias without plot-side rebasing, NAV-CLOCK drift, separate tAcc/fAcc
 axes (symmetric logarithmic scale), and receiver temperature. Missing temperature
 is explicitly labeled `unavailable`, never replaced with zero. Orange vertical
@@ -153,8 +158,6 @@ statistics; `images.json` lists PNGs without checksums. Plotting reads
 `samples.parquet` and `events.jsonl`, not an execution-provenance bundle.
 Parquet metadata records GPST, its origin, gap timeout, adjustment tolerance and
 temperature age. `run.json` and `summary.json` are informational, not read gates.
-Older experimental files lacking required scientific metadata must be regenerated
-or explicitly reprocessed; there is no automatic compatibility layer.
 
 ### Recompute existing clock products without scanning UBX
 
@@ -168,7 +171,7 @@ receiver-clock-plot --input-dir /data/clock-telemetry-gap50 \
 This vectorized, bounded-memory pass preserves original sample columns,
 temperature associations, runtime/session IDs and restart evidence. It replaces
 only clock arc IDs, cumulative corrections, unwrapped bias, unwrap quality and
-derived adjustment/arc events. Old short-gap arc IDs do not instruct new resets.
+derived adjustment/arc events. Input arc IDs do not prescribe the new segmentation.
 The original extraction remains untouched. The new Parquet records the new
 calculation parameters; no implementation or environment snapshot is copied.
 It does not recover temperature associations missing from the original extraction.
