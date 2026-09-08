@@ -1,7 +1,8 @@
 # RINEX conversion
 
-RINEX OBS/NAV is the input interface for receiver-derived TEC and satellite
-geometry. It is not a lossless copy of UBX or SBF: preserve the raw archive,
+RINEX OBS/NAV is an optional export and comparison format; the [STEC](stec.md)
+and [PPP](ppp.md) pipelines read raw observations directly.
+It is not a lossless copy of UBX or SBF: preserve the raw archive,
 and use the separate [SBAS frame pipeline](subframes.md) for SBAS bodies.
 All project observation axes use [GPST](time-policy.md).
 
@@ -11,13 +12,13 @@ Build the project wrapper against the recorded `contrib/RTKLIB` revision:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNEOGNSS_BUILD_RINEX_TOOLS=ON
-cmake --build build --target neognss_convbin neognss_rinex_geometry --parallel 4
+cmake --build build --target neognss_convbin --parallel 4
 
 build/native/neognss_convbin -r ubx -v 3.04 -od -os -oi -ot -ol \
   -o group.obs -n group.nav 'ordered-group/*.ubx'
 ```
 
-These optional targets use `NFREQ=4`, `NEXOBS=3` and the constellation support
+This optional target uses `NFREQ=4`, `NEXOBS=3` and the constellation support
 enabled by `native/CMakeLists.txt`. Upstream code is not modified.
 
 Supply ordered, complete-frame, nonoverlapping files from one continuous
@@ -95,6 +96,4 @@ gap repair, or proof that all raw measurements survived conversion.
 
 Before interpreting a time series, check signal/PRN exclusions, fractional
 epochs, adjacent-file phase/LLI behavior, and navigation availability. Compare
-only common epochs when using a lower-rate reference. Broadcast navigation is
-the current source for [IPP geometry](tec-ipp-maps.md); no precise-product
-fallback is silently applied.
+only common epochs when using a lower-rate reference.

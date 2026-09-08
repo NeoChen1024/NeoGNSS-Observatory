@@ -4,13 +4,11 @@
 #include <limits>
 #include <mutex>
 #include <neognss_obs/ppp.hpp>
+#include <neognss_obs/rtklib_lock.hpp>
 #include <set>
 
 // RTKLIB retains process-global caches (e.g. astronomy); serialize native
 // calls.
-namespace {
-std::mutex rtklib_mutex;
-}
 extern "C" int showmsg(const char *, ...) { return 0; }
 extern "C" void settspan(gtime_t, gtime_t) {}
 extern "C" void settime(gtime_t) {}

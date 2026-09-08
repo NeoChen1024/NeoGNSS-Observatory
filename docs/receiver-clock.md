@@ -2,7 +2,7 @@
 
 The `ngo-receiver-clock` command exports receiver clock samples, temperature
 telemetry, restart events and inferred integer-millisecond clock adjustments.
-It consumes expanded raw or reconstructed UBX recordings directly, recursively
+It consumes expanded raw or reconstructed UBX/SBF recordings directly, recursively
 in path order. `unassigned/` is excluded. Inputs are read-only; no QA stamp,
 completion manifest or reconstruction index is required. Run optional
 `ngo-dataset-qa` beforehand when diagnostics are wanted. Clock extraction keeps
@@ -16,6 +16,7 @@ Install the project and its native extension, then run:
 
 ```sh
 ngo-receiver-clock --input-dir /data/gnss/era-a --output work/era-a-clock
+ngo-receiver-clock -p sbf --input-dir /data/gnss/mosaic-x5 --output work/era-c-clock
 ```
 
 Research runs publish their output directory only after success. Use `--overwrite`
@@ -31,16 +32,61 @@ One receiver stream is intentionally processed sequentially: file boundaries
 are not independent tasks and must not reset its state. Independent receiver
 runs can execute concurrently in separate output directories.
 
+## SBF and PPS support
+
+SBF uses PVTGeodetic clock bias (ms converted to ns) and drift (ppm converted
+to ns/s), preserving fractional values as float64. Invalid PVT solutions,
+Do-Not-Use values and non-GPS clock references are counted and skipped.
+ReceiverStatus supplies temperature (raw minus 100 degrees C) and uptime;
+uptime decreasing starts a receiver session, just as MON-SYS does for UBX.
+Temperature associations use the status timestamp and configured maximum age.
+
+MeasEpoch revision 1+ supplies cumulative millisecond adjustments modulo 256.
+The signed modular difference is checked against the bias/drift residual before
+being applied; jumps need not be exactly 1 ms. Inconsistent or ambiguous jumps
+start a new arc instead of silently inventing a continuous bias. Long gaps still
+break arcs. Missing counters permit explicitly labeled bias inference. Counter
+wrap alone is not a receiver restart. SBF has no fabricated NAV-CLOCK accuracy
+fields: those columns remain null and the plot shows unavailable.
+
+PPS reports have their own time axis, separate from NAV/clock samples. TIM-TP
+uses its next-pulse week/TOW, including fractional milliseconds. UTC pulses
+require a valid leap-second offset from NAV-TIMEGPS; unsupported GNSS references
+or unresolved UTC-to-GPST conversion retain a null GPST and native timing fields.
+Multiple TIM-TP updates for one pulse are retained in arrival order, not averaged.
+SBF xPPSOffset uses its own WNc/TOW, with TimeScale and SyncAge retained.
+The pulse reference scale (for example UTC) is distinct from the GPST analysis axis.
+
+TIM-TP qErr is converted from ps to ns; qErrInvalid produces null, never a
+fabricated zero. No receiver/firmware capability is inferred from a zero value
+alone. SBF invalid offsets are likewise null. Error signs remain the reporting
+protocol's convention; no physical PPS correction is applied to clock bias.
+The plotting command writes separate hourly PPS scatter plots under `pps/`,
+with reference-scale legends and unavailable counts. Untimed PPS records remain
+in Parquet but cannot appear on a GPST plot. `--no-hourly` also suppresses PPS plots.
+
+SBF extraction carries all state across files; daily files are not reboot or
+clock-arc boundaries. The separate Parquet re-unwrapping command currently
+supports UBX only and rejects SBF rather than discarding counted jump evidence.
+
 ## Products
 
 | File | Contents |
 | --- | --- |
-| `samples.parquet` | One row per NAV-CLOCK, native units, associated temperature, session/arc IDs, unwrapped bias |
-| `events.jsonl` | Receiver restarts, clock arc boundaries and clock adjustments |
-| `mon-sys.jsonl` | Every MON-SYS payload, decoded runtime/temperature and association provenance |
-| `sources.jsonl` | Input paths and bytes read |
-| `run.json` | Human-readable calculation parameters |
-| `summary.json` | Counts, ranges, temperature/drift bins and Pearson correlation |
+| `clock.parquet` | One row per NAV-CLOCK/PVTGeodetic: bias/drift, accuracy, session/arc, unwrapped bias, adjustment and arc-start fields |
+| `status.parquet` | One row per MON-SYS/ReceiverStatus: temperature, uptime, synchronization status where available, session and restart flag |
+| `pps.parquet` | Independently timed TIM-TP/xPPSOffset reports, pulse reference scale, error in ns and validity |
+| `summary.json` | Settings, time/units conventions, source-ID/path table, counts, ranges and temperature/drift statistics |
+
+All three tables use Zstd compression and bounded row-group writes. Each keeps
+its own message cadence; status and PPS are not forced into clock rows. Clock
+adjustments are represented by `adjustment_ns` (zero when absent), nullable
+`adjustment_evidence`, and nullable `arc_start_reason`. Restart is marked on
+the status report even when there is no simultaneous clock solution.
+`source_id` resolves through `summary.json.sources`; offsets refer to that
+source. Long source paths and raw payload copies are not repeated in rows.
+No separate event, telemetry, source-list or run-configuration JSONL/JSON files
+are produced. Existing experimental outputs are not automatically rewritten.
 
 All `gpst_ns` fields are signed integer nanoseconds since
 **1980-01-06 00:00:00 GPST**, not Unix time and not Arrow UTC timestamps.
@@ -103,12 +149,14 @@ to estimate drift. `NAV-CLOCK.clkD` remains separately available.
 ## Temperature and statistics
 
 MON-SYS has no `iTOW`. A monitor message is associated with its surrounding
-stream epoch, not an asserted measurement timestamp. Raw payloads and byte
-offsets are retained. A sample can reuse that temperature for at most
-`--temperature-max-age` (default 5 seconds), with its source, reference epoch
-and age recorded. No stale temperature is carried across a detected clock gap
-or restart. Messages with no time association remain in `mon-sys.jsonl`.
-`runtime_s` in samples is the last reported value, not an extrapolated uptime.
+stream epoch, not an asserted measurement timestamp. Status rows preserve this
+association, source ID and byte offset; raw payloads remain in the archive.
+Plotting associates the latest status no later than a clock epoch, in the same
+receiver session and within `--temperature-max-age` (default 5 seconds).
+This bounded backward join is performed on read, not duplicated into every
+clock row. Missing or stale temperatures are unavailable. Untimed status reports
+remain in `status.parquet` but are not assigned an invented time. `runtime_s`
+exists only in status and is the reported value, never extrapolated uptime.
 
 Temperature is the receiver-reported internal value, not necessarily ambient
 or crystal temperature. Summary bins give count, mean and population standard
@@ -155,9 +203,9 @@ and samples around adjustment events. It is not averaging of raw clock jumps.
 PNG generation runs in separate worker processes and uses fast lossless compression.
 Use `--no-hourly` for daily overviews only. `hours.json` records full-sample
 statistics; `images.json` lists PNGs without checksums. Plotting reads
-`samples.parquet` and `events.jsonl`, not an execution-provenance bundle.
+`clock.parquet`, `status.parquet` and `pps.parquet`.
 Parquet metadata records GPST, its origin, gap timeout, adjustment tolerance and
-temperature age. `run.json` and `summary.json` are informational, not read gates.
+temperature age. `summary.json` also provides the compact source-ID lookup.
 
 ### Recompute existing clock products without scanning UBX
 
@@ -169,12 +217,12 @@ ngo-receiver-clock-plot --input-dir /data/clock-telemetry-gap50 \
 ```
 
 This vectorized, bounded-memory pass preserves original sample columns,
-temperature associations, runtime/session IDs and restart evidence. It replaces
-only clock arc IDs, cumulative corrections, unwrapped bias, unwrap quality and
-derived adjustment/arc events. Input arc IDs do not prescribe the new segmentation.
+the separate status/PPS tables, source mapping, session IDs and restart evidence. It replaces
+only clock arc IDs, cumulative corrections, unwrapped bias and embedded
+adjustment/arc-start fields. Input arc IDs do not prescribe the new segmentation.
 The original extraction remains untouched. The new Parquet records the new
 calculation parameters; no implementation or environment snapshot is copied.
-It does not recover temperature associations missing from the original extraction.
+Temperature associations are recomputed from status timestamps when plotting.
 
 Protocol references: [u-blox interface description, including MON-SYS](https://content.u-blox.com/sites/default/files/documents/u-blox-F9-TIM-2.22_InterfaceDescription_UBX-23004791.pdf)
 and [RAWX clock reset semantics](https://content.u-blox.com/sites/default/files/products/documents/u-blox8-M8_ReceiverDescrProtSpec_UBX-13003221.pdf).

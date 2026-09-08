@@ -2,9 +2,10 @@
 
 NeoGNSS Observatory is a pre-Alpha offline GNSS research project. Current
 tools extract receiver telemetry and SBAS messages, calculate SBAS grids and
-relative carrier-phase dSTEC, and export scientific tables and plots.
-GPS Float PPP is available as an initial static forward pipeline. Calibrated
-absolute TEC and automated TID detection are not implemented project pipelines.
+GPS STEC estimates, and export scientific tables and plots.
+GPS Float PPP is available as an initial static forward pipeline. GPS STEC now
+supports phase leveling and GIM-constrained receiver DCB estimation; it is not
+independently calibrated absolute TEC. Automated TID detection is not implemented.
 
 ## Input preparation
 
@@ -28,13 +29,13 @@ extraction state. See [dataset QA](dataset-qa.md) and [dataset notes](dataset-no
 | Input | Processing | Products |
 | --- | --- | --- |
 | UBX or SBF | `ngo-sbas-frame-parquet` → `ngo-sbas-grid-parquet` → `ngo-sbas-grid-plot` | Daily SBAS body and IGP-interval Parquet; hourly VTEC maps |
-| UBX NAV-CLOCK/MON-SYS | `ngo-receiver-clock` → `ngo-receiver-clock-plot` | Clock Parquet, events, telemetry and plots |
+| UBX NAV-CLOCK/MON-SYS/TIM-TP or SBF PVTGeodetic/ReceiverStatus/MeasEpoch/xPPSOffset | `ngo-receiver-clock` → `ngo-receiver-clock-plot` | Clock and PPS Parquet, events, telemetry and plots |
 | Existing clock Parquet | `ngo-receiver-clock-reunwrap` | Recomputed clock arcs and bias corrections |
 | UBX | RTKLIB-EX `neognss_convbin` | RINEX OBS/NAV supported by the pinned converter |
 | SBF | `ngo-sbf-rinex` with installed RxTools | Native-rate RINEX and applicable auxiliary outputs |
-| RINEX OBS/NAV and SBAS hourly cells | `ngo-tec-ipp-map` | Broadcast-orbit IPP tracks, arc-relative dSTEC and maps |
 | CDDIS listings/products | `ngo-cddis-download` | Explicit product plans and integrity-checked downloads |
-| UBX/SBF GPS L1/L2 and local precise products | `ngo-ppp` → `ngo-ppp-plot` | Static forward Float solutions, residual Parquet and daily plots |
+| UBX/SBF GPS L1/L2 and local precise products | `ngo-ppp` → `ngo-ppp-plot` | Static forward Float solutions, residual Parquet and whole-solution reports |
+| UBX/SBF GPS L1/L2, precise products and CODE IONEX | `ngo-stec` | Daily GF samples, arc leveling and GIM-constrained receiver DCB Parquet |
 
 RINEX conversion is not lossless preservation of raw protocols and does not
 automatically prove cross-file continuity. Follow the [conversion guide](rinex-conversion.md).
@@ -60,14 +61,13 @@ recovery and reconstruction overlap proofs serve distinct integrity needs.
 
 ## Scientific limits and extension points
 
-- Carrier-phase dSTEC is relative within a continuous arc, not absolute STEC.
-  Absolute TEC requires ambiguity/bias treatment compatible with the actual
-  observation codes; downloaded bias products are not automatically applied.
-- Current IPP geometry uses broadcast NAV. Precise SP3/CLK consumption is an
-  extension point, not an option already wired into `ngo-tec-ipp-map`.
+- The [STEC pipeline](stec.md) applies satellite corrections and receiver-bias
+  estimation, but its absolute reference is constrained by GIM assumptions.
+- STEC geometry uses precise products. Rendering finalized absolute-STEC
+  trajectories is a downstream extension, not an implemented plotting command.
 - SBAS broadcast equivalent VTEC is an operational correction field, not a
   direct high-rate ionospheric measurement at the receiver.
-- ROT/ROTI, detrending, automated TID detection, multi-GNSS PPP and absolute TEC need
+- ROT/ROTI, detrending, automated TID detection, multi-GNSS PPP and independently calibrated TEC need
   dedicated implementations and validation. A single station alone does not
   establish a disturbance's horizontal propagation velocity.
 - CDDIS availability and successful decompression do not prove scientific

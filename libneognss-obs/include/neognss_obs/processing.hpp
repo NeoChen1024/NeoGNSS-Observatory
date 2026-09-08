@@ -37,7 +37,8 @@ class SubframeProcessor {
 };
 class ClockProcessor {
   public:
-    ClockProcessor(double max_gap = 50, double tolerance = 50000, double temperature_max_age = 5);
+    ClockProcessor(double max_gap = 50, double tolerance = 50000, double temperature_max_age = 5,
+                   const std::string &protocol = "ubx");
     ~ClockProcessor();
     Json feed(std::span<const uint8_t>, const std::string &source);
     // Only close framing at a file boundary. Buffered epoch/state survive.

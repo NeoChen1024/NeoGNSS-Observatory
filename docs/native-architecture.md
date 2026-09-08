@@ -13,16 +13,15 @@ The logger depends directly on `libcppgnss`.
 | SBAS mask completeness, correction/mask ages, grid resets | `libneognss-obs` |
 | GPS observation normalization without RTKLIB types | `libcppgnss` |
 | Static GPS Float PPP adapter, filter and residual batches | `libneognss-obs`, linked to RTKLIB-EX |
+| GPS STEC geometry, phase leveling and receiver DCB estimation | `libneognss-obs`, linked to RTKLIB-EX |
 | Batch Python binding | `libneognss-obs` |
 | Source selection, overlap byte I/O/proofs, publication and Parquet | Python |
 | Numerical table reductions, rendering and parallel PNG export | Python/NumPy |
 
 Python calls native processing through batch bindings. RTKLIB conversion,
-RxTools, FFmpeg and the RTKLIB RINEX-geometry executable are external tools.
-The geometry executable belongs to Observatory analysis, not the protocol
-library. `neoubxlogger` is the standalone recording application.
-The direct raw-observation PPP path links RTKLIB as a library; it does not invoke
-these conversion/geometry executables or write a RINEX observation intermediate.
+RxTools and FFmpeg are external tools. `neoubxlogger` is the standalone recording
+application. The raw-observation STEC and PPP paths link RTKLIB as a library;
+they do not invoke conversion executables or write a RINEX observation intermediate.
 
 ## Batch and state semantics
 

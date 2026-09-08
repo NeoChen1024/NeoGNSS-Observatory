@@ -15,12 +15,13 @@ def bias_time(text):
     return int(((dt.datetime(year, 1, 1) - EPOCH).total_seconds() + (day - 1) * 86400 + seconds) * 1_000_000_000)
 
 
-class Products:
-    def __init__(self, root, scratch, antenna, catalogs, margin_hours=6):
+class LocalProducts:
+    """Bounded-window users share local discovery and temporary gzip expansion."""
+
+    def __init__(self, root, scratch, margin_hours=6):
         if not math.isfinite(margin_hours) or margin_hours < 1:
-            raise ValueError("PPP product safety margin must be at least one hour")
+            raise ValueError("Product safety margin must be at least one hour")
         self.root, self.scratch = Path(root), Path(scratch)
-        self.antenna, self.catalogs = antenna, catalogs
         self.margin = dt.timedelta(hours=margin_hours)
         self.files = {}
         for path in self.root.rglob("*"):
@@ -48,6 +49,12 @@ class Products:
         if len(candidates) != 1:
             raise ValueError(f"Expected one local product {name}; found {len(candidates)}")
         return self.unpack(candidates[0])
+
+
+class Products(LocalProducts):
+    def __init__(self, root, scratch, antenna, catalogs, margin_hours=6):
+        super().__init__(root, scratch, margin_hours)
+        self.antenna, self.catalogs = antenna, catalogs
 
     def receiver_antenna(self, start_ns, end_ns):
         matches = []

@@ -1,17 +1,30 @@
 # Raw-observation STEC and offline PPP implementation plan
 
-This is an agreed design and implementation checklist, not a description of
-completed functionality. Unchecked items remain unimplemented or unverified.
+This is an implementation checklist. Unchecked items remain unimplemented or
+unverified; current behavior is documented in the linked tool guides.
 Update this document as work lands; move implemented behavior into the relevant
 usage/design guides and remove superseded plans rather than retaining history.
 
 ## Scope and architecture
 
-The first version produces satellite-bias-corrected, phase-leveled STEC with
-receiver bias explicitly uncorrected. No applicable receiver bias calibration
-is supplied for these datasets. IONEX is an ionosphere model, not a receiver
-calibration table; receiver grade alone does not determine whether a receiver
-bias can be estimated. Receiver-bias estimation is outside this first version.
+The current GPS L1/L2 implementation is described in [STEC and receiver DCB](stec.md).
+It produces satellite-corrected, phase-leveled STEC and GIM-constrained receiver
+DCB estimates. No independent receiver calibration is supplied for these
+datasets. IONEX is an ionosphere model, not a calibration of this receiver;
+its use as a bias constraint must remain explicit in absolute STEC results.
+
+- [x] Implement the GPS raw-observation path, exact-signal satellite bias transfer
+  into the IONEX datum, robust arc leveling and receiver DCB fitting.
+- [x] Keep full-arc offsets and receiver-window solutions in small Parquet tables;
+  reconstruct absolute estimates by batched join without reopening raw data.
+- [x] Reject insufficient receiver-bias coverage without substituting zero.
+- [ ] Add an absolute-STEC plot consumer for the finalized Parquet estimates.
+- [ ] Validate independent-reference accuracy and sensitivity to mapping height,
+  elevation mask, leveling scatter, estimation-window boundaries and temperature.
+- [ ] Add phase wind-up and appropriate antenna corrections to the STEC path.
+
+The remaining generalized signal/model extensions below are broader than the
+initial GPS-only implementation.
 
 - [ ] Decode UBX/SBF observations with `libcppgnss`, normalize and process them
   in `libneognss-obs`, and use RTKLIB-EX internally for supported calculations.
@@ -77,7 +90,7 @@ ANTEX. Product availability and actual application are separate concerns:
 | CLK | Compatible satellite clocks for the selected timing/geometry model |
 | OSB/DSB | Satellite code-bias correction for the exact selected observables |
 | BRDC | Health and other supported auxiliary navigation information; no silent precise-orbit fallback |
-| IONEX | Reference/background comparison; no receiver-bias fit in version one |
+| IONEX | GIM reference and satellite C1W-C2W datum for receiver-bias fitting |
 | ANTEX, ERP | Inputs to explicitly implemented antenna/geometric corrections, not implied corrections merely because files exist |
 
 - [ ] Define station receiver/antenna identifiers, ECEF coordinates and their
@@ -137,9 +150,9 @@ does not calibrate STEC or remove receiver differential code bias.
   claiming a valid level.
 - [ ] Accumulate leveling sample count, weight totals and residual scatter.
   Do not present scatter as a complete absolute TEC uncertainty estimate.
-- [ ] Label first-version results `satellite_bias_corrected` and
-  `receiver_bias_uncorrected`; do not call them calibrated absolute STEC/VTEC.
-  Keep relative phase changes distinct from the code-leveled estimate.
+- [x] Distinguish satellite-corrected code-leveled STEC from GIM-constrained
+  absolute estimates. Unusable receiver-bias windows have null absolute results;
+  never present these estimates as independent receiver calibration.
 
 ## 4. Continuity and scientific validity
 
@@ -148,8 +161,7 @@ does not calibrate STEC or remove receiver differential code bias.
   physical files and GPST midnight. Close final arcs explicitly at stream end.
 - [ ] Handle slip indications, half-cycle changes, signal/frequency changes,
   time reversal, observed restart and timeout with explicit reasons.
-- [ ] Start with a configurable 50-second phase gap limit, not the current
-  dSTEC tracker's fixed 1.5-second assumption. An allowed gap is not proof that
+- [x] Use a configurable 50-second phase gap limit. An allowed gap is not proof that
   no slip occurred; do not interpolate missing measurements.
 - [ ] Make GF-jump detection sensitive to elapsed time and signal pair rather
   than copying a fixed 0.1-meter threshold. Keep candidates distinct from
@@ -176,11 +188,9 @@ daily sample files when an arc closes.
   - nullable finalized `level_offset_m` and explicit solution quality/status;
   - phase/leveling counts, effective duration and residual scatter;
   - boundary reasons and bias-correction status.
-- [ ] Partition arc solutions by arc-start GPST day. Provide a reader that
-  resolves every arc referenced by requested daily samples, including arcs
-  starting before that day or finishing after it. Distinguish unfinished/missing
-  solutions from valid finalized solutions.
-- [ ] Compute finalized STEC by a batched samples/arcs join, not row-by-row
+- [x] Store finalized arc solutions in one compact table, resolving arcs across
+  daily sample partitions. Distinguish missing and insufficient arc solutions.
+- [x] Compute finalized STEC by a batched samples/arcs join, not row-by-row
   Python processing. Do not repeat arc constants in every sample or require a
   second raw scan to apply them.
 - [ ] Store only scientific interpretation metadata: GPST epoch/units, signal
@@ -369,11 +379,10 @@ same correction twice.
   only if subsequently requested; PPP-AR work is currently deferred. Verify core capability and compatible bias
   products before exposing any of these as supported modes.
 
-## Deferred from the first STEC version
+## Further STEC research
 
-- Receiver-bias estimation/calibration and calibrated absolute TEC.
-- Fitting receiver bias against IONEX: any such output must disclose the model
-  constraint and cannot use that same GIM as independent validation.
+- Independent absolute calibration and time-varying receiver-bias models.
+- IONEX-constrained estimates cannot use that same GIM as independent validation.
 - PPP is tracked as a separate project goal above. Additional STEC geophysical/
   antenna models remain outside its first version unless explicitly implemented.
 - A persistent full-observation cache, unless measured repeated-decoding cost

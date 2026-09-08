@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Streaming receiver clock telemetry from quality-controlled GPST UBX segments."""
+"""Streaming UBX/SBF receiver clock and independent PPS telemetry."""
 
 import json
 from contextlib import ExitStack
@@ -12,55 +12,84 @@ from tqdm import tqdm
 
 from . import _native
 from .dataset_inputs import recordings
-from .protocol import ProtocolWarnings, protocol_option, require_ubx
+from .protocol import ProtocolWarnings, protocol_option
 from .research_output import staged_output, write_json
 
-SAMPLE_SCHEMA = pa.schema(
+CLOCK_SCHEMA = pa.schema(
     [
         (name, pa.int64())
         for name in (
             "gpst_ns",
             "iTOW_ms",
-            "clock_bias_ns",
-            "clock_drift_ns_s",
             "time_accuracy_ns",
             "frequency_accuracy_ps_s",
             "clock_adjustment_total_ns",
-            "clock_bias_unwrapped_ns",
             "receiver_session_id",
             "clock_arc_id",
             "source_offset",
-            "temperature_source_offset",
-            "temperature_reference_gpst_ns",
-            "runtime_s",
+            "source_id",
+            "adjustment_ns",
             "timegps_fTOW_ns",
+            "cumulative_clock_jumps_ms",
         )
     ]
     + [
-        ("temperature_c", pa.float64()),
-        ("temperature_age_s", pa.float64()),
+        ("clock_bias_ns", pa.float64()),
+        ("clock_drift_ns_s", pa.float64()),
+        ("clock_bias_unwrapped_ns", pa.float64()),
         ("rawx_clock_reset", pa.bool_()),
-        ("source", pa.string()),
-        ("temperature_source", pa.string()),
-        ("temperature_association", pa.string()),
-        ("unwrap_quality", pa.string()),
+        ("adjustment_evidence", pa.string()),
+        ("arc_start_reason", pa.string()),
         ("time_basis", pa.string()),
     ],
-    metadata={b"schema_version": b"1", b"time_scale": b"GPST", b"time_origin": b"1980-01-06 00:00:00 GPST"},
+    metadata={b"schema_version": b"3", b"time_scale": b"GPST", b"time_origin": b"1980-01-06 00:00:00 GPST"},
+)
+
+STATUS_SCHEMA = pa.schema(
+    [(k, pa.int64()) for k in ("gpst_ns", "runtime_s", "receiver_session_id", "source_id", "source_offset")]
+    + [("temperature_c", pa.float64()), ("restart", pa.bool_()), ("fine_time", pa.bool_())]
+    + [(k, pa.string()) for k in ("message", "time_basis")],
+    metadata=CLOCK_SCHEMA.metadata,
+)
+
+PPS_SCHEMA = pa.schema(
+    [
+        (k, pa.int64())
+        for k in (
+            "gpst_ns",
+            "reference_id",
+            "utc_standard",
+            "native_week",
+            "native_tow_ms",
+            "native_tow_sub_ms",
+            "raim",
+            "source_offset",
+            "source_id",
+        )
+    ]
+    + [("quantization_error_ns", pa.float64()), ("quantization_error_valid", pa.bool_()), ("sync_age_s", pa.float64())]
+    + [(k, pa.string()) for k in ("message", "time_association", "reference_time_scale")],
+    metadata={
+        b"time_scale": b"GPST",
+        b"time_origin": b"1980-01-06 00:00:00 GPST",
+        b"error_units": b"ns",
+        b"error_sign": b"native protocol convention",
+    },
 )
 
 
 class SampleWriter:
-    def __init__(self, path, config):
-        self.schema = SAMPLE_SCHEMA.with_metadata(
+    def __init__(self, path, config, schema=CLOCK_SCHEMA):
+        self.schema = schema.with_metadata(
             {
-                **SAMPLE_SCHEMA.metadata,
+                **schema.metadata,
+                b"protocol": config["protocol"].encode(),
                 b"max_gap_seconds": str(config["max_gap"]).encode(),
                 b"jump_tolerance_ns": str(config["jump_tolerance_ns"]).encode(),
                 b"temperature_max_age_seconds": str(config["temperature_max_age"]).encode(),
             }
         )
-        self.writer = pq.ParquetWriter(path, self.schema, compression="zstd")
+        self.writer = pq.ParquetWriter(path, self.schema, compression="zstd", compression_level=3)
         self.rows = []
 
     def add(self, row):
@@ -78,15 +107,42 @@ class SampleWriter:
         self.writer.close()
 
 
-def emit_batch(batch, samples, events, telemetry):
+def emit_batch(batch, clock, status, pps, source_ids):
+    def identify(row):
+        row = dict(row)
+        row["source_id"] = source_ids[row["source"]]
+        return row
+
+    changes = {}
+    restarts = set()
+    for event in batch["events"]:
+        if event["kind"] == "receiver_restart":
+            restarts.add((event["receiver_session_id"], event["runtime_s"]))
+        else:
+            key = (event.get("gpst_ns"), event["receiver_session_id"], event["clock_arc_id"])
+            change = changes.setdefault(key, {})
+            if event["kind"] == "clock_adjustment":
+                change.update(adjustment_ns=event["adjustment_ns"], adjustment_evidence=event["evidence"])
+            else:
+                change["arc_start_reason"] = event["reason"]
     for row in batch["samples"]:
-        samples.add(row)
-    for key, stream in (("events", events), ("telemetry", telemetry)):
-        stream.writelines(json.dumps(row, allow_nan=False) + "\n" for row in batch[key])
+        row = identify(row)
+        row["adjustment_ns"] = 0
+        row.update(changes.get((row.get("gpst_ns"), row["receiver_session_id"], row.get("clock_arc_id")), {}))
+        clock.add(row)
+    for row in batch["telemetry"]:
+        row = identify(row)
+        row["message"] = row["kind"]
+        row["time_basis"] = row.get("association", "SBF_WNc_TOW")
+        row["restart"] = (row["receiver_session_id"], row["runtime_s"]) in restarts
+        restarts.discard((row["receiver_session_id"], row["runtime_s"]))
+        status.add(row)
+    for row in batch["pps"]:
+        pps.add(identify(row))
 
 
-def scan(path, tracker, progress, emit, initial):
-    warnings = ProtocolWarnings(path, "ubx", initial)
+def scan(path, tracker, progress, emit, initial, protocol):
+    warnings = ProtocolWarnings(path, protocol, initial)
     size = 0
     batch = initial
     with path.open("rb") as stream:
@@ -106,7 +162,7 @@ def scan(path, tracker, progress, emit, initial):
     "--input-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     required=True,
-    help="Expanded UBX recordings in stream order; unassigned/ is excluded.",
+    help="Expanded UBX/SBF recordings in stream order; unassigned/ is excluded.",
 )
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New output directory.")
 @click.option("--max-gap", type=click.FloatRange(min=0, min_open=True), default=50.0, show_default=True)
@@ -115,47 +171,49 @@ def scan(path, tracker, progress, emit, initial):
 @click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")
 @staged_output
 def cli(input_dir, output, max_gap, jump_tolerance_ns, temperature_max_age, protocol="ubx"):
-    """Export NAV-CLOCK, MON-SYS and clock adjustment statistics."""
+    """Export receiver clock, temperature, uptime and PPS telemetry."""
     try:
-        require_ubx(protocol, "NAV-CLOCK/MON-SYS analysis")
         root = input_dir.resolve()
-        paths = recordings(root)
+        paths = recordings(root, protocol)
         output.mkdir(exist_ok=False)
-        config = {"max_gap": max_gap, "jump_tolerance_ns": jump_tolerance_ns, "temperature_max_age": temperature_max_age}
-        write_json(
-            output / "run.json",
-            {
-                "schema": 1,
-                "time_scale": "GPST",
-                "time_origin": "1980-01-06 00:00:00 GPST",
-                "config": config,
-            },
-        )
+        config = {
+            "max_gap": max_gap,
+            "jump_tolerance_ns": jump_tolerance_ns,
+            "temperature_max_age": temperature_max_age,
+            "protocol": protocol,
+        }
+        source_ids = {str(path): i for i, path in enumerate(paths)}
+        sources = []
         with ExitStack() as stack:
-            samples = SampleWriter(output / "samples.parquet", config)
-            stack.callback(samples.close)
-            events = stack.enter_context((output / "events.jsonl").open("x"))
-            telemetry = stack.enter_context((output / "mon-sys.jsonl").open("x"))
-            sources = stack.enter_context((output / "sources.jsonl").open("x"))
-
-            def emit(stream):
-                return lambda row: stream.write(json.dumps(row, allow_nan=False) + "\n")
-
+            clock = SampleWriter(output / "clock.parquet", config)
+            stack.callback(clock.close)
+            status = SampleWriter(output / "status.parquet", config, STATUS_SCHEMA)
+            stack.callback(status.close)
+            pps = SampleWriter(output / "pps.parquet", config, PPS_SCHEMA)
+            stack.callback(pps.close)
             tracker = _native.ClockProcessor(
                 max_gap=max_gap,
                 tolerance=jump_tolerance_ns,
                 temperature_max_age=temperature_max_age,
+                protocol=protocol,
             )
             progress = stack.enter_context(
                 tqdm(total=sum(p.stat().st_size for p in paths), desc="Receiver clock", unit="B", unit_scale=True)
             )
             counters = {}
             for path in paths:
-                record, counters = scan(path, tracker, progress, lambda b: emit_batch(b, samples, events, telemetry), counters)
-                emit(sources)(record)
-            emit_batch(tracker.finish(), samples, events, telemetry)
+                record, counters = scan(
+                    path, tracker, progress, lambda b: emit_batch(b, clock, status, pps, source_ids), counters, protocol
+                )
+                sources.append(dict(source_id=source_ids[str(path)], **record))
+            emit_batch(tracker.finish(), clock, status, pps, source_ids)
         summary = {
             "status": "complete",
+            "schema": 3,
+            "time_scale": "GPST",
+            "time_origin": "1980-01-06 00:00:00 GPST",
+            "config": config,
+            "sources": sources,
             **tracker.summary(),
         }
         write_json(output / "summary.json", summary)

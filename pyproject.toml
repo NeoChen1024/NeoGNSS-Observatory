@@ -10,6 +10,7 @@ authors = [{ name = "Neo_Chen", email = "chenkolei@gmail.com" }]
 dynamic = ["dependencies"]
 
 [project.scripts]
+ngo-stec = "neognss_observatory.stec:cli"
 ngo-ppp = "neognss_observatory.ppp:cli"
 ngo-ppp-plot = "neognss_observatory.ppp_plot:cli"
 ngo-receiver-clock = "neognss_observatory.receiver_clock:cli"
@@ -21,7 +22,6 @@ ngo-sbas-frame-parquet = "neognss_observatory.sbas_extract:cli"
 ngo-sbas-grid-parquet = "neognss_observatory.sbas_grid_parquet:cli"
 ngo-sbas-grid-plot = "neognss_observatory.sbas_grid_plot:cli"
 ngo-sbas-map-video = "neognss_observatory.sbas_map_video:cli"
-ngo-tec-ipp-map = "neognss_observatory.tec_ipp:cli"
 ngo-sbf-rinex = "neognss_observatory.sbf_rinex:cli"
 ngo-rinex-observation-audit = "neognss_observatory.sbf_rinex:audit_cli"
 

@@ -6,7 +6,8 @@ this component. CMake exposes `neognss_obs::neognss_obs`.
 
 The library implements archive epoch indexing and GPST segmentation, receiver
 clock association/unwrap and MON-SYS restart/temperature tracking, and SBAS
-mask/aging state, and static GPS Float PPP using the RTKLIB-EX core.
+mask/aging state, GPS STEC/receiver DCB processing, and static GPS Float PPP
+using the RTKLIB-EX core.
 The pybind11 extension exposes bounded-batch processing;
 Python owns file I/O, orchestration, Parquet and plots. JSON containers here
 are in-memory records, not a subprocess or JSON-text transport.
@@ -40,7 +41,7 @@ The experimental extension is `neognss_observatory._native`:
 | `DatasetScan(protocol="ubx", qa=True, gap_timeout=50)` | Read-only streaming QA; `qa=False` supplies timed UBX SBAS batches without diagnostics |
 | `archive_index(buffer)` | Read-only UBX buffer to a packed `UBXIDX04` index |
 | `SegmentPlanner(joins, timeout_ms)` | Source index buffers to GPST segments/quarantined spans |
-| `ClockProcessor(...)` | UBX chunks to batches of samples, events and MON-SYS telemetry |
+| `ClockProcessor(..., protocol="ubx")` | UBX/SBF chunks to clock, PPS, adjustment and temperature/uptime batches |
 | `SubframeProcessor(sbas_only=True)` | UBX chunks to decoded navigation-frame records |
 | `GridProcessor(correction_age=600, mask_age=1200, gap_timeout=0)` | Protocol-neutral timed SBAS batches to valid IGP intervals |
 | `SbfParser(block_ids=[])` | SBF chunks to typed block records, optionally filtered by block ID, with GEORawL1 SBAS extraction |
@@ -64,6 +65,13 @@ use separate processes for independent parallel PPP runs. `PppFloat.products()`
 loads a new product window without resetting filter state, and `process()`
 returns structured NumPy arrays rather than per-observation Python objects.
 See [PPP settings, models and limits](../docs/ppp.md).
+
+`StecProcessor` consumes the same opaque `ObservationBatch` as PPP and returns
+structured NumPy sample/arc arrays. `products()` replaces only product data;
+`finish()` finalizes remaining arc offsets. `fit_receiver_dcb()` fits one
+receiver/signal-pair window from leveled residual batches, with coverage gates.
+RTKLIB adapters share the same process-wide lock. See [STEC conventions and
+limits](../docs/stec.md); GIM-constrained estimates are not independent calibration.
 
 For clocks, pass each file's name to `feed()` and retain one processor across
 files. Frame-start source attribution is preserved even for split frames.

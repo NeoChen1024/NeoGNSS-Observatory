@@ -19,12 +19,11 @@ from .sbas_extract import write_json
 class BatchUnwrapper:
     """Vectorized Parquet reduction using the native clock processor's adjustment/timeout policy."""
 
-    def __init__(self, event, max_gap=50.0, tolerance=50000):
-        self.event, self.max_gap, self.tolerance = event, max_gap, tolerance
+    def __init__(self, max_gap=50.0, tolerance=50000):
+        self.max_gap, self.tolerance = max_gap, tolerance
         self.previous = None
         self.arc = 0
         self.adjustment = 0
-        self.last_reset = None
         self.counts = Counter()
 
     def apply(self, table):
@@ -66,42 +65,7 @@ class BatchUnwrapper:
         quality[unresolved] = "unresolved_adjustment"
         quality[adjusted & ~flag] = "bias_inferred_adjustment"
         quality[adjusted & flag] = "rawx_confirmed_adjustment"
-        for i in np.flatnonzero(fresh | adjusted):
-            if fresh[i]:
-                self.last_reset = None
-                self.event(
-                    {
-                        "kind": "clock_arc_start",
-                        "reason": str(quality[i]),
-                        "gpst_ns": int(t[i]),
-                        "clock_arc_id": int(arc[i]),
-                        "receiver_session_id": int(session[i]),
-                    }
-                )
-            else:
-                self.event(
-                    {
-                        "kind": "clock_adjustment",
-                        "gpst_ns": int(t[i]),
-                        "receiver_session_id": int(session[i]),
-                        "clock_arc_id": int(arc[i]),
-                        "source": table["source"][int(i)].as_py(),
-                        "source_offset": table["source_offset"][int(i)].as_py(),
-                        "previous_gpst_ns": int(pt[i]),
-                        "bias_before_ns": int(pb[i]),
-                        "bias_after_ns": int(bias[i]),
-                        "drift_ns_s": int(drift[i]),
-                        "jump_residual_ns": float(jump[i]),
-                        "adjustment_ns": int(rounded[i]),
-                        "evidence": str(quality[i]),
-                        "temperature_c": table["temperature_c"][int(i)].as_py(),
-                        "interval_since_previous_adjustment_s": (
-                            (int(t[i]) - self.last_reset) / 1e9 if self.last_reset is not None else None
-                        ),
-                    }
-                )
-                self.last_reset = int(t[i])
-        self.previous = tuple(int(values[-1]) for values in current)
+        self.previous = (int(t[-1]), float(bias[-1]), float(drift[-1]), int(session[-1]))
         self.arc, self.adjustment = int(arc[-1]), int(total[-1])
         self.counts.update(
             {
@@ -116,11 +80,13 @@ class BatchUnwrapper:
             ("clock_arc_id", arc),
             ("clock_adjustment_total_ns", total),
             ("clock_bias_unwrapped_ns", bias - total),
+            ("adjustment_ns", np.where(adjusted, rounded, 0)),
         ):
-            table = table.set_column(table.schema.get_field_index(name), name, pa.array(values, mask=~valid, type=pa.int64()))
-        return table.set_column(
-            table.schema.get_field_index("unwrap_quality"), "unwrap_quality", pa.array(quality, type=pa.string())
-        )
+            dtype = pa.float64() if name == "clock_bias_unwrapped_ns" else pa.int64()
+            table = table.set_column(table.schema.get_field_index(name), name, pa.array(values, mask=~valid, type=dtype))
+        for name, mask in (("adjustment_evidence", adjusted), ("arc_start_reason", fresh)):
+            table = table.set_column(table.schema.get_field_index(name), name, pa.array(quality, mask=~mask, type=pa.string()))
+        return table
 
 
 @click.command()
@@ -136,48 +102,31 @@ def cli(input_dir, output, max_gap, jump_tolerance_ns):
     """Recalculate unwrapped bias from existing receiver-clock Parquet."""
     try:
         source, output = input_dir.resolve(), output.resolve()
-        summary = {"status": "complete", "counts": {}}
-        parquet = pq.ParquetFile(source / "samples.parquet")
+        summary = json.loads((source / "summary.json").read_text())
+        parquet = pq.ParquetFile(source / "clock.parquet")
+        if parquet.schema_arrow.metadata.get(b"protocol") == b"sbf":
+            raise ValueError(
+                "SBF re-unwrapping from Parquet is not implemented; rerun ngo-receiver-clock -p sbf to retain counted adjustments"
+            )
         if parquet.schema_arrow.metadata.get(b"time_scale") != b"GPST":
             raise ValueError("Expected GPST sample timestamps")
         output.mkdir(parents=True, exist_ok=False)
-        for name in ("mon-sys.jsonl", "sources.jsonl"):
-            if (source / name).exists():
-                shutil.copyfile(source / name, output / name)
-        # Restart evidence is retained verbatim, including reports that had
-        # no NAV-CLOCK sample. Session IDs already incorporate those reports.
-        restarts = []
-        with (source / "events.jsonl").open() as stream:
-            for line in stream:
-                event = json.loads(line)
-                if event["kind"] == "receiver_restart":
-                    restarts.append(event)
-        generated = []
-        tracker = BatchUnwrapper(generated.append, max_gap, jump_tolerance_ns)
+        for name in ("status.parquet", "pps.parquet"):
+            shutil.copyfile(source / name, output / name)
+        tracker = BatchUnwrapper(max_gap, jump_tolerance_ns)
         metadata = {
             **parquet.schema_arrow.metadata,
             b"max_gap_seconds": str(max_gap).encode(),
             b"jump_tolerance_ns": str(jump_tolerance_ns).encode(),
         }
-        with pq.ParquetWriter(
-            output / "samples.parquet", parquet.schema_arrow.with_metadata(metadata), compression="zstd"
-        ) as writer:
+        with pq.ParquetWriter(output / "clock.parquet", parquet.schema_arrow.with_metadata(metadata), compression="zstd") as writer:
             with tqdm(total=parquet.metadata.num_rows, desc="Reunwrap clock", unit="sample", unit_scale=True) as progress:
                 for batch in parquet.iter_batches(batch_size=65536):
                     writer.write_table(tracker.apply(pa.Table.from_batches([batch])).replace_schema_metadata(metadata))
                     progress.update(batch.num_rows)
-        with (output / "events.jsonl").open("x") as stream:
-            for event in sorted(restarts + generated, key=lambda e: (e.get("gpst_ns") or -1, e["kind"] != "receiver_restart")):
-                stream.write(json.dumps(event) + "\n")
-        run = dict(
-            schema=1,
-            time_scale="GPST",
-            time_origin="1980-01-06 00:00:00 GPST",
-            config={"max_gap": max_gap, "jump_tolerance_ns": jump_tolerance_ns},
-            operation="reunwrap_from_extracted_samples",
-            input=str(source),
-        )
-        write_json(output / "run.json", run)
+        summary["config"].update(max_gap=max_gap, jump_tolerance_ns=jump_tolerance_ns)
+        summary["operation"] = "reunwrap_from_clock_table"
+        summary.get("ranges", {}).pop("clock_bias_unwrapped_ns", None)
         summary["counts"].update(tracker.counts)
         write_json(output / "summary.json", summary)
         click.echo(json.dumps({"status": "complete"}))

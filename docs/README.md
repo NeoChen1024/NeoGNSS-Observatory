@@ -19,12 +19,12 @@ only when they affect present interpretation or processing.
 
 ## Tools
 
+- [GPS STEC and receiver DCB](stec.md): phase leveling and GIM-constrained absolute estimates from raw observations.
 - [Offline PPP Float](ppp.md): raw GPS observations, local precise products and numerical/plot outputs.
 - [Dataset QA and reconstruction](dataset-qa.md): optional scan and explicit restitch.
 - [SBAS frames, grids and maps](subframes.md): source-independent Parquet pipeline.
 - [Receiver clocks](receiver-clock.md): telemetry, unwrap and plots.
 - [RINEX conversion](rinex-conversion.md): RTKLIB-EX and RxTools usage and limits.
-- [IPP and relative dSTEC maps](tec-ipp-maps.md): broadcast geometry and hourly visualization.
 - [CDDIS downloader](cddis-downloader.md): credentials, planning and transfer recovery.
 
 ## Libraries

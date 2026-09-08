@@ -1,7 +1,7 @@
 # NeoGNSS Observatory
 
 This pre-Alpha project provides offline GNSS research tools for receiver
-telemetry, SBAS grids, relative carrier-phase TEC and GPS Float PPP. The repository stores
+telemetry, SBAS grids, phase-leveled GPS STEC and GPS Float PPP. The repository stores
 code and configuration. Raw archives remain
 read-only preservation masters, and large derived data stays out of Git.
 
@@ -11,7 +11,8 @@ Both the expanded dataset and preservation masters remain read-only.
 
 See the [documentation index](docs/README.md) for current tools and the
 [processing overview](docs/processing-overview.md) for implemented paths and
-scientific limits. Multi-GNSS PPP and calibrated absolute TEC remain extension goals.
+scientific limits. Absolute STEC estimates are GIM-constrained, not independently
+calibrated; multi-GNSS PPP remains an extension goal.
 All observation processing uses [one GPST time policy](docs/time-policy.md),
 including day/hour boundaries and GPST-prefixed derived filenames.
 
@@ -57,15 +58,22 @@ python -m pip install .
 Python dependencies use minimum versions to allow upgrades. Building the package
 also requires CMake 3.24+, a C++20 compiler/standard library with `std::format`,
 and OpenSSL Crypto development files. Installation builds the native extension used by UBX/SBF processing. The
-optional RINEX geometry backend is built separately.
+optional RINEX converter is built separately.
 
 See [the downloader guide](docs/cddis-downloader.md) and
 [example configuration](config/products.example.toml) for Earthdata setup,
 product selection, optional checksum snapshots and resumable downloads.
 See the [subframe and SBAS guide](docs/subframes.md) for extraction and hourly
 map semantics.
-The [IPP track experiment](docs/tec-ipp-maps.md) adds relative dSTEC trajectories
-over pale SBAS backgrounds, with parallel hourly PNG export.
+
+### GPS STEC and receiver DCB
+
+`ngo-stec -p ubx|sbf` reads raw GPS L1/L2 observations, applies exact-signal
+satellite code biases, levels phase to code and estimates receiver DCB against
+local CODE IONEX products. It writes daily samples plus arc and receiver-bias
+Parquet tables. Insufficient calibration windows retain unavailable absolute
+values, never an assumed zero bias. See [the STEC guide](docs/stec.md) and
+[example configuration](config/stec.example.toml).
 
 ### Offline PPP Float
 

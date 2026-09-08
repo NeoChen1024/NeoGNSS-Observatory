@@ -8,6 +8,7 @@
 
 namespace py = pybind11;
 void bind_ppp(py::module_ &);
+void bind_stec(py::module_ &);
 using neognss_obs::Json;
 namespace {
 py::object to_python(const Json &value) {
@@ -105,6 +106,7 @@ struct SbfBatch {
 } // namespace
 PYBIND11_MODULE(_native, m) {
     bind_ppp(m);
+    bind_stec(m);
     using Scan = Guarded<neognss_obs::DatasetScan>;
     py::class_<Scan>(m, "DatasetScan")
         .def(py::init<std::string, bool, double>(), py::arg("protocol") = "ubx", py::arg("qa") = true,
@@ -140,8 +142,8 @@ PYBIND11_MODULE(_native, m) {
         .def("summary", [](Subframes &s) { return run(s, [](auto &p) { return p.summary(); }); });
     using Clock = Guarded<neognss_obs::ClockProcessor>;
     py::class_<Clock>(m, "ClockProcessor")
-        .def(py::init<double, double, double>(), py::arg("max_gap") = 50, py::arg("tolerance") = 50000,
-             py::arg("temperature_max_age") = 5)
+        .def(py::init<double, double, double, const std::string &>(), py::arg("max_gap") = 50, py::arg("tolerance") = 50000,
+             py::arg("temperature_max_age") = 5, py::arg("protocol") = "ubx")
         .def("feed",
              [](Clock &s, py::buffer data, const std::string &source) {
                  auto info = data.request();

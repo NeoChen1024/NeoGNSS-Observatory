@@ -13,6 +13,7 @@ import numpy as np
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
+from .clock_status import StatusJoin
 from .research_output import staged_output
 
 matplotlib.use("Agg")
@@ -30,7 +31,7 @@ COLUMNS = (
     "clock_drift_ns_s",
     "time_accuracy_ns",
     "frequency_accuracy_ps_s",
-    "temperature_c",
+    "receiver_session_id",
 )
 SERIES = ("bias", "unwrapped", "drift", "tacc", "facc", "temperature")
 
@@ -63,20 +64,22 @@ def extrema_indices(data, bins=900, event_times=()):
 
 def event_inventory(path):
     grouped = defaultdict(list)
-    with path.open() as stream:
-        for line in stream:
-            event = json.loads(line)
-            if event.get("gpst_ns") is not None:
-                grouped[event["gpst_ns"] // HOUR_NS].append(event)
+    for batch in pq.ParquetFile(path).iter_batches(columns=["gpst_ns", "adjustment_ns", "adjustment_evidence"]):
+        for row in batch.to_pylist():
+            if row["gpst_ns"] is not None and row["adjustment_ns"]:
+                grouped[row["gpst_ns"] // HOUR_NS].append(
+                    dict(kind="clock_adjustment", gpst_ns=row["gpst_ns"], evidence=row["adjustment_evidence"])
+                )
     return grouped
 
 
 def prepare(source, output, max_gap):
     """Read selected Parquet columns once; buffer at most one hour plus a batch."""
-    parquet = pq.ParquetFile(source / "samples.parquet")
+    parquet = pq.ParquetFile(source / "clock.parquet")
     if parquet.schema_arrow.metadata.get(b"time_scale") != b"GPST":
         raise ValueError("Expected GPST samples")
-    events = event_inventory(source / "events.jsonl")
+    events = event_inventory(source / "clock.parquet")
+    status = StatusJoin(source / "status.parquet", float(parquet.schema_arrow.metadata[b"temperature_max_age_seconds"]))
     cache = output / "cache"
     cache.mkdir()
     hours, pending, current = [], [], None
@@ -100,6 +103,7 @@ def prepare(source, output, max_gap):
             "adjustments": len(adjustments),
             "inferred_adjustments": sum(e.get("evidence") == "bias_inferred_adjustment" for e in adjustments),
             "confirmed_adjustments": sum(e.get("evidence") == "rawx_confirmed_adjustment" for e in adjustments),
+            "counted_adjustments": sum(e.get("evidence") == "sbf_counted_adjustment" for e in adjustments),
             "adjustments_per_observed_hour": len(adjustments) * 3600 / exposure if exposure > 0 else None,
             "drift_p10_p50_p90": np.quantile(data["drift"], [0.1, 0.5, 0.9]).tolist(),
             "temperature_median_c": float(np.median(temp)) if len(temp) else None,
@@ -111,7 +115,7 @@ def prepare(source, output, max_gap):
             path,
             **{k: v[indices] for k, v in data.items() if k != "exposure"},
             adjustment_t=np.array(event_t),
-            confirmed=np.array([e.get("evidence") == "rawx_confirmed_adjustment" for e in adjustments]),
+            confirmed=np.array([e.get("evidence") in ("rawx_confirmed_adjustment", "sbf_counted_adjustment") for e in adjustments]),
         )
         entry["cache"] = path.name
         hours.append(entry)
@@ -128,6 +132,7 @@ def prepare(source, output, max_gap):
             progress.update(batch.num_rows)
             if not len(t):
                 continue
+            values["temperature_c"] = status.temperature(t, values["receiver_session_id"])
             if np.any(np.diff(t) <= 0) or previous_time is not None and t[0] <= previous_time:
                 raise ValueError("Plot input has non-increasing GPST")
             arc = values["clock_arc_id"].astype(np.int64)
@@ -192,7 +197,8 @@ def render_hour(job):
         fig.suptitle(
             f"{title} | {calendar(entry['hour_gpst']):%Y-%m-%d %H:00} GPST\n"
             f"{entry['samples']:,} samples | {entry['arcs']} arcs | "
-            f"{entry['inferred_adjustments']} inferred / {entry['confirmed_adjustments']} RAWX-confirmed adjustments"
+            f"{entry['inferred_adjustments']} inferred / {entry['confirmed_adjustments']} RAWX-confirmed / "
+            f"{entry['counted_adjustments']} SBF-counted adjustments"
         )
         for ax, key, ylabel, color in zip(
             axes[:3],
@@ -211,6 +217,8 @@ def render_hour(job):
         other.set_ylabel("fAcc (ps/s)", color="#b45309")
         for ax in (axes[3], other):
             ax.set_yscale("symlog", linthresh=1)
+        if not np.any(np.isfinite(data["tacc"])) and not np.any(np.isfinite(data["facc"])):
+            unavailable(axes[3])
         axes[4].set_ylabel("Receiver temperature (°C)")
         if np.any(np.isfinite(data["temperature"])):
             line_with_breaks(axes[4], data, "temperature", color="#b45309")
@@ -221,6 +229,65 @@ def render_hour(job):
             ax.set_xlim(0, 60)
         axes[-1].set_xlabel("Minutes from start of GPST hour; arc boundaries are not connected")
         return save_figure(fig, root / "hourly" / (label(entry["hour_gpst"]) + ".png"))
+
+
+def prepare_pps(source, output):
+    path = source / "pps.parquet"
+    if not path.exists():
+        return []
+    jobs, pending = [], []
+    current = None
+
+    def flush():
+        if not pending:
+            return
+        data = np.concatenate(pending)
+        name = label(current * 3600)
+        cache = output / "cache" / f"pps-{name}.npz"
+        np.savez_compressed(cache, data=data)
+        jobs.append((str(cache), str(output / "pps" / f"{name}.png"), current))
+        pending.clear()
+
+    for batch in pq.ParquetFile(path).iter_batches(batch_size=65536):
+        rows = batch.to_pydict()
+        valid = np.array([t is not None for t in rows["gpst_ns"]])
+        times = np.array([t or 0 for t in rows["gpst_ns"]], dtype=np.int64)[valid]
+        errors = np.array(rows["quantization_error_ns"], dtype=float)[valid]
+        references = np.array(rows["reference_time_scale"], dtype=str)[valid]
+        for hour in np.unique(times // HOUR_NS):
+            if current is not None and hour != current:
+                if hour < current:
+                    raise ValueError("Non-monotonic PPS hour sequence")
+                flush()
+            current = int(hour)
+            mask = times // HOUR_NS == hour
+            pending.append(
+                np.rec.fromarrays([(times[mask] - hour * HOUR_NS) / 1e9, errors[mask], references[mask]], names="t,error,reference")
+            )
+    flush()
+    return jobs
+
+
+def render_pps(job):
+    cache, path, hour = job
+    with np.load(cache) as archive:
+        data = archive["data"]
+        fig, ax = plt.subplots(figsize=(16, 5), layout="constrained")
+        for ref in np.unique(data["reference"]):
+            selected = data[data["reference"] == ref]
+            ax.scatter(selected["t"] / 60, selected["error"], s=3, label=ref)
+        if not np.any(np.isfinite(data["error"])):
+            unavailable(ax)
+        ax.set(
+            title=f"PPS quantization error | {calendar(hour * 3600):%Y-%m-%d %H:00} GPST\n"
+            f"{len(data):,} reports; {np.count_nonzero(~np.isfinite(data['error'])):,} unavailable",
+            xlabel="Minutes from start of GPST hour; legend identifies pulse reference scale",
+            ylabel="Receiver-reported error (ns)",
+            xlim=(0, 60),
+        )
+        ax.grid(alpha=0.2)
+        ax.legend()
+        return save_figure(fig, Path(path))
 
 
 def render_day(job):
@@ -273,19 +340,23 @@ def cli(input_dir, output, title, workers, hourly):
     """Render hourly clock details and daily summaries from completed telemetry."""
     try:
         source, output = input_dir.resolve(), output.resolve()
-        metadata = pq.ParquetFile(source / "samples.parquet").schema_arrow.metadata or {}
+        metadata = pq.ParquetFile(source / "clock.parquet").schema_arrow.metadata or {}
         if metadata.get(b"time_scale") != b"GPST":
             raise ValueError("Expected GPST clock samples")
         max_gap = float(metadata[b"max_gap_seconds"])
         output.mkdir(parents=True, exist_ok=False)
         (output / "hourly").mkdir()
         (output / "daily").mkdir()
+        (output / "pps").mkdir()
         hours = prepare(source, output, max_gap)
+        pps_jobs = prepare_pps(source, output) if hourly else []
         days = defaultdict(list)
         for entry in hours:
             days[entry["hour_gpst"] // 86400 * 86400].append(entry)
         results = []
         with multiprocessing.get_context("spawn").Pool(workers) as pool:
+            for result in tqdm(pool.imap_unordered(render_pps, pps_jobs), total=len(pps_jobs), desc="PPS PNG", unit="image"):
+                results.append(dict(result, directory="pps"))
             day_jobs = [(str(output), title, day, entries) for day, entries in sorted(days.items())]
             for result in tqdm(
                 pool.imap_unordered(render_day, day_jobs), total=len(day_jobs), desc="Daily clock PNG", unit="image"

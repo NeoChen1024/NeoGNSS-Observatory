@@ -1,0 +1,30 @@
+# Example only: replace with the actual antenna reference-point ECEF position.
+# Paths are relative to this configuration file. Products must already exist.
+station = "BX4ACP"
+position_ecef_m = [-2972418.7226, 5005726.1893, 2597096.1561]
+products_root = "../work/products"
+signal1 = "1C"
+signal2 = "2L"
+interval = 30.0
+gap_timeout = 50.0
+elevation_deg = 10.0
+level_elevation_deg = 30.0
+min_arc_seconds = 600.0
+min_level_samples = 20
+# Conservative GF jump candidates split arcs; these are not proven cycle slips.
+gf_jump_m = 0.25
+gf_rate_m_s = 0.05
+# MSLM mapping height, NOT the CODE IONEX 450 km IPP shell height.
+mapping_height_km = 506.7
+margin_hours = 6.0
+
+[dcb]
+# Windows start at the first emitted sample, not at storage-day boundaries.
+window_hours = 24.0
+bin_seconds = 300.0
+min_hours = 6.0
+min_satellites = 4
+min_arcs = 6
+elevation_deg = 30.0
+gim_rms_floor_tecu = 2.0
+max_scatter_tecu = 15.0
