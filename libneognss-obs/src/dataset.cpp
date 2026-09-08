@@ -16,7 +16,21 @@ struct DatasetScan::State {
   std::map<uint16_t, int64_t> sbf_times;
   Json pending = Json::array(), output = Json::array(), counts = Json::object();
   State(cppgnss::Protocol p, bool q, int64_t gap)
-      : qa(q), protocol(p), reader(p), gap_ms(gap) {}
+      : qa(q), protocol(p), reader(p), gap_ms(gap) {
+    if (!qa)
+      return;
+    for (const auto *key : {"epochs", "gaps", "time_reversals", "truncated_tail"})
+      counts[key] = uint64_t(0);
+    if (protocol == cppgnss::Protocol::ubx) {
+      for (const auto *key : {"partial_epochs", "time_conflicts", "untimed_epochs",
+                             "duplicate_epochs"})
+        counts[key] = uint64_t(0);
+    } else {
+      for (const auto *key : {"invalid_payloads", "invalid_times",
+                             "timestamped_blocks", "duplicate_epoch_blocks"})
+        counts[key] = uint64_t(0);
+    }
+  }
   void count(const char *key) {
     counts[key] = counts.value(key, uint64_t(0)) + 1;
   }

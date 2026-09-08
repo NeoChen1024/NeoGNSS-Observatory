@@ -11,6 +11,8 @@ The logger depends directly on `libcppgnss`.
 | GPST epoch association, archive segmentation and quarantine policy | `libneognss-obs` |
 | Clock adjustments, runtime-decrease restarts, temperature association | `libneognss-obs` |
 | SBAS mask completeness, correction/mask ages, grid resets | `libneognss-obs` |
+| GPS observation normalization without RTKLIB types | `libcppgnss` |
+| Static GPS Float PPP adapter, filter and residual batches | `libneognss-obs`, linked to RTKLIB-EX |
 | Batch Python binding | `libneognss-obs` |
 | Source selection, overlap byte I/O/proofs, publication and Parquet | Python |
 | Numerical table reductions, rendering and parallel PNG export | Python/NumPy |
@@ -19,6 +21,8 @@ Python calls native processing through batch bindings. RTKLIB conversion,
 RxTools, FFmpeg and the RTKLIB RINEX-geometry executable are external tools.
 The geometry executable belongs to Observatory analysis, not the protocol
 library. `neoubxlogger` is the standalone recording application.
+The direct raw-observation PPP path links RTKLIB as a library; it does not invoke
+these conversion/geometry executables or write a RINEX observation intermediate.
 
 ## Batch and state semantics
 
@@ -85,5 +89,7 @@ GEORaw decoder; field definitions come from pinned pysbf2.
 their BSD-3-Clause notices. `contrib/json` supplies nlohmann/json under its MIT
 license for native in-memory records. Most JSON file serialization remains in
 Python. The generic protocol library does not depend on JSON or Python at runtime.
-The analysis extension uses pybind11 and OpenSSL Crypto; no C++ plotting or
+The analysis extension uses pybind11, OpenSSL Crypto and the pinned RTKLIB-EX
+core. Its precise-product parsing and PPP calls are serialized within each
+process because the core contains shared caches. No C++ plotting or
 Parquet dependency is introduced.

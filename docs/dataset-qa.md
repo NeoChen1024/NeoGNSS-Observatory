@@ -29,6 +29,9 @@ Compressed files are not selected. Progress uses tqdm on stderr.
 Omitting `--profile` selects `scan`. It reads expanded recordings without
 writing indexes, fingerprints, QA stamps, manifests or reconstructed files.
 A JSON summary goes to stdout; progress and warnings go to stderr.
+The `qa` object always includes every counter applicable to the selected
+protocol, including zero values. Checks that do not apply to that protocol
+are omitted rather than presented as successfully checked.
 State/output/plan options are rejected unless reconstruction is explicitly selected.
 A successful scan is not a certification or prerequisite checked by extraction.
 

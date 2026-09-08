@@ -1,0 +1,16 @@
+# Paths are relative to this configuration file. Use local predownloaded products.
+# Replace the station position and antenna with the actual marker/setup.
+station = "BX4ACP"
+position_ecef_m = [-2972418.7226, 5005726.1893, 2597096.1561]
+antenna_model = "BEIBT800S"
+radome = "NONE"
+arp_enu_m = [0.0, 0.0, 0.180]
+products_root = "../work/products"
+# First catalog supplies satellite calibrations; receiver lookup tries both.
+antenna_catalogs = ["../work/products/igs/pub/station/general/igs20_2425.atx.gz", "../work/antenna/ngs20.atx"]
+signal1 = "1C"
+signal2 = "2L"
+interval = 30.0
+gap_timeout = 50.0
+elevation_deg = 7.5
+margin_hours = 6

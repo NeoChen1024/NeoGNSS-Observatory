@@ -1,7 +1,7 @@
 # NeoGNSS Observatory
 
 This pre-Alpha project provides offline GNSS research tools for receiver
-telemetry, SBAS grids and relative carrier-phase TEC. The repository stores
+telemetry, SBAS grids, relative carrier-phase TEC and GPS Float PPP. The repository stores
 code and configuration. Raw archives remain
 read-only preservation masters, and large derived data stays out of Git.
 
@@ -11,7 +11,7 @@ Both the expanded dataset and preservation masters remain read-only.
 
 See the [documentation index](docs/README.md) for current tools and the
 [processing overview](docs/processing-overview.md) for implemented paths and
-scientific limits. PPP and calibrated absolute TEC remain extension goals.
+scientific limits. Multi-GNSS PPP and calibrated absolute TEC remain extension goals.
 All observation processing uses [one GPST time policy](docs/time-policy.md),
 including day/hour boundaries and GPST-prefixed derived filenames.
 
@@ -50,6 +50,7 @@ See the [RINEX conversion guide](docs/rinex-conversion.md) for options and limit
 
 ```sh
 git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json
+git submodule update --init contrib/RTKLIB
 python -m pip install .
 ```
 
@@ -65,6 +66,14 @@ See the [subframe and SBAS guide](docs/subframes.md) for extraction and hourly
 map semantics.
 The [IPP track experiment](docs/tec-ipp-maps.md) adds relative dSTEC trajectories
 over pale SBAS backgrounds, with parallel hourly PNG export.
+
+### Offline PPP Float
+
+`ngo-ppp` processes GPS L1/L2 observations from UBX/SBF directly through the
+RTKLIB-EX core using locally downloaded precise products and IGS20/NGS20 antenna
+catalogs. `ngo-ppp-plot` renders the daily Parquet outputs in parallel.
+See [the PPP guide](docs/ppp.md) for configuration and the initial GPS-only,
+static, forward Float scope; this is not a PPP-AR or CSRS-equivalent solver.
 
 ### Receiver clock analysis
 

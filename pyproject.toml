@@ -10,6 +10,8 @@ authors = [{ name = "Neo_Chen", email = "chenkolei@gmail.com" }]
 dynamic = ["dependencies"]
 
 [project.scripts]
+ngo-ppp = "neognss_observatory.ppp:cli"
+ngo-ppp-plot = "neognss_observatory.ppp_plot:cli"
 ngo-receiver-clock = "neognss_observatory.receiver_clock:cli"
 ngo-receiver-clock-plot = "neognss_observatory.receiver_clock_plot:cli"
 ngo-receiver-clock-reunwrap = "neognss_observatory.receiver_clock_reunwrap:cli"

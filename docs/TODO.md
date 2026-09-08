@@ -1,4 +1,4 @@
-# Raw-observation STEC pipeline implementation plan
+# Raw-observation STEC and offline PPP implementation plan
 
 This is an agreed design and implementation checklist, not a description of
 completed functionality. Unchecked items remain unimplemented or unverified.
@@ -225,13 +225,157 @@ These are one-off validation tasks, not authorization to add permanent tests.
   samples and cross-day arcs without reopening raw inputs. Update current usage
   documentation only after the corresponding path works.
 
-## Deferred, not first-version requirements
+## 8. Offline PPP pipeline
+
+PPP is an additional project goal sharing the raw-observation adapters, product
+resolver and native processing infrastructure above. It is not a prerequisite
+for the first STEC version. The report design follows the scientific content of
+the reviewed CSRS-PPP report, not its branding or a promise of equivalent solver
+behavior, ambiguity resolution or accuracy.
+
+### Processing and product selection
+
+The initial GPS L1/L2 static Float path is implemented as `ngo-ppp` and
+`ngo-ppp-plot`; see [current usage and limitations](ppp.md). The broader
+multi-GNSS requirements below remain unchecked where only partially covered.
+
+- [x] Deliver an initial GPS RAWX/MeasEpoch-to-Float path with native batches,
+  local CODE product lookup, IGS20/NGS20 receiver lookup, daily numerical outputs
+  and parallel position/state/sky/residual plots.
+- [ ] Accept an ordered UBX/SBF interval directly, with no mandatory RINEX
+  intermediate. Derive actual observation times from payloads, not filenames.
+- [ ] Resolve the corresponding interval plus interpolation/validity safety
+  margins from the already downloaded CDDIS dataset. Preload or extend caches
+  as payload coverage becomes known; never require a full observation index
+  merely to establish the input window.
+- [ ] Validate compatible SP3, CLK, bias and required auxiliary products and
+  their actual temporal/satellite/signal coverage. Missing required inputs must
+  produce explicit errors, not online downloads or broadcast-only fallback.
+- [x] Define the station reference point, initial position, antenna setup,
+  processing interval, elevation mask and supported signal selection.
+- [x] Integrate RTKLIB-EX's PPP library core behind `libneognss-obs`, using
+  canonical observations decoded by `libcppgnss`. Keep low-level filter state
+  and RTKLIB structures out of Python; expose high-level batch processing.
+- [ ] Preserve filter/ambiguity state across physical files and GPST days;
+  handle actual outages, restarts and observation discontinuities explicitly.
+- [x] Establish static, forward-only float PPP as the initial implementation
+  target. Treat kinematic, backward/combined processing and PPP-AR as subsequent
+  extensions, not features implied by availability of precise products.
+- [x] Specify applied troposphere, antenna, phase wind-up, tidal/loading and
+  other geometric corrections and their prerequisites. Identify omitted models
+  explicitly rather than assuming CSRS-PPP behavior is reproduced by RTKLIB.
+
+### Receiver antenna lookup: IGS20 and NGS20
+
+Search both IGS `igs20*.atx` and NGS `ngs20.atx` to broaden receiver-antenna
+coverage. NGS20 here means the NGS composite ANTEX product in the IGS20 system,
+not a second reference frame. The NGS composite already includes IGS entries
+alongside additional NGS calibrations; combining catalogs must not apply the
+same correction twice.
+
+- [ ] Accept locally available IGS20 and NGS20 ANTEX catalogs and add explicit
+  preparation/download configuration for the NGS catalog. Do not fetch it
+  implicitly during PPP calculation.
+- [ ] Match exact standardized antenna model and radome, plus serial-specific
+  calibration and validity interval when applicable. Do not silently substitute
+  a similar model or a different radome.
+- [ ] Resolve duplicate matches deterministically: use an applicable individual
+  calibration when explicitly identified; for equivalent type-mean coverage,
+  prefer IGS and use NGS for additional coverage. Report conflicting applicable
+  calibrations and allow explicit selection instead of silently merging values.
+- [ ] Check calibration coverage for each used frequency. Any per-frequency
+  combination must have compatible reference conventions and be reported;
+  never fabricate PCO/PCV for an uncalibrated signal or claim it is calibrated.
+- [ ] Verify reference-system compatibility with orbit/station products. Keep
+  satellite antenna calibration selection consistent with precise products;
+  a receiver-catalog fallback does not authorize changing the satellite model.
+- [ ] Apply supported frequency-dependent PCO/PCV, including azimuth-dependent
+  corrections where available. Preserve APC, ARP and marker distinctions and
+  explicit height/east/north offsets and orientation conventions.
+- [ ] Record the selected scientific calibration identity/source and coverage
+  in the result summary, including unavailable corrections. Define an explicit
+  error or user-selected uncalibrated policy; no silent zero calibration.
+
+### Numerical outputs before rendering
+
+- [ ] Store a concise run summary: engine version, input identity, station,
+  observation coverage, GPST time scale, processing mode/direction, product
+  families, observation codes, elevation mask, estimation step, applied models
+  and antenna/reference-point settings. Distinguish processing timestamp from
+  elapsed runtime and span from actual observation coverage.
+- [ ] Export final static ECEF and geodetic coordinates, ellipsoidal height,
+  reference frame and coordinate epoch, a priori position and estimated-minus-
+  a-priori displacement. Do not label ellipsoidal height as orthometric height.
+- [x] Preserve covariance needed for ENU uncertainties and the horizontal
+  error ellipse. Label confidence levels and distinguish formal uncertainty
+  from independently measured absolute positioning error.
+- [ ] Export GPST-partitioned epoch solutions: position/covariance, solution
+  status, receiver clock and uncertainty with its reference convention,
+  troposphere estimates/uncertainties, tracked/used/rejected satellite counts
+  and ambiguity reset statistics. Preserve constellation clock offsets if the
+  solver estimates them; do not collapse them into an unexplained scalar.
+- [ ] Export satellite/observable-level geometry and residuals with satellite,
+  exact signal or combination, GPST, units, pre-fit/post-fit identity and
+  used/rejected status. Residuals are not pure receiver noise measurements.
+- [ ] Export ambiguity arcs/events with satellite/signal identity, start/end,
+  reset reason and available float/fixed/reference status. Represent unsupported
+  AR/datum concepts as unavailable, never synthesize CSRS-specific states.
+- [ ] Define every percentage's numerator and denominator, including rejected
+  epochs, fixed ambiguities and reset ambiguities. Keep unsupported metrics
+  unavailable rather than reporting misleading zero values.
+- [x] Keep implemented numerical outputs in compact, directly readable tables with
+  scientific metadata. Rendering must not reopen raw recordings or rerun PPP.
+
+### CSRS-PPP-style plots and summary report
+
+- [x] Position summary with a priori comparison and a confidence-labeled
+  horizontal error ellipse: semi-major/minor axes and azimuth. Add UTM zone,
+  hemisphere and scale factors only as optional derived presentation.
+- [ ] Satellite skyplot with per-satellite identity, explicit N/E/S/W,
+  elevation convention, zenith/horizon labels and distinction between tracked
+  and used observations. This is not an ionospheric pierce-point map.
+- [ ] ENU position/convergence time series, with an explicitly named reference
+  (a priori or final solution), final-solution line and uncertainty. Include an
+  initial-convergence zoom so the full-day plot does not hide settling behavior.
+- [ ] Zenith tropospheric delay time series and uncertainty. Distinguish total,
+  hydrostatic and wet components and model values from estimated states.
+- [ ] Station clock offset and uncertainty time series with explicit units and
+  reference convention. Preserve actual jumps; do not silently unwrap or equate
+  PPP clock estimates with UBX-NAV-CLOCK or infer hardware resets from a plot.
+- [ ] Satellite-count and ambiguity-reset time series, with explicit counts,
+  percentage denominators and separation of new arcs from receiver restarts.
+- [ ] Carrier-phase and pseudorange residual plots with per-satellite identity,
+  signal/combination and residual-stage labels. Use appropriate separate scales
+  for phase and code, and keep rejected observations identifiable.
+- [ ] Per-satellite ambiguity-status timeline with float/fixed/reference states
+  only where supported, and new-arc markers. First-version float PPP must not
+  display fabricated fixed percentages or reference-ambiguity assignments.
+- [x] Generate batch PNGs and a consolidated PDF from the numerical
+  outputs, using GPST on every observation time axis. Parallelize independent
+  rendering/compression jobs without cutting the PPP filter into arbitrary days.
+
+### PPP validation and later extensions
+
+- [ ] Check small UBX/SBF runs, product margins, antenna fallback/conflicts,
+  missing-frequency calibration, cross-file continuity and covariance units.
+- [ ] Compare equivalent observations/settings with an independent solution,
+  such as CSRS-PPP, while documenting differences in products, models, antenna
+  treatment, reference point, AR and processing direction. Similar graphics do
+  not establish numerical equivalence.
+- [ ] Measure throughput, memory and output size before scheduling full eras.
+  Use one-off checks under the project's pre-Alpha policy, not a new permanent
+  test suite unless requested.
+- [ ] Evaluate kinematic PPP, backward/combined solutions and PPP-AR separately
+  only if subsequently requested; PPP-AR work is currently deferred. Verify core capability and compatible bias
+  products before exposing any of these as supported modes.
+
+## Deferred from the first STEC version
 
 - Receiver-bias estimation/calibration and calibrated absolute TEC.
 - Fitting receiver bias against IONEX: any such output must disclose the model
   constraint and cannot use that same GIM as independent validation.
-- PPP and additional geophysical/antenna models beyond explicitly implemented
-  first-version corrections.
+- PPP is tracked as a separate project goal above. Additional STEC geophysical/
+  antenna models remain outside its first version unless explicitly implemented.
 - A persistent full-observation cache, unless measured repeated-decoding cost
   justifies an optional cache later.
 
@@ -239,3 +383,6 @@ These are one-off validation tasks, not authorization to add permanent tests.
 
 - [ESA: signal combinations and clock/bias definitions](https://gssc.esa.int/navipedia/index.php/Combining_pairs_of_signals_and_clock_definition)
 - [IGS: Bias-SINEX format](https://files.igs.org/pub/data/format/sinex_bias_100.pdf)
+- [NGS: antenna calibration catalog and reference-system guidance](https://www.ngs.noaa.gov/ANTCAL/)
+- [NGS: antenna calibration FAQ, composite catalogs and IGS20 compatibility](https://www.ngs.noaa.gov/ANTCAL/FAQ.xhtml)
+- [CSRS-PPP: ambiguity-status tutorial](https://webapp.csrs-scrs.nrcan-rncan.gc.ca/geod/tools-outils/sample_doc_files/NRCan_CSRS-PPP-v3_Tutorial_EN.pdf)

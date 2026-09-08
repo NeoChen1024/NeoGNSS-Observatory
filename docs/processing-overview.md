@@ -2,9 +2,9 @@
 
 NeoGNSS Observatory is a pre-Alpha offline GNSS research project. Current
 tools extract receiver telemetry and SBAS messages, calculate SBAS grids and
-relative carrier-phase dSTEC, and export scientific tables and plots. Static
-PPP, calibrated absolute TEC and automated TID detection are not implemented
-project pipelines.
+relative carrier-phase dSTEC, and export scientific tables and plots.
+GPS Float PPP is available as an initial static forward pipeline. Calibrated
+absolute TEC and automated TID detection are not implemented project pipelines.
 
 ## Input preparation
 
@@ -34,6 +34,7 @@ extraction state. See [dataset QA](dataset-qa.md) and [dataset notes](dataset-no
 | SBF | `ngo-sbf-rinex` with installed RxTools | Native-rate RINEX and applicable auxiliary outputs |
 | RINEX OBS/NAV and SBAS hourly cells | `ngo-tec-ipp-map` | Broadcast-orbit IPP tracks, arc-relative dSTEC and maps |
 | CDDIS listings/products | `ngo-cddis-download` | Explicit product plans and integrity-checked downloads |
+| UBX/SBF GPS L1/L2 and local precise products | `ngo-ppp` → `ngo-ppp-plot` | Static forward Float solutions, residual Parquet and daily plots |
 
 RINEX conversion is not lossless preservation of raw protocols and does not
 automatically prove cross-file continuity. Follow the [conversion guide](rinex-conversion.md).
@@ -66,8 +67,10 @@ recovery and reconstruction overlap proofs serve distinct integrity needs.
   extension point, not an option already wired into `ngo-tec-ipp-map`.
 - SBAS broadcast equivalent VTEC is an operational correction field, not a
   direct high-rate ionospheric measurement at the receiver.
-- ROT/ROTI, detrending, automated TID detection, PPP and absolute TEC need
+- ROT/ROTI, detrending, automated TID detection, multi-GNSS PPP and absolute TEC need
   dedicated implementations and validation. A single station alone does not
   establish a disturbance's horizontal propagation velocity.
 - CDDIS availability and successful decompression do not prove scientific
   coverage, compatible product families or solver support.
+- [PPP Float](ppp.md) currently supports GPS L1/L2 only, with explicit receiver
+  antenna calibration and a limited model set. It does not enable PPP-AR.

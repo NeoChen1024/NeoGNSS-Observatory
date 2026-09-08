@@ -9,10 +9,11 @@ only when they affect present interpretation or processing.
 - [Processing overview](processing-overview.md): supported paths and research boundaries.
 - [GPST policy](time-policy.md): units, timestamps and partitions.
 - [Dataset notes](dataset-notes.md): overlap and acquisition caveats that affect analysis.
-- [Implementation TODO](TODO.md): agreed raw-observation STEC design and unchecked implementation tasks, not current functionality.
+- [Implementation TODO](TODO.md): agreed raw-observation STEC and offline PPP designs and unchecked implementation tasks, not current functionality.
 
 ## Tools
 
+- [Offline PPP Float](ppp.md): raw GPS observations, local precise products and numerical/plot outputs.
 - [Dataset QA and reconstruction](dataset-qa.md): optional scan and explicit restitch.
 - [SBAS frames, grids and maps](subframes.md): source-independent Parquet pipeline.
 - [Receiver clocks](receiver-clock.md): telemetry, unwrap and plots.

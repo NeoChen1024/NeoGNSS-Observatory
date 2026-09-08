@@ -1,7 +1,11 @@
 include config/products.example.toml
+include config/ppp.example.toml
 recursive-include docs *.md
 include AGENTS.md
 include CMakeLists.txt requirements.txt
+recursive-include native *.txt *.c
+recursive-include contrib/RTKLIB/src *.c *.h
+include contrib/RTKLIB/license.txt
 recursive-include libcppgnss *.txt *.hpp *.cpp *.py *.md LICENSE
 recursive-include libneognss-obs *.txt *.hpp *.cpp *.md
 recursive-include contrib/pyubx2/src *.py

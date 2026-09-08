@@ -6,7 +6,8 @@ this component. CMake exposes `neognss_obs::neognss_obs`.
 
 The library implements archive epoch indexing and GPST segmentation, receiver
 clock association/unwrap and MON-SYS restart/temperature tracking, and SBAS
-mask/aging state. The pybind11 extension exposes bounded-batch processing;
+mask/aging state, and static GPS Float PPP using the RTKLIB-EX core.
+The pybind11 extension exposes bounded-batch processing;
 Python owns file I/O, orchestration, Parquet and plots. JSON containers here
 are in-memory records, not a subprocess or JSON-text transport.
 
@@ -14,11 +15,12 @@ are in-memory records, not a subprocess or JSON-text transport.
 
 Requirements: CMake 3.24+, a C++20 compiler and standard library supporting
 `std::format`, Python 3.11+ development files, pybind11, OpenSSL Crypto development
-files, and initialized `contrib/pyubx2`, `contrib/pysbf2` and `contrib/json`.
+files, a C compiler, and initialized `contrib/pyubx2`, `contrib/pysbf2`,
+`contrib/json` and `contrib/RTKLIB`.
 Install the repository Python package to build and install the extension:
 
 ```sh
-git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json
+git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json contrib/RTKLIB
 python -m pip install .
 ngo-receiver-clock --input-dir /data/reconstructed --output /data/clock
 ngo-sbas-frame-parquet -p ubx --input-dir /data/reconstructed --output /data/sbas-frames
@@ -42,6 +44,8 @@ The experimental extension is `neognss_observatory._native`:
 | `SubframeProcessor(sbas_only=True)` | UBX chunks to decoded navigation-frame records |
 | `GridProcessor(correction_age=600, mask_age=1200, gap_timeout=0)` | Protocol-neutral timed SBAS batches to valid IGP intervals |
 | `SbfParser(block_ids=[])` | SBF chunks to typed block records, optionally filtered by block ID, with GEORawL1 SBAS extraction |
+| `ObservationReader(protocol="ubx")` | UBX RAWX / SBF MeasEpoch chunks to opaque GPS observation batches |
+| `PppFloat(settings)` | Observation batches and local precise products to Float solution/residual arrays |
 
 Raw-processing CLIs provide `--protocol/-p ubx|sbf` (default `ubx`). The stream
 decoders skip complete checksum-valid frames of the unselected protocol and
@@ -55,6 +59,11 @@ Native work releases the GIL. Results own their memory; there are no borrowed
 per-frame objects escaping into Python and no per-frame Python callbacks.
 Concurrent calls on the same processor are rejected; independent processors
 may run on independent threads. Batch sizes should be bounded by the caller.
+RTKLIB calls are process-wide serialized because the core contains shared caches;
+use separate processes for independent parallel PPP runs. `PppFloat.products()`
+loads a new product window without resetting filter state, and `process()`
+returns structured NumPy arrays rather than per-observation Python objects.
+See [PPP settings, models and limits](../docs/ppp.md).
 
 For clocks, pass each file's name to `feed()` and retain one processor across
 files. Frame-start source attribution is preserved even for split frames.
