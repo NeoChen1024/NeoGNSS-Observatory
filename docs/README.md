@@ -11,6 +11,12 @@ only when they affect present interpretation or processing.
 - [Dataset notes](dataset-notes.md): overlap and acquisition caveats that affect analysis.
 - [Implementation TODO](TODO.md): agreed raw-observation STEC and offline PPP designs and unchecked implementation tasks, not current functionality.
 
+## Design drafts
+
+- [CommonNEX and ParquetNEX v0](commonnex-v0-draft.md): proposed logical schema,
+  Parquet serialization, and incremental/live processing boundaries; for review,
+  not implemented functionality.
+
 ## Tools
 
 - [Offline PPP Float](ppp.md): raw GPS observations, local precise products and numerical/plot outputs.
