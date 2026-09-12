@@ -11,3 +11,6 @@
 [submodule "contrib/json"]
 	path = contrib/json
 	url = https://github.com/nlohmann/json.git
+[submodule "contrib/arrow-nanoarrow"]
+	path = contrib/arrow-nanoarrow
+	url = https://github.com/apache/arrow-nanoarrow.git

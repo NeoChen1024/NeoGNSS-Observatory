@@ -28,9 +28,11 @@ they do not invoke conversion executables or write a RINEX observation intermedi
 Python reads bounded chunks and writes output products. Native code performs
 framing, decoding and per-message state updates without calling Python for each
 raw frame. pybind11 releases the GIL during native processing and converts final
-record batches after reacquiring it. The representation uses owned
-records/byte buffers, not C++ Arrow, a promised zero-copy ABI or Python classes
-for every wire message. Memory use depends on caller-selected batch sizes.
+record batches after reacquiring it. Currently, clock/subframe/grid paths use
+native JSON trees converted to Python lists/dictionaries; PPP/STEC numerical
+results use copied NumPy structured arrays. Some settings and summaries also
+use JSON text conversion. These are current implementations, not the selected
+CommonNEX interchange design below. Memory use depends on batch sizes.
 
 Batch boundaries have no scientific meaning. File and GPST-day boundaries do
 not reset clock or SBAS history. Explicit timeout, observed MON-SYS runtime
@@ -49,6 +51,75 @@ GPST, canonical signal identity, CRC/acceptance, and explicit continuity/end
 records. No raw envelopes, field dictionaries or source-offset mappings are
 persisted in it. Grid reads only these files, re-decodes SBAS in native batches,
 and links intervals to frame IDs. Daily partitioning never resets state.
+
+## Selected CommonNEX interop design
+
+The planned Ginan backend uses one context per worker process; see
+[Ginan shim design and progress](ginan-shim.md). This is a selected direction,
+not a change to the currently linked PPP/STEC implementation.
+
+Status: agreed implementation direction, not yet wired into the bindings.
+`contrib/arrow-nanoarrow` is available as a pinned submodule. CommonNEX remains
+a logical specification independent of Arrow, while this project's native/Python
+implementation will use Arrow-compatible columnar batches.
+
+| Component | Responsibility |
+| --- | --- |
+| `libcppgnss` | Protocol decoding; no Arrow or Python dependency |
+| `libneognss-obs` | Typed batch production/consumption and scientific state |
+| Binding/interop layer | nanoarrow helpers, Arrow C Data Interface and Python PyCapsule exchange |
+| Python/PyArrow | RecordBatch orchestration, Parquet encoding/decoding, partitioning and publication |
+
+Keep pybind11 for high-level objects and processing calls. Use nanoarrow's C
+Data Interface helpers rather than requiring the full Arrow C++ library.
+Do not add a native Parquet writer or make JSON the bulk-data interchange.
+Small settings, summaries and diagnostics may still use dictionaries/JSON.
+
+### Bidirectional batches
+
+Native output exports typed columns through Arrow C Data Interface capsules
+for Python to consume as RecordBatches. Parquet replay passes Arrow-compatible
+batches back into native processing without `to_pylist()` or per-row objects.
+Use the Arrow PyCapsule array/batch protocol; a stream protocol can expose a
+sequence when needed. This is in-process buffer exchange, not Arrow IPC byte
+serialization or a network transport.
+
+Use contiguous numeric columns and validity bitmaps for nullable fields.
+Variable-length binary/string fields use offsets and data buffers; fixed-size
+binary is appropriate for fixed-length family payloads. Preserve unsigned GPST
+integers, units, rational scales, identities and quality semantics. Integer GPST
+must not become Arrow UTC timestamps or pass through floating point.
+
+Validate incoming schema, lengths, offsets, nullability and supported types
+before native access. Account for sliced arrays and their offsets. Unsupported
+layouts require an explicit error or documented conversion, not reinterpretation
+of arbitrary memory. A scalar metadata object per batch is acceptable; a Python
+object per scientific sample is not the intended path.
+
+### Ownership, state and performance
+
+- Exported buffers remain immutable and alive until consumers release them.
+  Owners and release callbacks must prevent reuse, double release and dangling
+  references, including when a Python batch outlives its native producer.
+- Input owners remain alive throughout native processing. Async retention, if
+  implemented, must retain ownership beyond the initiating call explicitly.
+- Acquire Python objects/capsules while holding the GIL; release it for native
+  work on owned buffers. Never access Python objects from a released-GIL loop.
+- Bound batches by records/bytes, not a complete day or Era. Consumers control
+  how many batches remain in flight; batch delivery does not reset scientific
+  state or require a Parquet write before the next processing step.
+- Aim to avoid redundant boundary copies, not promise end-to-end zero-copy.
+  Decoding, conversion from existing row-oriented structs, and Parquet
+  encoding/compression may allocate or copy. Measure throughput and peak memory
+  on equivalent content before claiming a performance improvement.
+
+This supports direct processing, Parquet persistence and replay with the same
+logical inputs. See [CommonNEX pipeline](commonnex/overview.md#processing-pipeline)
+and [ParquetNEX](commonnex/parquetnex.md). No existing product schema or binding
+is changed merely by adopting this design.
+
+References: [Arrow PyCapsule interface](https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html)
+and [nanoarrow](https://arrow.apache.org/nanoarrow/latest/index.html).
 
 ## SBF schema coverage and limitations
 
@@ -92,3 +163,7 @@ The analysis extension uses pybind11, OpenSSL Crypto and the pinned RTKLIB-EX
 core. Its precise-product parsing and PPP calls are serialized within each
 process because the core contains shared caches. No C++ plotting or
 Parquet dependency is introduced.
+
+`contrib/arrow-nanoarrow` retains its Apache-2.0 license. It is the selected
+interop helper dependency, currently vendored as a submodule but not yet linked
+by the build. Python retains Parquet I/O through PyArrow.

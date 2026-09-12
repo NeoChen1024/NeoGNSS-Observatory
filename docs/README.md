@@ -13,9 +13,11 @@ only when they affect present interpretation or processing.
 
 ## Design drafts
 
-- [CommonNEX and ParquetNEX v0](commonnex-v0-draft.md): proposed logical schema,
-  Parquet serialization, and incremental/live processing boundaries; for review,
-  not implemented functionality.
+- [Ginan shim](ginan-shim.md): single-context native backend design,
+  GIM/bias calibration investigation and implementation checklist.
+- [CommonNEX and ParquetNEX v0](commonnex/overview.md): Core observations,
+  optional navigation/auxiliary schemas, receiver profiles, Parquet persistence
+  and batch/incremental/live processing contracts; not implemented functionality.
 
 ## Tools
 
