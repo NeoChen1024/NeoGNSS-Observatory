@@ -16,6 +16,11 @@ Equal timestamps or coordinates alone do not establish the same acquisition.
 
 ## One-pass extraction contract
 
+Follow the [format-wide lossless-import requirement](overview.md#rinex-interoperability-and-strings).
+Report unsupported RINEX content and mapping limitations; a partial import must
+not be labeled lossless. Preserve source metadata and interpretation alongside
+normalized fields without requiring a lossless reverse RINEX export.
+
 Decode each source stream once and route all supported records to observation,
 navigation, raw-bit, telemetry, metadata, and event batches. Share time/epoch
 association and maintain state across file/day boundaries. Consumers may read

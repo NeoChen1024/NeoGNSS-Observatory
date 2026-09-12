@@ -6,6 +6,9 @@ Status: v0 design draft; not an implemented format or API.
 
 ## Context and identity
 
+All records follow the format-wide [RINEX interoperability and string rules](overview.md#rinex-interoperability-and-strings).
+Logical fields are not constrained by RINEX output widths or character limits.
+
 Observation Setup (Setup) describes a fixed receiver, antenna installation,
 firmware and scientifically relevant measurement configuration. Changing that
 combination starts a new Setup. Era A/B/C remain project dataset-period names,
@@ -14,7 +17,7 @@ not Core identities. V0 does not model a general equipment-configuration history
 | Record | Required fields | Optional context |
 | --- | --- | --- |
 | Setup | `setup_id: string`, receiver/antenna identities, firmware/configuration identity | Marker, position, antenna offsets and installation metadata |
-| Observation Stream (Stream) | `stream_id: string`, `setup_id: string`, `antenna_id: string` | Logical receiver observation input identity |
+| Observation Stream (Stream) | `stream_id: string`, `setup_id: string`, `antenna_name: string` | Logical receiver observation input identity |
 
 IDs are scoped to the declared dataset/session and must remain resolvable in
 replay. No UUID service or artifact hash chain is required. Coordinates and
@@ -43,46 +46,10 @@ Recording-source attribution and overlap decisions belong to
 
 ## Setup metadata
 
-The ParquetNEX directory initializer imports `setup.json` and its referenced
-vendor configuration file once. Daily UBX/SBF/RINEX inputs do not carry or
-recopy these files. See [storage initialization](parquetnex.md#storage-initialization).
-JSON describes the station setup, not every piece of dataset metadata.
-
-The selected metadata groups are below; concrete nested keys and the complete
-RINEX header mapping remain implementation review items.
-
-| Group | Contents |
-| --- | --- |
-| Marker | RINEX-like marker name, number and type; coordinates with frame, units and position basis |
-| Receiver | Manufacturer/model, serial number and firmware |
-| Antennas | Antenna type/model, radome, serial number and receiver input association |
-| Installation | Marker-to-ARP offset with explicit direction, coordinate representation and units |
-| Tracking | Declared constellations and signals per constellation; receiver measurement rate where known |
-| Feed lines | Optional cable type, length with units, and antenna/receiver input association |
-| `vendor_config` | Optional filename of a configuration file beside `setup.json` |
-
-Do not infer cable delay from type or length or add an independent cable-delay
-field. Receiver compensation settings remain in the vendor configuration.
-The specification does not prescribe that file's format or require the importer
-to decode it. It should allow the original receiver settings to be recovered,
-or be directly applicable to a compatible receiver. Keep its contents out of
-`setup.json`. No automatic configuration tracking, dump comparison or update
-service is required; differences in transport/logging settings do not define
-new Setups merely because the dump differs.
-
-Unknown metadata remains absent/null, not an invented value. Declared signal
-configuration is distinct from actual signal coverage. Consumers inspect it
-before reading observations: for example, an L1/L2-only algorithm can reject a
-known GPS L1/L5-only source immediately. Unknown configuration is not proof of
-incompatibility, and enabled signals do not guarantee measurements at every
-epoch. Exact constellation/signal identifiers and configuration completeness
-must be defined so omission is not silently interpreted as disabled.
-
-RINEX source headers, comments, conversion details and observation events do
-not all belong in Setup. Map them to source metadata or the appropriate record
-family. RINEX-like observation coverage plus extra receiver setup information
-is the intended superset; lossless RINEX import still requires explicit field,
-correction and event mappings rather than merely retaining a JSON container.
+Setup identities and Stream relationships are defined above. The `setup.json`
+serialization, field groups, named-antenna dictionary, examples and validation
+rules are specified separately in [Setup JSON](setup-json.md). ParquetNEX imports
+this metadata at directory initialization, not with each daily recording.
 
 ## ObservationEpoch and NavigationEpoch
 

@@ -34,7 +34,7 @@ tuning choices; neither requires buffering an entire GPST day.
 ## Storage initialization
 
 A directory initialization operation imports `setup.json` and the optional
-same-directory file named by `vendor_config`. See [Setup metadata](core.md#setup-metadata).
+same-directory file named by `vendor_config`. See [Setup JSON](setup-json.md).
 The configuration file's format is opaque to this specification. Validate that
 the reference names a file in that directory, not an arbitrary external path.
 Keep Setup metadata at Setup scope, outside daily revisions.
@@ -64,8 +64,11 @@ Selected layout (family part names remain to be finalized):
 ```
 
 Only applicable families are written. Large families may use multiple parts.
-Stream declarations must be resolvable at initialization; their exact JSON
-mapping remains to be finalized. Date directories denote GPST days.
+Stream declarations must be resolvable at initialization. Each `antenna_name`
+must resolve to a key in the parent Setup's `antennas` dictionary; see
+[named antennas](setup-json.md#named-antennas-and-stream-references). The exact storage
+location of Stream declarations remains to be finalized. Date directories
+denote GPST days.
 
 ## Serialization rules
 

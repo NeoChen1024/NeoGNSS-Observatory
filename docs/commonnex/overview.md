@@ -12,6 +12,7 @@ relationships, not a mandatory memory layout, language ABI, or wire protocol.
 | Specification | Responsibility |
 | --- | --- |
 | [Core](core.md) | Shared types/context, observation epochs and wide observation records |
+| [Setup JSON](setup-json.md) | Station metadata, named antennas, configuration references and initialization schema decisions |
 | [RawNav](raw-nav.md) | Optional standardized received navigation occurrences |
 | [DecodedNav](decoded-nav.md) | Optional standardized decoded navigation parameters |
 | [Auxiliary](auxiliary.md) | Typed receiver clock, pulse, environment, status and solution records |
@@ -29,6 +30,37 @@ V0 excludes GLONASS observations/navigation and processing. Mixed inputs must
 be framed correctly and exclusions reported. Other constellation identifiers
 do not imply complete adapter or scientific-algorithm support.
 Raw archives remain the preservation masters, not CommonNEX or ParquetNEX.
+
+## RINEX interoperability and strings
+
+The format-wide design requirement is lossless RINEX import, not lossless
+RINEX export. This applies to observations, navigation, events, quality,
+correction semantics and metadata across Core and extensions, not only
+`setup.json`. Preserve source information in its appropriate record family or
+source metadata; do not force all RINEX headers into Setup.
+
+Lossless means preserving information and scientific interpretation, not
+reconstructing the original whitespace, line wrapping or byte layout. A raw
+archive or opaque copy alone is not a substitute for mapping supported scientific
+fields. Numeric precision, source time interpretation, missing values and
+correction state must be accounted for explicitly during normalization.
+
+CommonNEX strings allow Unicode and special characters without RINEX fixed-width
+or ASCII restrictions. Do not silently truncate, transliterate, normalize Unicode
+or case-fold stored text. Standardized codes retain their prescribed spelling
+and semantics; reference equality and field-specific validation still apply.
+ParquetNEX and other bindings must preserve this content rather than narrowing
+it to RINEX's representation limits.
+
+CommonNEX may contain information RINEX cannot express. An exporter may reject
+such an export or use an explicitly chosen lossy mapping, reporting what cannot
+be represented. Silent information loss is not an acceptable export policy.
+
+This is a format requirement, not a claim that the current draft/importer covers
+all RINEX versions and records. In particular, the existing v0 GLONASS exclusion
+and fixed-station scope remain limitations, not exceptions that can be called
+fully lossless import. Report unsupported content explicitly; only a verified
+complete mapping for the accepted input can be described as lossless.
 
 ## Processing pipeline
 
