@@ -106,7 +106,7 @@ valid-duration-weighted hourly means; `--min-coverage` defaults to 0.25.
 `--start/--end YYYY-MM-DDTHH` select GPST hours with an exclusive end.
 Missing cells stay absent. Rendering/PNG compression use independent worker
 processes (`--workers`), with compression level 3 by default
-(`--png-compression`). Color limits default to 0–100 TECU. The 5-degree cell
+(`--png-compression`). Color limits default to 0–200 TECU. The 5-degree cell
 overlay and map coastlines are illustrative, not precision coverage polygons.
 
 ## Library API and routing

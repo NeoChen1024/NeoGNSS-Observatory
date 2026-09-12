@@ -2,6 +2,7 @@
 """GPS phase leveling and GIM-constrained receiver DCB from raw UBX/SBF."""
 
 import json
+import sys
 import tempfile
 import tomllib
 from pathlib import Path
@@ -105,12 +106,23 @@ def leveled(table, ids, offsets):
     return (table["phase_gf_m"].to_numpy() + offsets[indices]) / K
 
 
-def sample_batches(root):
+def sample_batches(root, start_ns=None, end_ns=None):
     paths = sorted((root / "samples").glob("*.parquet"))
     if not paths:
         raise ValueError("No STEC sample tables")
     for path in paths:
-        yield from pq.ParquetFile(path).iter_batches(batch_size=65536)
+        parquet = pq.ParquetFile(path)
+        column = parquet.schema_arrow.get_field_index("gpst_ns")
+        groups = []
+        for i in range(parquet.metadata.num_row_groups):
+            stats = parquet.metadata.row_group(i).column(column).statistics
+            if stats is not None and stats.has_min_max:
+                if start_ns is not None and stats.max < start_ns:
+                    continue
+                if end_ns is not None and stats.min >= end_ns:
+                    continue
+            groups.append(i)
+        yield from parquet.iter_batches(batch_size=65536, row_groups=groups)
 
 
 def calibrate(root, settings, metadata):
@@ -167,7 +179,7 @@ def calibrate(root, settings, metadata):
     return rows
 
 
-def read_stec(root):
+def read_stec(root, start_ns=None, end_ns=None):
     """Yield finalized batches, without reopening raw observations or products.
 
     Invalid leveling or uncalibrated windows produce Arrow nulls, never a zero
@@ -177,12 +189,23 @@ def read_stec(root):
     ids, offsets = arc_levels(root)
     biases = pq.read_table(root / "receiver_bias.parquet")
     starts, ends, values = (biases[k].to_numpy() for k in ("start_gpst_ns", "end_gpst_ns", "receiver_bias_tecu"))
-    for batch in sample_batches(root):
+    window_ids = biases["window_id"].to_numpy()
+    for batch in sample_batches(root, start_ns, end_ns):
         table = pa.Table.from_batches([batch])
         times = table["gpst_ns"].to_numpy()
+        keep = np.ones(len(table), dtype=bool)
+        if start_ns is not None:
+            keep &= times >= start_ns
+        if end_ns is not None:
+            keep &= times < end_ns
+        table = table.filter(keep)
+        times = times[keep]
+        if not len(table):
+            continue
         indices = np.searchsorted(starts, times, side="right") - 1
         covered = (indices >= 0) & (times < ends[np.maximum(0, indices)])
         bias = np.where(covered, values[np.maximum(0, indices)], np.nan)
+        table = table.append_column("receiver_window_id", pa.array(window_ids[np.maximum(0, indices)], mask=~covered))
         level = leveled(table, ids, offsets)
         for name, data in (
             ("stec_leveled_tecu", level),
@@ -245,6 +268,14 @@ def cli(protocol, input_dir, config, output, start, end):
             signal2=native["signal2"],
             meters_per_tecu=K,
             arc_reasons=processor.summary()["arc_reasons"],
+            product_issues={
+                "1": "orbit unavailable",
+                "2": "clock unavailable",
+                "4": "health unavailable",
+                "8": "satellite bias unavailable",
+                "16": "GIM unavailable",
+            },
+            missing_product_policy="preserve phase continuity; unavailable dependent fields; no broadcast or zero-bias fallback",
             missing_values="NaN for unavailable numerical samples/arc fields; null for unestimated receiver bias",
             settings=native,
             dcb=dcb,
@@ -271,6 +302,7 @@ def cli(protocol, input_dir, config, output, start, end):
                     products_root, scratch, native["signal1"], native["signal2"], settings.get("margin_hours", 6)
                 )
                 done = False
+                warned_files, warned_issues = set(), 0
                 with tqdm(
                     total=sum(p.stat().st_size for p in paths), desc="GPS STEC", unit="B", unit_scale=True, mininterval=1
                 ) as progress:
@@ -286,8 +318,23 @@ def cli(protocol, input_dir, config, output, start, end):
                                 if batch.size:
                                     selected = products.prepare(batch.start_ns, batch.end_ns)
                                     if selected:
+                                        for name in sorted(products.missing - warned_files):
+                                            progress.write(
+                                                f"Warning: missing product {name}; affected fields will be unavailable.",
+                                                file=sys.stderr,
+                                            )
+                                        warned_files.update(products.missing)
                                         processor.products(selected)
                                     points, levels = processor.process(batch)
+                                    if len(points):
+                                        issues = int(np.bitwise_or.reduce(points["product_issues"]))
+                                        for bit, description in metadata["product_issues"].items():
+                                            if issues & int(bit) and not warned_issues & int(bit):
+                                                progress.write(
+                                                    f"Warning: {description} for some observations; preserving phase and continuing.",
+                                                    file=sys.stderr,
+                                                )
+                                        warned_issues |= issues
                                     samples.append(points)
                                     arcs.append(levels)
                                 if reached_end:
@@ -308,7 +355,12 @@ def cli(protocol, input_dir, config, output, start, end):
         fits = calibrate(output, dcb, metadata)
         estimated = sum(r["status"] == "estimated" for r in fits)
         summary.update(
-            status="complete" if estimated == len(fits) else "partial_calibration",
+            status=(
+                ("partial_products" if any(summary["product_gaps"].values()) else "complete")
+                if estimated == len(fits)
+                else "partial_calibration"
+            ),
+            missing_product_files=sorted(products.missing),
             reader=reader.summary(),
             calibrated_windows=estimated,
             windows=len(fits),

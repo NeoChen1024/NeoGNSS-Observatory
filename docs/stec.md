@@ -39,13 +39,33 @@ break otherwise usable phase continuity. No missing samples are interpolated.
 
 ## Products and conventions
 
-Predownloaded products are mandatory. The resolver selects CODE MGEX Final SP3,
+The solver uses predownloaded local products and never downloads on demand.
+The resolver selects CODE MGEX Final SP3,
 30-second CLK and daily code OSB, BRDC, and CODE operational Final hourly IONEX
 over the observation interval plus the configured margin (default 6 h).
 Contents and applicability, not filenames alone, determine usability. Missing
-exact-signal corrections, orbit/clock coverage, fresh health ephemerides or hourly
-GIM brackets cause an explicit error; there is no zero-bias or broadcast fallback.
-Unhealthy satellites are excluded. Spatially missing GIM cells remain unavailable.
+files or observation-specific product coverage generate warnings, not a whole-run
+abort. There is no zero-bias or broadcast fallback. Unhealthy satellites are
+excluded; malformed products and ambiguous local file matches remain errors.
+
+Phase samples and arc continuity survive product gaps. Missing orbit/clock or
+fresh health data leaves geometry unavailable; missing satellite biases leaves
+the corrected code combination unavailable. Such samples cannot contribute to
+elevation-weighted leveling. Missing GIM leaves the slant reference unavailable
+and excludes that sample from receiver DCB fitting. Leveling and DCB can still
+use other eligible observations within their arc/window; finalized STEC is only
+available where those estimates are valid. No stale product is extended over a
+gap: the precise orbit interpolation stencil must have consecutive 5-minute
+epochs, clocks must bracket the epoch, and GIM interpolation needs hourly maps.
+
+`product_issues` is a per-sample bitmask: 1 orbit, 2 clock, 4 health, 8 satellite
+bias and 16 GIM unavailable. Geometry-dependent GIM is not evaluated when geometry
+is unavailable. These flags record the checks actually reached, not an exhaustive
+inventory of every missing dependency. `summary.json` records per-cause counts
+and missing filenames. A run can finish as `partial_products` or
+`partial_calibration`; neither status fabricates missing corrections. Missing
+margin-day files alone do not invalidate epochs that have sufficient coverage.
+Downloads that cannot be obtained can remain absent; the same rules apply.
 
 The estimator deliberately aligns satellite interfrequency biases to the GIM's
 own GPS C1W-C2W datum. For code-bias convention `P_corrected = P - b`, define:
@@ -151,8 +171,63 @@ for table in read_stec("work/stec"):
 This reader does not reopen raw observations or CDDIS products. Phase/code
 combinations and small solution tables are authoritative; the finalized columns
 are not duplicated in another large file. Negative estimates are retained for
-diagnosis, not clipped to zero. Plotting these finalized estimates is a separate
-downstream extension; the current command produces numerical tables.
+diagnosis, not clipped to zero. `read_stec(root, start_ns=..., end_ns=...)` can
+select a GPST interval and exposes `receiver_window_id` alongside the finalized
+columns. Plotting uses this reader without recalculating calibration.
+
+## Hourly trajectory plots
+
+`ngo-stec-plot` renders IPP trajectories from these Parquet tables, not raw
+UBX/SBF, RINEX or CDDIS products. Each PNG covers an observed GPST hour; colours
+represent individual absolute STEC samples, **not** an hourly STEC average.
+All images share one map extent and colour scale. No hour/arc origin is subtracted.
+
+```sh
+ngo-stec-plot --input-dir work/stec --output work/stec-plots \
+  --coastline contrib/natural-earth/ne_10m_coastline.zip --workers 4
+```
+
+The repository's existing Natural Earth 10m coastline ZIP supplies the black
+coastline on a white background. `--coastline` can select another local ZIP.
+The renderer does not download map assets. Degree graticules, station marker,
+GPS PRN labels and track start/end markers provide context; the geographical
+display is not an equal-area representation of sampled ionospheric coverage.
+
+Options:
+
+- `--start YYYY-MM-DDTHH` / `--end YYYY-MM-DDTHH`: inclusive/exclusive GPST hours.
+  Selection uses stored timestamps and Parquet statistics, not filename dates.
+- `--vmin 0 --vmax 200`: a fixed absolute STEC colour scale in TECU. Values are
+  not numerically clipped: below-scale points use magenta, above-scale points
+  use black, and the figure reports their count.
+- `--extent WEST EAST SOUTH NORTH`: override the common map bounds. Longitudes
+  use a station-centred interval; a dateline-crossing extent may extend past 180.
+- `--sbas-grid /data/sbas-grid --sbas-prn 137`: optional daily SBAS grid Parquet.
+  Valid-time-weighted hourly mean **VTEC** is a separate faded background using
+  the same hue-based `turbo` colourmap as `ngo-sbas-grid-plot`, not a correction
+  applied to the plotted STEC. Its colourbar uses the same palette independently
+  of the STEC colour scale.
+  `--background-alpha` defaults to 0.18, `--sbas-vmax` to 200 TECU and
+  `--min-coverage` to 0.25. Missing SBAS cells remain absent and are reported;
+  no nearest-hour or alternate-PRN substitution occurs.
+- `--workers 4 --png-compression 3`: process-parallel rendering and PNG encoding.
+- `--overwrite`: publish the completed directory by rename, retaining the
+  previous output as a backup.
+
+Lines do not cross arc or receiver-calibration-window boundaries, unavailable
+samples, dateline discontinuities, or display gaps exceeding
+`max(gap_timeout, 1.5 * output_interval)`. Start/end markers indicate plotted
+pieces within the hour, not necessarily the physical beginning/end of an arc.
+Only usable absolute estimates are coloured. An observed hour without valid
+leveling/DCB gets an explicit unavailable panel; entirely absent hours are not
+fabricated. Calibration failure never falls back to uncorrected or zero-based TEC.
+
+Outputs are `png/GPST-YYYY-MM-DD--HH-00-00.png` (1800 x 1200 pixels) and a small
+`images.json` with GPST ordering, sample counts and rendering settings. This
+manifest is accepted by the existing map-video tool. No duplicate scientific
+sample tables or persistent hourly caches are created. Preparation spools one
+hour at a time; each worker loads coastline geometry once and the render queue
+is bounded. Optional SBAS aggregation reads each selected day once.
 
 ## Interpretation and remaining limits
 
@@ -166,8 +241,8 @@ Phase wind-up and antenna phase-centre corrections are not yet applied here;
 the PPP pipeline's model list must not be attributed to STEC.
 
 Future extensions include independent-reference comparisons, receiver-bias
-stability/sensitivity analysis, additional signal pairs and systems, and a plot
-consumer for these tables. PPP-AR is not needed for this path.
+stability/sensitivity analysis and additional signal pairs and systems.
+PPP-AR is not needed for this path.
 
 References:
 

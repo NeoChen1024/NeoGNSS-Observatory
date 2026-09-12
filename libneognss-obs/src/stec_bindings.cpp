@@ -32,10 +32,10 @@ auto lock(Processor &s) {
 }
 } // namespace
 void bind_stec(py::module_ &m) {
-  PYBIND11_NUMPY_DTYPE(StecSample, gpst_ns, arc_id, prn, phase_gf_m,
-                       code_gf_corrected_m, elevation_deg, azimuth_deg,
-                       ipp_latitude_deg, ipp_longitude_deg, mapping,
-                       gim_stec_tecu, gim_rms_tecu);
+  PYBIND11_NUMPY_DTYPE(StecSample, gpst_ns, arc_id, prn, product_issues,
+                       phase_gf_m, code_gf_corrected_m, elevation_deg,
+                       azimuth_deg, ipp_latitude_deg, ipp_longitude_deg,
+                       mapping, gim_stec_tecu, gim_rms_tecu);
   PYBIND11_NUMPY_DTYPE(StecArc, gpst_ns, end_ns, arc_id, samples,
                        leveling_samples, prn, valid, start_reason, end_reason,
                        level_offset_m, scatter_m);

@@ -18,7 +18,8 @@ its use as a bias constraint must remain explicit in absolute STEC results.
 - [x] Keep full-arc offsets and receiver-window solutions in small Parquet tables;
   reconstruct absolute estimates by batched join without reopening raw data.
 - [x] Reject insufficient receiver-bias coverage without substituting zero.
-- [ ] Add an absolute-STEC plot consumer for the finalized Parquet estimates.
+- [x] Add an absolute-STEC plot consumer for finalized Parquet estimates, with
+  parallel hourly PNG export and optional separate SBAS VTEC backgrounds.
 - [ ] Validate independent-reference accuracy and sensitivity to mapping height,
   elevation mask, leveling scatter, estimation-window boundaries and temperature.
 - [ ] Add phase wind-up and appropriate antenna corrections to the STEC path.
@@ -81,6 +82,9 @@ mandatory Python object or persisted observation table.
 
 CDDIS products are downloaded before processing; the solver neither downloads
 on demand nor silently switches to broadcast-only or uncorrected processing.
+STEC continues through absent files and coverage gaps, preserving phase state
+and marking affected fields unavailable. This does not change PPP's strict
+product requirements.
 The existing download configuration requests SP3, CLK, ERP, OSB, BRDC, IONEX and
 ANTEX. Product availability and actual application are separate concerns:
 

@@ -85,8 +85,6 @@ def intra_frequency_biases(path, signal1, signal2):
         rows.append(
             dict(prn=prn, start_ns=start, end_ns=stop, meters=values[signal2] - values["2W"] - values[signal1] + values["1W"])
         )
-    if not rows:
-        raise ValueError("No complete exact-signal GPS OSB pairs")
     return rows
 
 
@@ -94,6 +92,13 @@ class StecProducts(LocalProducts):
     def __init__(self, root, scratch, signal1, signal2, margin_hours=6):
         super().__init__(root, scratch, margin_hours)
         self.signal1, self.signal2 = signal1, signal2
+        self.missing = set()
+
+    def available(self, name):
+        if not self.files.get(name) and not self.files.get(name.removesuffix(".gz")):
+            self.missing.add(name)
+            return None
+        return self.find(name)
 
     def prepare(self, start_ns, end_ns):
         first = (calendar(start_ns / 1e9) - self.margin).date()
@@ -115,10 +120,15 @@ class StecProducts(LocalProducts):
                 ("clk", f"COD0MGXFIN_{stamp}_01D_30S_CLK.CLK.gz"),
                 ("nav", f"BRDC00IGS_R_{stamp}_01D_MN.rnx.gz"),
             ):
-                result[kind].append(self.find(name))
-            bia = self.find(f"COD0MGXFIN_{stamp}_01D_01D_OSB.BIA.gz")
-            result["biases"].extend(intra_frequency_biases(bia, self.signal1, self.signal2))
-            ionex = self.find(f"COD0OPSFIN_{stamp}_01D_01H_GIM.INX.gz")
+                path = self.available(name)
+                if path is not None:
+                    result[kind].append(path)
+            bia = self.available(f"COD0MGXFIN_{stamp}_01D_01D_OSB.BIA.gz")
+            if bia is not None:
+                result["biases"].extend(intra_frequency_biases(bia, self.signal1, self.signal2))
+            ionex = self.available(f"COD0OPSFIN_{stamp}_01D_01H_GIM.INX.gz")
+            if ionex is None:
+                continue
             start, stop, biases = ionex_header(ionex)
             if start.date() != day:
                 raise ValueError("IONEX contents do not match selected product date")

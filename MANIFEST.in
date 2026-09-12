@@ -1,5 +1,6 @@
 include config/products.example.toml
 include config/ppp.example.toml
+include config/stec.example.toml
 recursive-include docs *.md
 include AGENTS.md
 include CMakeLists.txt requirements.txt

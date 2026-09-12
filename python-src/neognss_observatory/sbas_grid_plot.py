@@ -75,7 +75,7 @@ def hourly_rows(path, day, start=None, end=None):
 @click.option("--start", callback=parse_hour, help="First GPST hour, YYYY-MM-DDTHH.")
 @click.option("--end", callback=parse_hour, help="Exclusive final GPST hour, YYYY-MM-DDTHH.")
 @click.option("--vmin", type=float, default=0, show_default=True)
-@click.option("--vmax", type=float, default=100, show_default=True)
+@click.option("--vmax", type=float, default=200, show_default=True)
 @click.option("--min-coverage", type=click.FloatRange(0, 1), default=0.25, show_default=True)
 @click.option("--workers", type=click.IntRange(1, 32), default=min(4, os.cpu_count() or 1), show_default=True)
 @click.option("--png-compression", type=click.IntRange(0, 9), default=3, show_default=True)

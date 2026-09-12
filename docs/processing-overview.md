@@ -35,7 +35,7 @@ extraction state. See [dataset QA](dataset-qa.md) and [dataset notes](dataset-no
 | SBF | `ngo-sbf-rinex` with installed RxTools | Native-rate RINEX and applicable auxiliary outputs |
 | CDDIS listings/products | `ngo-cddis-download` | Explicit product plans and integrity-checked downloads |
 | UBX/SBF GPS L1/L2 and local precise products | `ngo-ppp` → `ngo-ppp-plot` | Static forward Float solutions, residual Parquet and whole-solution reports |
-| UBX/SBF GPS L1/L2, precise products and CODE IONEX | `ngo-stec` | Daily GF samples, arc leveling and GIM-constrained receiver DCB Parquet |
+| UBX/SBF GPS L1/L2, precise products and CODE IONEX | `ngo-stec` → `ngo-stec-plot` | Daily GF samples, arc/DCB Parquet and hourly absolute-STEC trajectory PNGs |
 
 RINEX conversion is not lossless preservation of raw protocols and does not
 automatically prove cross-file continuity. Follow the [conversion guide](rinex-conversion.md).
@@ -63,8 +63,8 @@ recovery and reconstruction overlap proofs serve distinct integrity needs.
 
 - The [STEC pipeline](stec.md) applies satellite corrections and receiver-bias
   estimation, but its absolute reference is constrained by GIM assumptions.
-- STEC geometry uses precise products. Rendering finalized absolute-STEC
-  trajectories is a downstream extension, not an implemented plotting command.
+- STEC geometry uses precise products. `ngo-stec-plot` renders finalized
+  absolute estimates from Parquet; optional SBAS VTEC uses a distinct colourbar.
 - SBAS broadcast equivalent VTEC is an operational correction field, not a
   direct high-rate ionospheric measurement at the receiver.
 - ROT/ROTI, detrending, automated TID detection, multi-GNSS PPP and independently calibrated TEC need

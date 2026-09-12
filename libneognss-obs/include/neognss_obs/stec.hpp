@@ -5,7 +5,7 @@
 namespace neognss_obs {
 struct StecSample {
   int64_t gpst_ns, arc_id;
-  int32_t prn;
+  int32_t prn, product_issues;
   double phase_gf_m, code_gf_corrected_m, elevation_deg, azimuth_deg;
   double ipp_latitude_deg, ipp_longitude_deg, mapping, gim_stec_tecu,
       gim_rms_tecu;

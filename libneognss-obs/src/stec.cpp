@@ -6,6 +6,7 @@
 #include <neognss_obs/rtklib_lock.hpp>
 #include <neognss_obs/stec.hpp>
 #include <set>
+#include <tuple>
 
 namespace neognss_obs {
 namespace {
@@ -129,6 +130,7 @@ struct StecProcessor::State {
   std::string signal1, signal2;
   double rr[3], pos[3], elevation, level_elevation, mapping_height;
   int64_t previous = -1, next_arc = 0, interval, gap;
+  std::map<int, uint64_t> product_gaps{{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}};
   uint64_t epochs = 0, sample_count = 0, arcs = 0, valid_arcs = 0,
            unhealthy = 0, missing_gim = 0;
   bool ready = false, finished = false;
@@ -171,8 +173,7 @@ struct StecProcessor::State {
     double intra = find(biases), reference = find(gim_biases);
     if (std::isfinite(intra) && std::isfinite(reference))
       return intra - reference;
-    throw std::runtime_error("Missing GIM-datum satellite code bias for G" +
-                             std::to_string(prn));
+    return NAN;
   }
   void close(int prn, int reason, std::vector<StecArc> &out) {
     auto found = tracks.find(prn);
@@ -192,7 +193,7 @@ struct StecProcessor::State {
     tracks.erase(found);
   }
   bool geometry(int prn, int64_t ns, double &az, double &el, double &lat,
-                double &lon) {
+                double &lon, int32_t &issues) {
     int sat = satno(SYS_GPS, prn);
     if (!sat)
       throw std::runtime_error("Unsupported GPS PRN");
@@ -207,30 +208,57 @@ struct StecProcessor::State {
           age = d;
         }
       }
-    if (!health || age > 7200)
-      throw std::runtime_error("Missing fresh GPS health ephemeris");
+    if (!health || age > 7200) {
+      issues |= 4;
+      return true;
+    }
     if (health->svh) {
       ++unhealthy;
       return false;
     }
     double tau = .075, rs[6], dts[2], variance, e[3];
+    if (nav->ne < 11)
+      issues |= 1;
+    if (nav->nc < 2)
+      issues |= 2;
+    if (issues)
+      return true;
     for (int k = 0; k < 3; ++k) {
       auto tx = timeadd(t, -tau);
       if (timediff(tx, nav->peph[0].time) < 0 ||
-          timediff(tx, nav->peph[nav->ne - 1].time) > 0)
-        throw std::runtime_error("STEC outside precise orbit coverage");
+          timediff(tx, nav->peph[nav->ne - 1].time) > 0) {
+        issues |= 1;
+        return true;
+      }
+      // Match RTKLIB's 11-point orbit stencil. Do not interpolate across a
+      // missing day merely because two distant products bracket the epoch.
+      auto orbit = std::lower_bound(
+          nav->peph, nav->peph + nav->ne, tx,
+          [](const peph_t &a, gtime_t b) { return timediff(a.time, b) < 0; });
+      int index = std::max(0, int(orbit - nav->peph) - 1);
+      int first = std::clamp(index - 5, 0, nav->ne - 11);
+      for (int j = first + 1; j < first + 11; ++j) {
+        double separation = timediff(nav->peph[j].time, nav->peph[j - 1].time);
+        if (separation <= 0 || separation > 301) {
+          issues |= 1;
+          return true;
+        }
+      }
       auto upper = std::lower_bound(
           nav->pclk, nav->pclk + nav->nc, tx,
           [](const pclk_t &a, gtime_t b) { return timediff(a.time, b) < 0; });
       if (upper == nav->pclk || upper == nav->pclk + nav->nc ||
           timediff(upper->time, (upper - 1)->time) > 60 ||
-          !upper->clk[sat - 1][0] || !(upper - 1)->clk[sat - 1][0])
-        throw std::runtime_error(
-            "Missing bracketing precise CLK; no SP3 clock fallback");
+          !upper->clk[sat - 1][0] || !(upper - 1)->clk[sat - 1][0]) {
+        issues |= 2;
+        return true;
+      }
       // Orbit/LOS only: use satellite centre of mass, not RTKLIB antenna
       // offsets.
-      if (!peph2pos(tx, sat, nav.get(), 0, rs, dts, &variance))
-        throw std::runtime_error("Missing precise GPS orbit");
+      if (!peph2pos(tx, sat, nav.get(), 0, rs, dts, &variance)) {
+        issues |= 1;
+        return true;
+      }
       double angle = OMGE * tau, x = rs[0], y = rs[1];
       rs[0] = std::cos(angle) * x + std::sin(angle) * y;
       rs[1] = -std::sin(angle) * x + std::cos(angle) * y;
@@ -263,23 +291,24 @@ struct StecProcessor::State {
   std::pair<double, double> gim(int64_t ns, double lat, double lon,
                                 double mapping) {
     auto t = time_of(ns);
+    if (nav->nt < 2)
+      return {NAN, NAN};
     auto upper = std::upper_bound(
         nav->tec, nav->tec + nav->nt, t,
         [](gtime_t a, const tec_t &b) { return timediff(a, b.time) < 0; });
     if (upper == nav->tec || upper == nav->tec + nav->nt)
-      throw std::runtime_error("STEC outside IONEX time coverage");
+      return {NAN, NAN};
     auto &a = *(upper - 1);
     auto &b = *upper;
     double span = timediff(b.time, a.time);
     if (span <= 0 || span > 3601)
-      throw std::runtime_error("Missing hourly IONEX map");
+      return {NAN, NAN};
     // Sun-fixed temporal interpolation, with both map epochs normalized to
     // GPST.
     auto va = grid(a, lat, lon + timediff(t, a.time) * 360 / 86400);
     auto vb = grid(b, lat, lon + timediff(t, b.time) * 360 / 86400);
     double w = timediff(t, a.time) / span;
     if (!std::isfinite(va.first) || !std::isfinite(vb.first)) {
-      ++missing_gim;
       return {NAN, NAN};
     }
     return {mapping * ((1 - w) * va.first + w * vb.first),
@@ -300,8 +329,13 @@ void StecProcessor::products(const Json &p) {
   auto &s = *state_;
   s.ready = false;
   free_products(*s.nav);
-  for (const auto &f : p.at("sp3"))
+  for (const auto &f : p.at("sp3")) {
+    int before = s.nav->ne;
     readsp3(f.get<std::string>().c_str(), s.nav.get(), 0);
+    if (s.nav->ne <= before)
+      throw std::runtime_error("Cannot read nonempty STEC SP3: " +
+                               f.get<std::string>());
+  }
   for (const auto &f : p.at("clk"))
     if (!readrnxc(f.get<std::string>().c_str(), s.nav.get()))
       throw std::runtime_error("Cannot read STEC CLK");
@@ -315,10 +349,13 @@ void StecProcessor::products(const Json &p) {
       throw std::runtime_error("Cannot read STEC BRDC");
   }
   uniqnav(s.nav.get());
-  for (const auto &f : p.at("ionex"))
+  for (const auto &f : p.at("ionex")) {
+    int before = s.nav->nt;
     readtec(f.get<std::string>().c_str(), s.nav.get(), 1);
-  if (s.nav->nt < 2 || s.nav->ne < 11 || s.nav->nc < 2)
-    throw std::runtime_error("Insufficient STEC products");
+    if (s.nav->nt <= before)
+      throw std::runtime_error("Cannot read nonempty STEC IONEX: " +
+                               f.get<std::string>());
+  }
   for (int i = 0; i < s.nav->nt; ++i) {
     auto &m = s.nav->tec[i];
     if (m.ndata[2] != 1 || m.rb != 6371 || m.hgts[0] != 450 || m.lons[2] <= 0 ||
@@ -410,19 +447,33 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
       if (t.emitted >= 0 && epoch.gpst_ns - t.emitted < s.interval)
         continue;
       t.emitted = epoch.gpst_ns;
-      double az, el, lat, lon;
-      if (!s.geometry(prn, epoch.gpst_ns, az, el, lat, lon))
+      double az = NAN, el = NAN, lat = NAN, lon = NAN;
+      int32_t issues = 0;
+      if (!s.geometry(prn, epoch.gpst_ns, az, el, lat, lon, issues))
         continue;
       // CODE MSLM mapping height is distinct from the 450 km IPP shell.
       double rp = 6371 / (6371 + s.mapping_height) *
                   std::sin(.9782 * (PI / 2 - el * D2R));
       double mapping = 1 / std::sqrt(1 - rp * rp);
-      auto [gim, rms] = s.gim(epoch.gpst_ns, lat, lon, mapping);
+      double gim = NAN, rms = NAN;
+      if (std::isfinite(mapping)) {
+        std::tie(gim, rms) = s.gim(epoch.gpst_ns, lat, lon, mapping);
+        if (!std::isfinite(gim)) {
+          issues |= 16;
+          ++s.missing_gim;
+        }
+      }
       double code = NAN;
-      if (a->code_valid && b->code_valid)
+      if (a->code_valid && b->code_valid) {
         code = b->pseudorange_m - a->pseudorange_m - s.bias(prn, epoch.gpst_ns);
-      out.samples.push_back({epoch.gpst_ns, t.id, prn, gf, code, el, az, lat,
-                             lon, mapping, gim, rms});
+        if (!std::isfinite(code))
+          issues |= 8;
+      }
+      for (auto &[bit, count] : s.product_gaps)
+        if (issues & bit)
+          ++count;
+      out.samples.push_back({epoch.gpst_ns, t.id, prn, issues, gf, code, el, az,
+                             lat, lon, mapping, gim, rms});
       ++t.samples;
       ++s.sample_count;
       if (std::isfinite(code) && el >= s.level_elevation) {
@@ -453,6 +504,12 @@ Json StecProcessor::summary() const {
           {"valid_arcs", s.valid_arcs},
           {"unhealthy_samples", s.unhealthy},
           {"missing_gim_samples", s.missing_gim},
+          {"product_gaps",
+           {{"orbit", s.product_gaps.at(1)},
+            {"clock", s.product_gaps.at(2)},
+            {"health", s.product_gaps.at(4)},
+            {"satellite_bias", s.product_gaps.at(8)},
+            {"gim", s.product_gaps.at(16)}}},
           {"meters_per_tecu", K},
           {"arc_reasons",
            {{"0", "start"},

@@ -97,6 +97,15 @@
   archives, downloaded products, downloader plans/configuration and map assets.
   Rebuild derived outputs with GPST tools; do not relabel old timestamps.
 
+## TEC visualization
+
+- Use 200 TECU as the default upper colour-scale limit for TEC plots,
+  including absolute STEC, SBAS VTEC maps and SBAS background overlays.
+  The default lower limit is 0 TECU. Explicit user-selected limits may override
+  these defaults; do not change or truncate scientific values to fit the scale.
+- Keep STEC and VTEC clearly distinguished even when their default colour-scale
+  limits are the same. Keep CLI help and usage documentation aligned.
+
 ## Toolchain
 
 - This workspace has Septentrio RxTools under `~/.local/RxTools`; its SBF to
