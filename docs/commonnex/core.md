@@ -6,6 +6,12 @@ Status: v0 design draft; not an implemented format or API.
 
 ## Context and identity
 
+This document defines shared context and the Observation family. The
+[RawNav family](raw-nav.md) is also part of the core model, specified separately
+for readability. Either family may be present alone. In a RawNav-only dataset,
+Observation Stream still names the logical receiver input; it does not assert
+that code, carrier-phase, Doppler or signal-strength observations are available.
+
 All records follow the format-wide [RINEX interoperability and string rules](overview.md#rinex-interoperability-and-strings).
 Logical fields are not constrained by RINEX output widths or character limits.
 
@@ -53,6 +59,9 @@ this metadata at directory initialization, not with each daily recording.
 
 ## ObservationEpoch and NavigationEpoch
 
+Cross-epoch discontinuities use the separate [Events family](events.md).
+Observation quality remains signal-local; events do not replace those fields.
+
 These are independent logical records; there is no required one-to-one mapping.
 
 | ObservationEpoch field | Type | Meaning |
@@ -76,8 +85,11 @@ These are independent logical records; there is no required one-to-one mapping.
 
 RawNav may reference NavigationEpoch without any ObservationEpoch.
 An adapter must not overwrite a measurement timestamp with navigation context.
-Unknown time does not become a fabricated timed epoch: retain unassociated
-extension records where allowed, otherwise report the unusable observation.
+ObservationEpoch and NavigationEpoch require valid, non-null GPST. Unknown time
+does not become a fabricated epoch: after bounded association attempts, skip
+untimeable Observation/RawNav records and report their counts. Preserve raw
+archives; do not create a separate unknown-time observation/navigation dataset.
+This does not remove legitimate untimed special-event metadata from RINEX.
 Repeated timestamps can have distinct epoch IDs. Nanosecond rounding does not
 prove occurrence equality.
 
@@ -131,8 +143,9 @@ only when justified; do not force unlike signal attributes into one row.
 `gpst_ns` is an unsigned 64-bit integer counting nanoseconds since
 1980-01-06 00:00:00 GPST. It is not a Unix timestamp. The representable positive
 duration is approximately 584 years. Negative and out-of-range absolute times
-are rejected before unsigned conversion. Unknown time uses null or explicit
-validity, never a sentinel such as zero.
+are rejected before unsigned conversion. Required epoch timestamps cannot be
+unknown. Other record families may explicitly permit missing time under their
+own semantics; never use a sentinel such as zero to represent unknown time.
 
 Convert source time scales at the input boundary. Preserve necessary native
 navigation time fields with their standards-defined meanings. GPST calendar

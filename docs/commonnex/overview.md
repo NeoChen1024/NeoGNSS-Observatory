@@ -6,25 +6,45 @@ This document set does not change existing schemas, CLI behavior, or datasets.
 ## Scope and document map
 
 CommonNEX is a source-independent logical representation of RINEX-like
-observations. It defines identities, types, units, nullability, quality, and
+observations and received raw navigation content. It defines identities, types, units, nullability, quality, and
 relationships, not a mandatory memory layout, language ABI, or wire protocol.
 
 | Specification | Responsibility |
 | --- | --- |
 | [Core](core.md) | Shared types/context, observation epochs and wide observation records |
+| [Events](events.md) | Shared continuity event semantics and daily storage |
 | [Setup JSON](setup-json.md) | Station metadata, named antennas, configuration references and initialization schema decisions |
-| [RawNav](raw-nav.md) | Optional standardized received navigation occurrences |
+| [RawNav](raw-nav.md) | First-class core record family for received navigation occurrences; presence is capability-dependent |
 | [DecodedNav](decoded-nav.md) | Optional standardized decoded navigation parameters |
 | [Auxiliary](auxiliary.md) | Typed receiver clock, pulse, environment, status and solution records |
 | [Receiver profiles](receiver-profiles.md) | Input message requirements and adapter mapping contracts |
 | [Import policy](import-policy.md) | Reconciliation, completion, late data and one-pass extraction |
 | [ParquetNEX](parquetnex.md) | Optional Parquet persistence and replay mapping |
 
-Core observation compliance does not require RawNav, DecodedNav or auxiliary
-data. An optional family must obey its declared schema when supplied. A
-RawNav-only dataset may use shared Setup/Stream/NavigationEpoch definitions
-without inventing observations; it does not claim observation coverage.
-Decoded ephemerides are not evidence that raw navigation occurrences survive.
+Core model membership and mandatory data presence are different. Observation
+and RawNav are first-class core record families sharing Setup, Stream, epoch
+and continuity semantics; neither must accompany the other. DecodedNav remains
+a standardized optional extension, and auxiliary families remain optional.
+Each supplied family obeys its schema; consumers need only implement the
+families they use, not every navigation-content decoder.
+
+| Source capability | Legal record set |
+| --- | --- |
+| Observation-only | ObservationEpoch and Observation, with shared context |
+| Observation + RawNav | Both families with their respective epoch associations |
+| RawNav-only | RawNav and applicable NavigationEpoch/context, without ObservationEpoch or Observation |
+
+RawNav-only is a valid CommonNEX dataset, not an incomplete observation dataset.
+Do not synthesize empty observations, require RAWX, or reject it because PPP/TEC
+cannot run. Processors declare their required capabilities and reject only an
+unsupported requested operation. RawNav remains first-class even when stored
+in separate Parquet files. Decoded ephemerides do not reconstruct received bits.
+
+Observation and RawNav require usable GPST epoch association. Records whose
+time remains unresolved after bounded importer buffering are skipped and counted;
+raw archives allow later reconstruction. No unknown-time Observation/RawNav
+storage branch is required. RawNav-only remains legal with valid NavigationEpoch
+context. Legitimate untimed RINEX special events retain their separate semantics.
 
 V0 excludes GLONASS observations/navigation and processing. Mixed inputs must
 be framed correctly and exclusions reported. Other constellation identifiers
@@ -35,7 +55,7 @@ Raw archives remain the preservation masters, not CommonNEX or ParquetNEX.
 
 The format-wide design requirement is lossless RINEX import, not lossless
 RINEX export. This applies to observations, navigation, events, quality,
-correction semantics and metadata across Core and extensions, not only
+correction semantics and metadata across core families and extensions, not only
 `setup.json`. Preserve source information in its appropriate record family or
 source metadata; do not force all RINEX headers into Setup.
 
@@ -94,6 +114,10 @@ a reconstruction index, or a Parquet round trip before processing.
 File, batch and GPST-day boundaries do not reset tracking, clocks, RawNav
 assembly or SBAS aging. Daily storage does not imply a daily solution.
 
+[Continuity events](events.md) describe detected discontinuities using shared
+Stream and epoch identities. Their interpretation does not depend on a
+particular processing execution model.
+
 Ordering, bounded buffering, backpressure, checkpoints, scheduling and replay
 ranges belong to processing facilities. CommonNEX does not guarantee that an
 isolated daily partition initializes every solver, or define a generic
@@ -121,7 +145,7 @@ Review in this order:
 - [x] Select native Arrow batches with Python/PyArrow Parquet I/O.
 - [ ] Finalize Setup JSON fields, stream declarations and signal capability semantics.
 - [ ] Finalize Core quality records, correction semantics and identity keys.
-- [ ] Specify adapter epoch association/completion, including Meas3 and RTCM3.
+- [ ] Specify adapter epoch association/completion, including SBF Measurements and RTCM3.
 - [ ] Validate canonical RawNav family layouts and source mappings.
 - [ ] Complete auxiliary and DecodedNav field catalogs as consumers require.
 - [ ] Finalize ParquetNEX metadata, nested field schemas and publication layout.

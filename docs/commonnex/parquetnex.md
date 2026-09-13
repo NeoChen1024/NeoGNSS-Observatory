@@ -59,11 +59,20 @@ Selected layout (family part names remain to be finalized):
         observation-epochs.parquet
         navigation-epochs.parquet
         raw-nav.parquet
+        events.parquet     # When continuity events are present
       r0002/
         ...                # Complete replacement daily record set, not a delta
 ```
 
 Only applicable families are written. Large families may use multiple parts.
+The [Events family](events.md) uses one `events.parquet` per day/revision when
+present, not a global file. Interval events are assigned to the next available
+epoch's GPST day and may reference a previous-day epoch. Event absence is
+interpreted with import capability/coverage, not as unconditional continuity.
+RawNav-only revisions omit observation files entirely; they retain required
+navigation/context records. Do not create empty observation tables as a
+conformance prerequisite. Only validly timed Observation/RawNav is persisted;
+there is no unassociated scope or unknown-time reader branch.
 Stream declarations must be resolvable at initialization. Each `antenna_name`
 must resolve to a key in the parent Setup's `antennas` dictionary; see
 [named antennas](setup-json.md#named-antennas-and-stream-references). The exact storage
@@ -93,8 +102,7 @@ these mappings must eventually be specified rather than left writer-specific.
   interpretation in file metadata. Scientific interpretation does not require
   provenance sidecars, execution snapshots, or artifact hash inventories.
 - Partition timed records by stream and GPST day. RawNav uses its referenced
-  NavigationEpoch's GPST day; unresolved nav_epoch_id records have a separate
-  unassociated scope. Each day may contain several
+  NavigationEpoch's GPST day; its reference is required and resolvable. Each day may contain several
   complete part files per record family. Payload timestamps determine coverage;
   filenames alone are not evidence of observation time or continuity.
 - Write bounded parts, close them, and publish a complete daily revision by

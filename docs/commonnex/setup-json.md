@@ -49,6 +49,7 @@ implementation review items.
 | `antennas` | Dictionary of named antenna entries with type/model, radome, serial number and receiver input association |
 | Installation (per antenna) | Marker-to-ARP offset and antenna orientation with explicit frames and units |
 | Tracking | Declared constellations and signals per constellation; receiver measurement rate where known |
+| `epoch_period_ms` | Optional positive finite JSON number: nominal observation epoch period in milliseconds |
 | Feed lines (per antenna) | Optional cable type and length with units for that antenna's receiver connection |
 | `vendor_config` | Optional filename of a configuration file beside `setup.json` |
 
@@ -74,6 +75,26 @@ not all belong in Setup. Map them to source metadata or the appropriate record
 family. RINEX-like observation coverage plus extra receiver setup information
 is the intended superset; lossless RINEX import still requires explicit field,
 correction and event mappings rather than merely retaining a JSON container.
+
+## Nominal epoch period
+
+Top-level `epoch_period_ms` declares the nominal observation cadence expected
+for this Setup, in milliseconds. Examples are `1000` for 1 Hz, `100` for 10 Hz
+and `30000` for one observation every 30 seconds. Unknown or non-periodic
+cadence is absent/null, not zero. It is not a telemetry/message transmission
+interval, reference-epoch interval, or a guarantee of gapless observations.
+Recording-source decimation may differ and must not rewrite receiver cadence.
+
+Allow a positive finite JSON number rather than requiring integer milliseconds.
+A true 30 Hz cadence has a period of 1000/30 ms, not 33 ms. A decimal here is a
+nominal approximation, not an exact rational timing representation. This avoids
+restricting the format to the rates of currently used receivers. Actual epoch
+timestamps remain authoritative: never generate, snap or accumulate timestamps
+from this metadata. CommonNEX defines a per-epoch interval tolerance of +/-20%
+in the [cadence classification rules](import-policy.md#epoch-interval-classification).
+This is a diagnostic threshold, not permission to round timestamps. Preserve an
+imported source interval outside Setup as well when its precision or meaning
+cannot be represented here exactly.
 
 ## Observer, agency and comments
 

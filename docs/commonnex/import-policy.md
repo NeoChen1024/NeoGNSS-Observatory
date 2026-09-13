@@ -14,7 +14,32 @@ rtcm3 or rinex), relevant version and explicit logical stream association.
 Multiple recording paths may contribute to one Stream without changing Setup.
 Equal timestamps or coordinates alone do not establish the same acquisition.
 
+One Recording Source may route to multiple Streams when it carries multiple
+antenna inputs. Conversely, multiple recording paths may feed one Stream.
+Resolve native antenna identity to declared Stream/antenna_name mappings;
+keep source/antenna decoder state separate before reconciling logical records.
+
+Report family coverage independently: source not providing a family, configured
+omission, no occurrences in the selected range, and unsupported importer mapping
+are different situations. Do not infer actual coverage from Setup configuration
+alone. Keep this a concise capability/coverage report, not a provenance framework.
+Absence of Observation is valid for RawNav-only import and is not a QA failure.
+
 ## One-pass extraction contract
+
+Formal Observation/RawNav output requires valid GPST epoch association. Allow
+bounded buffering for later anchors; once the limit is reached or input is
+finalized, skip and count records still lacking usable time. Retain the original
+archive, not an unassociated Parquet dataset or an automatic repair queue.
+Report time-association exclusions separately from malformed frames and missing
+observables. Usable records continue through import. Do not fabricate dates,
+snap timestamps or reuse stale anchors merely to avoid an exclusion.
+
+This rule concerns scientific observation/navigation records. RINEX special
+events whose epoch is not meaningful may legitimately omit time; preserve their
+event semantics and source ordering in the event/source mapping. They are not
+unknown-time observations. Cross-source occurrence ambiguity between already
+timed records remains a separate reconciliation concern.
 
 Follow the [format-wide lossless-import requirement](overview.md#rinex-interoperability-and-strings).
 Report unsupported RINEX content and mapping limitations; a partial import must
@@ -117,7 +142,53 @@ occurrence, or apply a declared source-selection policy. A tolerant importer
 does not authorize a solver to count conflicting alternatives as separate
 measurements. Source selection is a processing view and preserves alternatives.
 
+### Epoch interval classification
+
+For a known positive nominal observation period P (`epoch_period_ms`), compare
+successive distinct ObservationEpoch GPST timestamps within the same Stream.
+Use differences of integer timestamps, converting P to the same unit without
+rounding observations. The standard per-epoch tolerance is +/-20%:
+
+| Interval dt | Classification |
+| --- | --- |
+| dt < 0 | Time reversal |
+| dt = 0 | Repeated timestamp requiring explicit identity/time interpretation |
+| 0 < dt < 0.8 P | Too-short interval: timing/cadence anomaly, not a gap |
+| 0.8 P <= dt <= 1.2 P | Within the nominal cadence tolerance |
+| dt > 1.2 P | Observation cadence gap |
+
+The endpoints are inclusive: for P = 1000 ms, 800 through 1200 ms is acceptable.
+"20% below the period" means below 80% of P, not below 20% of P. A gap is a
+coverage finding, not proof of receiver failure or an exact missing-epoch count.
+Too-short intervals may reflect a wrong declared period or timestamp problems;
+do not assert a specific cause from this check alone. Unknown/non-periodic
+cadence has no percentage-based classification.
+
+Apply this to logical observation epochs, not per-satellite rows, companion
+blocks, RawNav or telemetry arrivals. Reconcile proven logging duplicates before
+classifying the merged Stream; conflict alternatives are not extra normal
+epochs. Preserve evidence of time reversals rather than hiding them by sorting.
+Physical file, batch and GPST-day boundaries do not restart the comparison.
+Explicit new continuity contexts are handled separately.
+
+A deliberately decimated Recording Source can have a different declared output
+cadence. Source-local checks use that declared cadence; merged-stream coverage
+against Setup's P may still show gaps. Label the scope and period used instead
+of silently changing the Setup or blaming the receiver for decimation.
+
+Retain observations, timestamps and anomaly findings. Out-of-range intervals
+are not a reason to reject the entire import, snap epochs, fabricate samples or
+automatically reset processing state. This shared rule does not mandate another
+full QA pass in every consumer; solver reset/timeout policies remain separate.
+Live absence beyond 1.2 P can be provisional; final interval classification uses
+observation time, not network arrival latency.
+
 ### Completion, late data, and state
+
+Persist cross-epoch findings in the [continuity Events family](events.md),
+separately from per-observable quality and epoch completeness. Recompute affected
+events when repairing daily revisions. Consumers use these events without
+repeating full importer QA, but retain algorithm-specific state requirements.
 
 Proposed logical completion events distinguish `epoch_complete`,
 `stream_end`, and receiver/continuity events. Completion refers to records

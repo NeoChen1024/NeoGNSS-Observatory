@@ -1,4 +1,4 @@
-# CommonNEX RawNav extension
+# CommonNEX RawNav record family
 
 Status: v0 design draft; not an implemented format or API.
 
@@ -6,11 +6,18 @@ Status: v0 design draft; not an implemented format or API.
 
 ## Scope
 
-The optional RawNav extension stores receiver-delivered navigation bits for all in-scope systems
+RawNav is a first-class record family in the core data model, with
+capability-dependent presence. It stores receiver-delivered navigation bits for all in-scope systems
 (GPS, Galileo, BeiDou, QZSS, NavIC, and SBAS), including navigation families that
 the current scientific processors cannot decode. The earlier GLONASS exclusion
 still applies; the record structure itself is not tied to a constellation.
 A decoded ephemeris or correction record does not replace received raw bits.
+RawNav-only sources and datasets are valid without raw observations. They use
+the same Setup/Stream identity and NavigationEpoch association as mixed datasets;
+never require an ObservationEpoch or fabricate C/L/D/S values. Valid navigation
+time association is required; unresolved records are skipped and counted after
+bounded association attempts, not stored under invented epochs. Storage requires canonical packing support, not
+a solver or a decoded-navigation implementation.
 Adapters normalize them directly, and ParquetNEX preserves them for later
 decoding without reopening UBX/SBF input. Scientific message-decoder
 availability does not gate storage; a validated receiver-packing mapping does.
@@ -81,7 +88,7 @@ as unmodified transmitted data bits.
 | --- | --- | --- |
 | `stream_id` | `string` | Acquisition stream |
 | `occurrence_id` | `uint64` | Record identity within the stream, retained across batches and parts |
-| `nav_epoch_id` | `uint64?` | Associated NavigationEpoch within the stream; null when unresolved |
+| `nav_epoch_id` | `uint64` | Required reference to a NavigationEpoch with valid GPST within the stream |
 | `satellite_system`, `satellite_number` | `string?`, `uint16?` | RINEX satellite identity where mapping is known; otherwise retain source identity |
 | `signal_sources` | list of records | Known contributing signals, using system-specific RINEX band/attribute or native identity; may be empty if unknown |
 | `signal_composition` | enum | `single`, `combined`, or `unknown`; does not imply an ordering of contributing signals |
@@ -231,17 +238,21 @@ failed or unknown checks do not prevent general raw-bit preservation.
 
 RawNav timing is solely its NavigationEpoch association. It does not represent
 precise transmission or receiver arrival time. There is no RawNav time_role,
-time_reference, time_basis or independent gpst_ns field. Null nav_epoch_id means
-unassociated; do not snap to a nearby epoch to make it timed. Timed consumers
-must explicitly exclude or reject unassociated records. Store these separately
-from GPST-day partitions, never under a date guessed from filenames.
+time_reference, time_basis or independent gpst_ns field. `nav_epoch_id` is
+non-null and must resolve to valid GPST. Importers may buffer records while
+waiting for a justified anchor. If association remains unresolved at the bounded
+buffer limit or finalization, skip the record and count/report the exclusion.
+Do not snap to nearby epochs or guess dates from filenames. There is no
+unassociated RawNav table or partition; raw archives remain available for future
+reconstruction. Navigation validity checks and time association are separate:
+a failed navigation CRC does not itself invalidate an otherwise usable epoch.
 
 NavigationEpoch may exist without observations. Multiple occurrences within
 one epoch retain distinct IDs, and identical payloads broadcast in different
 epochs remain distinct. Payload equality is never sufficient deduplication
 proof. Physical file/day boundaries do not create new occurrences or reset
 assembly. SBAS aging uses the associated epoch time; high-precision air-interface
-timing is outside this extension's scope.
+timing is outside this family's scope.
 
 Retain generic continuity/end events alongside bodies. Neither daily partition
 boundaries nor replay batches reset SBAS masks, message aging, or signal state.
