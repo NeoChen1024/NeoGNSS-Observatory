@@ -1,0 +1,57 @@
+# RINEX-specific observation information
+
+Status: selected design decisions; adapters and complete header mappings remain
+to be implemented. [Overview](overview.md) | [Core](core.md)
+
+Support standard RINEX 3.x/4.x content for in-scope constellations. RINEX 2,
+GLONASS and NavIC are excluded. Unknown observation codes are reported, not
+guessed or retained through a generic vendor observation schema.
+
+## Source-only fields
+
+Use `rinex_` for information whose meaning is specific to RINEX encoding or
+source declarations. Only RINEX import populates these fields; UBX/SBF/RTCM3
+import must not synthesize them. Optional source fields are null when absent.
+
+| Field | Type | Location and meaning |
+| --- | --- | --- |
+| `rinex_ssi` | uint8? | Corresponding observable quality; 1-9, zero/blank becomes null |
+| `rinex_lli` | uint8? | Phase tracking; original 0-7 bitmask, blank becomes null |
+| `rinex_epoch_flag` | uint8? | ObservationEpoch for ordinary observations, or a separate special-event record as applicable |
+| `rinex_version` | string | RINEX source metadata, e.g. `3.04`, never a float or repeated on every observation |
+| `rinex_program` | string? | Source metadata: generating program |
+| `rinex_run_by` | string? | Source metadata: file generator's run-by declaration |
+| `rinex_comments` | list<string> | Ordered COMMENT contents; empty when none are present |
+
+Each comment element preserves one COMMENT record's text. Remove fixed-column
+padding, but do not join lines, deduplicate, reorder or otherwise rewrite the
+content. List elements are non-null strings. Source comments do not overwrite
+manually initialized Setup comments. Source metadata is not a provenance bundle
+or an execution-environment inventory.
+
+Header changes, external events and cycle-slip records require separate typed
+event mappings, not fabricated ordinary C/L/D/S rows. If retained, parsed header
+updates use `rinex_header_updates` with explicit applicability; the detailed
+update/event payload schemas remain pending. Do not copy a full header per epoch.
+Legitimate untimed special events retain their meaning.
+
+## Common semantics, not RINEX-only fields
+
+Satellite/signal identity, C/N0, observation clock offset/application state,
+phase conventions, applied DCB/PCV metadata and station/receiver/antenna metadata
+retain common names. A field does not become RINEX-specific merely because
+RINEX is currently its only implemented source. Retain scientifically necessary
+correction declarations with their scope; never apply or undo receiver clock
+correction on import or fill it from NAV-CLOCK/PVT telemetry.
+
+Decode storage scale factors into physical observable values. Do not propagate
+ASCII widths, layout order or duplicate counts into the common observation
+schema. Successfully mapped observation codes need no redundant per-row
+`rinex_observation_code`. SSI is not C/N0 and must not generate a synthetic S
+observable. Only DBHZ S observables are supported; an explicitly different unit
+raises an unsupported-unit error. Missing headers follow supported-version rules.
+
+The source archive preserves original encoding. These decisions preserve the
+supported scientific interpretation, not byte-identical RINEX export.
+
+Reference: [RINEX 4.02](https://files.igs.org/pub/data/format/rinex_4.02.pdf).

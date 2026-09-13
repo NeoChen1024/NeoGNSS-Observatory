@@ -81,7 +81,7 @@ time ranges from multiple logging sources of the same logical acquisition,
 including repeated imports and late additions to an existing day. It must not
 require a separate restitch/QA run or reject an entire input because its bounds
 overlap earlier data. [Core normalization](core.md), framing, scientific validity,
-and the GLONASS exclusion still apply.
+and the GLONASS/NavIC exclusions still apply.
 
 Each logging source is framed and associated independently before records are
 reconciled into a logical stream. Do not concatenate overlapping byte streams
@@ -144,10 +144,10 @@ measurements. Source selection is a processing view and preserves alternatives.
 
 ### Epoch interval classification
 
-For a known positive nominal observation period P (`epoch_period_ms`), compare
+For a known positive nominal observation period P (`epoch_period_s`), compare
 successive distinct ObservationEpoch GPST timestamps within the same Stream.
-Use differences of integer timestamps, converting P to the same unit without
-rounding observations. The standard per-epoch tolerance is +/-20%:
+Use exact decimal timestamp differences and P in seconds without rounding
+observations. The standard per-epoch tolerance is +/-20%:
 
 | Interval dt | Classification |
 | --- | --- |

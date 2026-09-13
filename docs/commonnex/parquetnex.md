@@ -85,9 +85,16 @@ ParquetNEX defines an interoperable mapping of CommonNEX logical records to
 Parquet schemas, file metadata, and dataset layout. Unlike CommonNEX transport,
 these mappings must eventually be specified rather than left writer-specific.
 
-- Represent `gpst_ns` with Parquet's unsigned 64-bit integer logical annotation
-  over its 64-bit integer physical storage. Do not use the standard Parquet
-  `TIMESTAMP` annotation for GPST. Readers must preserve unsigned semantics.
+- Represent `GpstTimestamp`, `TimeDelta` and `Duration` as `DECIMAL(38,12)` over a 16-byte
+  `FIXED_LEN_BYTE_ARRAY`, with signed big-endian two's-complement unscaled
+  integers as required by Parquet. Values are seconds; only timestamps use the GPST origin.
+  use Arrow `decimal128(38,12)` in the selected interop implementation.
+  Do not use Parquet `TIMESTAMP`, convert absolute times through float64, or
+  infer UTC semantics from the storage type. Preserve precision, scale, GPST
+  origin, semantic type and units on replay. Enforce nonnegative timestamps
+  and durations, and strictly positive periods separately;
+  signed timestamp differences may be negative. Parquet and Arrow buffer
+  layouts are distinct; the Parquet writer handles their conversion.
 - Preserve nullability, semantic identifiers/constraints, enums, units, and
   source-extension definitions. The schema version resolves standard semantic
   definitions; store additional field constraints where needed. Writers validate

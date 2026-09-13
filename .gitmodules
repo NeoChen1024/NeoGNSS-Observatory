@@ -14,3 +14,6 @@
 [submodule "contrib/arrow-nanoarrow"]
 	path = contrib/arrow-nanoarrow
 	url = https://github.com/apache/arrow-nanoarrow.git
+[submodule "contrib/int128"]
+	path = contrib/int128
+	url = https://github.com/boostorg/int128.git

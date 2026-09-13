@@ -38,6 +38,21 @@
   overwrite without silently deleting unrelated files. Do not build a generic
   resume system; retain useful existing reuse paths.
 
+## Constellation scope
+
+- GLONASS and NavIC are out of scope for this project, including CommonNEX,
+  ParquetNEX, importers, navigation decoding and scientific processing.
+  Do not design fields, special handling, calculations or future compatibility
+  solely to support either constellation unless the user explicitly changes
+  this scope. Their exclusion is intentional, not an implementation backlog.
+- Mixed recordings may contain these constellations. Preserve raw archives,
+  frame inputs safely and report excluded records without requiring scientific
+  decoding of their contents. Their absence from normalized outputs is not a
+  failure of in-scope constellation support.
+- Leave upstream definitions and standardized identifiers intact; this scope
+  does not require deleting generated protocol definitions or modifying vendored
+  dependencies. RINEX interoperability claims apply only to in-scope content.
+
 ## Documentation audience
 
 - Keep `docs/` focused on the current implementation. Remove superseded

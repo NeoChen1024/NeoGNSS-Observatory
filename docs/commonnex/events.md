@@ -33,13 +33,13 @@ an epoch field. Protocol completion is not itself a discontinuity.
 | `event_id` | uint64 | Event identity within that Stream |
 | `kind` | enum | Event kind listed above |
 | `scope` | enum | `stream`, `observation`, or `raw_nav` impact scope |
-| `gpst_ns` | uint64 | Valid GPST locating the event |
+| `gpst` | GpstTimestamp | Valid GPST seconds locating the event |
 | `epoch_family` | enum? | `observation` or `navigation`, when epoch references are supplied |
 | `previous_epoch_id` | uint64? | Previous epoch in the relevant acquisition sequence |
 | `next_epoch_id` | uint64? | Following epoch in that sequence |
 | `evidence` | enum | `receiver_report`, `runtime_decrease`, or `epoch_interval` |
-| `interval_ns` | int64? | Signed difference of the referenced timestamps for interval events |
-| `expected_period_ms` | float64? | Positive nominal period used for cadence classification |
+| `interval_s` | TimeDelta? | Signed difference in seconds of the referenced timestamps for interval events |
+| `expected_period_s` | Duration? | Strictly positive nominal period used for cadence classification |
 
 References resolve within the Stream and selected epoch family, including
 across days. They must not imply a one-to-one relationship between ObservationEpoch
@@ -48,7 +48,7 @@ can share a timestamp. Detailed receiver evidence may use a typed auxiliary
 record rather than arbitrary per-event JSON. Additional evidence mappings remain
 to be defined when adapters need them.
 
-For an interval event, `gpst_ns` is the next available epoch's time and both
+For an interval event, `gpst` is the next available epoch's time and both
 epoch references identify the measured interval. In a reversal, "next" means
 acquisition order, not later GPST. For a restart, locate it at the first valid
 epoch establishing the evidence, not an invented exact reboot instant.
@@ -71,7 +71,7 @@ receiver acquisition order. File rollover, GPST midnight and logger handover
 alone generate no discontinuity event.
 
 ParquetNEX stores `events.parquet` inside each Stream/GPST-day/revision directory.
-An interval event belongs to the day of its `gpst_ns` (the next available epoch),
+An interval event belongs to the day of its `gpst` (the next available epoch),
 even when the previous epoch is in another day. Use the same revision selection
 as the related tables. Repair recomputes affected boundary events; prior versions
 remain only in prior revisions. Include an adjacent day in repair when its event

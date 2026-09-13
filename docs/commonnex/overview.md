@@ -9,6 +9,11 @@ CommonNEX is a source-independent logical representation of RINEX-like
 observations and received raw navigation content. It defines identities, types, units, nullability, quality, and
 relationships, not a mandatory memory layout, language ABI, or wire protocol.
 
+Canonical timestamps use `DECIMAL(38,12)` seconds since the GPST origin, with
+1 ps representation resolution. A value of one means one second, not one
+picosecond tick. See [Core time representation](core.md#time-representation)
+for range, rounding and nullability, and [ParquetNEX](parquetnex.md) for storage.
+
 | Specification | Responsibility |
 | --- | --- |
 | [Core](core.md) | Shared types/context, observation epochs and wide observation records |
@@ -18,6 +23,7 @@ relationships, not a mandatory memory layout, language ABI, or wire protocol.
 | [DecodedNav](decoded-nav.md) | Optional standardized decoded navigation parameters |
 | [Auxiliary](auxiliary.md) | Typed receiver clock, pulse, environment, status and solution records |
 | [Receiver profiles](receiver-profiles.md) | Input message requirements and adapter mapping contracts |
+| [RINEX mapping](rinex-mapping.md) | RINEX-only observation fields and source metadata |
 | [Import policy](import-policy.md) | Reconciliation, completion, late data and one-pass extraction |
 | [ParquetNEX](parquetnex.md) | Optional Parquet persistence and replay mapping |
 
@@ -46,7 +52,8 @@ raw archives allow later reconstruction. No unknown-time Observation/RawNav
 storage branch is required. RawNav-only remains legal with valid NavigationEpoch
 context. Legitimate untimed RINEX special events retain their separate semantics.
 
-V0 excludes GLONASS observations/navigation and processing. Mixed inputs must
+The project excludes GLONASS and NavIC observations/navigation and processing.
+These are intentional scope exclusions, not a future implementation backlog. Mixed inputs must
 be framed correctly and exclusions reported. Other constellation identifiers
 do not imply complete adapter or scientific-algorithm support.
 Raw archives remain the preservation masters, not CommonNEX or ParquetNEX.
@@ -77,7 +84,8 @@ such an export or use an explicitly chosen lossy mapping, reporting what cannot
 be represented. Silent information loss is not an acceptable export policy.
 
 This is a format requirement, not a claim that the current draft/importer covers
-all RINEX versions and records. In particular, the existing v0 GLONASS exclusion
+all RINEX versions and records. Only standard RINEX 3.x/4.x is targeted; RINEX 2
+is excluded. In particular, the GLONASS/NavIC exclusions
 and fixed-station scope remain limitations, not exceptions that can be called
 fully lossless import. Report unsupported content explicitly; only a verified
 complete mapping for the accepted input can be described as lossless.

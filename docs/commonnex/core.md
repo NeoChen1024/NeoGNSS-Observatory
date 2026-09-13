@@ -68,8 +68,8 @@ These are independent logical records; there is no required one-to-one mapping.
 | --- | --- | --- |
 | `stream_id` | string | Parent stream |
 | `epoch_id` | uint64 | Identity within the stream; not the timestamp |
-| `gpst_ns` | uint64 | Measurement epoch on the GPST axis |
-| `receiver_clock_offset_s` | float64? | Source-reported clock offset; canonical sign mapping must be finalized |
+| `gpst` | GpstTimestamp | Measurement epoch in GPST seconds |
+| `reported_observation_clock_offset_s` | TimeDelta? | Offset explicitly associated with the source observation epoch, never filled from navigation telemetry |
 | `clock_correction_state` | record | Separate applied/not_applied/unknown states for epoch time, code and phase |
 | `completion` | enum | complete, incomplete or unknown |
 | `completion_basis` | enum | protocol_boundary, record_structure, incomplete_tail or unknown |
@@ -79,7 +79,7 @@ These are independent logical records; there is no required one-to-one mapping.
 | --- | --- | --- |
 | `stream_id` | string | Parent stream |
 | `nav_epoch_id` | uint64 | Navigation-context identity within the stream |
-| `gpst_ns` | uint64 | Associated navigation epoch, not precise transmission time |
+| `gpst` | GpstTimestamp | Associated navigation epoch in GPST seconds, not precise transmission time |
 | `completion` | enum | complete, incomplete or unknown |
 | `completion_basis` | enum | protocol_boundary, record_structure, incomplete_tail or unknown |
 
@@ -90,7 +90,7 @@ does not become a fabricated epoch: after bounded association attempts, skip
 untimeable Observation/RawNav records and report their counts. Preserve raw
 archives; do not create a separate unknown-time observation/navigation dataset.
 This does not remove legitimate untimed special-event metadata from RINEX.
-Repeated timestamps can have distinct epoch IDs. Nanosecond rounding does not
+Repeated timestamps can have distinct epoch IDs. Timestamp rounding does not
 prove occurrence equality.
 
 Completion means the producer closed the relevant epoch under its adapter
@@ -110,21 +110,56 @@ remain distinct and reconciliation must expose the relationship.
 | `stream_id`, `epoch_id` | string, uint64 | Parent ObservationEpoch |
 | `observation_id` | uint64 | Row identity within the epoch |
 | `satellite_system`, `satellite_number` | string, uint16 | RINEX satellite identity |
-| `signal` | string? | System-specific RINEX band/attribute, such as 1C |
+| `signal` | string | System-specific RINEX band/attribute, such as 1C |
 | `pseudorange_m` | float64? | C observable |
 | `carrier_phase_cycles` | float64? | L observable |
 | `doppler_hz` | float64? | D observable |
 | `cn0_db_hz` | float64? | S observable only when its unit is known to be dB-Hz |
-| `code_quality`, `phase_quality`, `doppler_quality`, `cn0_quality` | record? | Independent per-observable quality |
-| `lock_time_ms` | uint64? | Reported duration; saturation and source meaning retained |
-| `source_identity` | typed record? | Necessary namespaced signal/message identity |
-| `source_quality` | typed record? | Additional scientifically relevant source flags |
+| `code_quality`, `phase_quality`, `doppler_quality`, `cn0_quality` | ObservableQuality? | Independent per-observable quality |
+| `phase_tracking` | PhaseTracking? | Phase-specific indicators and reported lock duration |
 
-Each quality record may carry status (valid/invalid/unknown), standard deviation
-and variance (independently nullable float32, in that observable's unit and
-squared unit), and applicable saturation/lock/half-cycle information.
-Preserve LLI/SSI with their corresponding observable rather than assigning one
-unqualified flag to all four columns. Final nested field names remain open.
+### ObservableQuality
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `status` | enum | `valid`, `invalid`, or `unknown`: source-reported validity, not downstream scientific acceptance |
+| `stddev` | float32? | Finite nonnegative standard deviation in the corresponding observable's unit |
+| `rinex_ssi` | uint8? | Original RINEX strength indicator, 1-9; zero/blank becomes null |
+
+Store only standard deviation, not a second variance column. Decode a source
+variance's units and no-data rules before taking its square root; do not infer
+uncertainty from C/N0. This normalization does not promise bitwise reversibility
+of a floating-point square root. Missing quality is not evidence of validity.
+There is no generic `saturated` flag: lock saturation has its own representation,
+and RF/ADC clipping belongs to receiver diagnostics, not inferred from C/N0.
+
+### PhaseTracking and LockDuration
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `loss_of_lock` | bool? | Explicit source indication of loss of lock; unknown is not false |
+| `half_cycle_ambiguity` | bool? | Source indicates unresolved half-cycle ambiguity |
+| `half_cycle_subtracted` | bool? | Source explicitly reports a half-cycle already subtracted from the exported phase |
+| `rinex_lli` | uint8? | Original RINEX phase LLI bitmask, 0-7; blank becomes null |
+| `lock` | LockDuration? | Source-reported duration or bounds, not an importer-generated counter |
+
+| LockDuration field | Type | Meaning |
+| --- | --- | --- |
+| `lower_s` | Duration | Reported duration or lower bound in seconds |
+| `upper_s` | Duration? | Exclusive upper bound, used only for `interval` |
+| `representation` | enum | `reported_value`, `interval`, or `lower_bound` |
+
+An interval is `[lower_s, upper_s)` with upper greater than lower. The other
+representations require null upper bounds. A reported value retains source
+quantization; it does not claim perfect duration accuracy. Saturated counters
+use lower bounds. No lock information means a null lock record.
+
+Half-cycle ambiguity and subtraction are independent. Subtraction reports an
+operation already performed, not an instruction to subtract again. See the
+[adapter mapping](receiver-profiles.md#observation-quality-mapping).
+Preserve RINEX LLI while mapping its defined semantics to common phase flags;
+zero/blank does not establish scientifically verified continuity. Do not infer
+slips from phase jumps or invent half-cycle subtraction from lock resets.
 
 Absent fields and source no-data sentinels become null. Zero is a numerical
 value, not a universal sentinel. Finite in-domain but unreliable measurements
@@ -133,49 +168,83 @@ reason taxonomy; retain explicit diagnostics only where interpretation needs it.
 Missing C, L, D or S does not invalidate the remaining columns. Consumer
 requirements such as dual-frequency TEC do not constrain Core compliance.
 
-An SSI digit or unknown-unit signal strength cannot populate cn0_db_hz.
-Preserve it in a typed source field with its known unit/scale, or explicitly
-report an unsupported mapping. Derive full C/L/D/S codes from system and signal
-only when justified; do not force unlike signal attributes into one row.
+Only dB-Hz signal-strength observations are supported. Explicit non-DBHZ RINEX
+S-observable units produce an unsupported-unit error, not a guessed conversion
+or silent omission. Missing unit headers follow the applicable supported RINEX
+version's rules; absence alone is not a declaration of another unit. SSI alone
+cannot populate `cn0_db_hz`, and importers do not synthesize SSI from C/N0.
+Derive full C/L/D/S codes from system and signal only when justified; do not
+force unlike signal attributes into one row.
 
 ## Time representation
 
-`gpst_ns` is an unsigned 64-bit integer counting nanoseconds since
-1980-01-06 00:00:00 GPST. It is not a Unix timestamp. The representable positive
-duration is approximately 584 years. Negative and out-of-range absolute times
-are rejected before unsigned conversion. Required epoch timestamps cannot be
-unknown. Other record families may explicitly permit missing time under their
-own semantics; never use a sentinel such as zero to represent unknown time.
+### Shared semantic types
+
+| Type | Representation | Meaning and constraints |
+| --- | --- | --- |
+| `GpstTimestamp` | DECIMAL(38,12) | Nonnegative seconds since the GPST origin |
+| `TimeDelta` | DECIMAL(38,12) | Signed seconds: differences, offsets, biases and timing errors |
+| `Duration` | DECIMAL(38,12) | Nonnegative seconds: elapsed time, bounds, ages and periods |
+
+All normalized time quantities use these types. Periods additionally require
+strictly positive values. Field nullability is declared separately. A duration
+used for accuracy retains the source's accuracy definition; it is not implicitly
+a standard deviation. Exact arithmetic applies to represented values, not
+measurement accuracy or arbitrary source floating-point bits. Apply the same
+picosecond quantization and range checks to all three types.
+
+These are logical semantic types, not a required C++ ABI. Native counters,
+standard week/TOW encodings and model coefficients retain their own definitions;
+normalizing a counter into duration does not unwrap or extrapolate it. Frequency
+offset/drift is not a duration. Observables and non-time physical parameters
+retain their individually declared numerical types.
+
+All canonical timestamps use `DECIMAL(38,12)` seconds since
+1980-01-06 00:00:00 GPST: a value of one always means one second. This exact
+fixed-point type has 38 total decimal digits and 12 fractional digits, giving
+1 ps resolution and a maximum magnitude of `10^26 - 10^-12` seconds.
+It is not a Unix timestamp. Absolute GPST values must be nonnegative and within
+the decimal range. Use names such as `gpst`, `start_gpst` and `end_gpst`, not
+`gpst_ns` or `gpst_ps`; there is no separate fractional-remainder column.
+Required epoch timestamps cannot be unknown. Other families may permit null
+time under their own semantics; zero denotes the origin, not unknown time.
+The type specifies representation resolution, not receiver measurement accuracy.
 
 Convert source time scales at the input boundary. Preserve necessary native
 navigation time fields with their standards-defined meanings. GPST calendar
 partitions and labels do not use UTC suffixes or timezone conversion.
 
-Normalize source epoch values to the nearest nanosecond. Proposed tie rule:
-round half to even. No timestamp is snapped to a nominal sampling interval or
+Normalize source epoch values to the nearest picosecond, using round half to
+even and carrying into the next second when necessary. No timestamp is snapped to a nominal sampling interval or
 whole second. Parse decimal source timestamps without first constructing a
 large floating-point absolute-seconds value. For week/TOW inputs, retain the
 integer week contribution separately during conversion and handle week carry.
-Summarize actual subnanosecond rounding without per-record warning spam.
+Summarize actual subpicosecond rounding without per-record warning spam.
 
 This is a deliberate precision boundary: a normalized timestamp does not
 promise exact preservation of every source timestamp bit. Raw archives retain
 the original representation. This rule does not quantize pseudorange, carrier
-phase, clock bias, or other scientific values to integer nanoseconds.
+phase, clock bias, or other scientific values to picosecond ticks. Decimal
+source epochs with at most 12 fractional digits are representable exactly
+after an exact time-scale conversion. Finer inputs require the stated rounding;
+fixed scale 12 does not promise arbitrary future precision.
 
 GPST representation does not imply removal of receiver clock error. Preserve
 whether a clock correction has already been applied to epoch tags and
 observables. Observation time, receiver message time, and navigation epoch
 context are distinct and must not be substituted for one another.
 
-Time differences and clock corrections may be negative. Use an appropriate
-signed or floating-point representation and checked arithmetic; unsigned
-subtraction is not a general time-difference operation.
+Exact timestamp differences use `TimeDelta` with checked arithmetic.
+Normalized durations and clock offsets use `Duration` and `TimeDelta`.
+Native standard week/TOW and
+navigation-model time parameters are not replaced by this canonical timestamp.
+Arrow maps the type to `decimal128(38,12)`; neither Arrow nor a particular
+integer implementation is a CommonNEX conformance requirement.
 
 ## Logical types and naming
 
 The proposed schema uses `uint8`, `uint16`, `uint32`, `uint64`, `int32`, `int64`,
-`float32`, `float64`, `bool`, `string`, `bytes`, enums, and records/lists of
+`float32`, `float64`, `DECIMAL(38,12)`, `bool`, `string`, `bytes`, enums, and records/lists of
 these types. Every field declaration includes `name`, `data_type`,
 `nullable: bool`, and `semantics`, together with applicable units and constraints.
 `semantics` identifies a CommonNEX-defined scientific quantity or role; its
@@ -233,8 +302,10 @@ observation `float64` values and uncertainty `float32` fields. Direct
 source binary64 observations and phase/Doppler reconstruction involving
 frequency ratios justify avoiding additional fixed-point quantization here.
 No conversion of these fields to scaled integers is planned for v0. The epoch
-clock-offset field retains `float64`. Other new floating-point
-fields require an individual justification. Telemetry integer types and scales
+clock-offset field uses `TimeDelta`. Continuous non-time physical parameters, including
+decoded navigation parameters, may use `float64` with defined units; do not
+force them onto a broadcast fixed-point grid solely for integer-first storage.
+Telemetry integer types and scales
 in [Auxiliary](auxiliary.md) are agreed design choices; implementation must still validate source
 conversion, rounding, and overflow rather than claim measured fidelity already.
 
@@ -276,7 +347,7 @@ Initial semantic rules:
 | Lock duration | Finite seconds, greater than or equal to zero; saturation remains separate |
 | Clock offset, residual, or additive correction | Finite signed value in its declared unit |
 | C/N0 in dB-Hz | Finite; no generic nonnegative constraint on a logarithmic quantity |
-| GPST timestamp | The defined `uint64` range and GPST epoch/unit |
+| GPST timestamp | Nonnegative `DECIMAL(38,12)` seconds with the defined GPST origin |
 
 The pseudorange bound is the accepted domain of the CommonNEX absolute
 observation, not a rule for pseudorange differences, residuals, corrections,
@@ -289,7 +360,7 @@ Each observation column has its own quantity, unit, and domain. A nullable
 column does not weaken those constraints. Unmapped quantities require a typed
 semantic definition; never guess their meaning from magnitude or sign.
 
-Cross-field interpretation also matters: code and unit must agree, variance
+Cross-field interpretation also matters: code and unit must agree, uncertainty
 must refer to the correct observable, and canonical payload lengths must match
 their family definition. Record these rules directly in the relevant schemas.
 Scientific plausibility filters, such as elevation masks or a receiver's
@@ -307,7 +378,7 @@ stored with their quality flags; numeric validity is not scientific acceptance.
 
 ### GNSS identifiers
 
-Use RINEX system identifiers such as `G`, `E`, `C`, `J`, `I`, and `S`.
+Use the in-scope RINEX system identifiers `G`, `E`, `C`, `J`, and `S`.
 Represent a satellite as `satellite_system: string` and
 `satellite_number: uint16`, following the RINEX numbering rules for that system.
 The pair can be rendered as a RINEX satellite identifier, such as `G01`.
@@ -320,18 +391,29 @@ attribute such as `1C` may group related observables within a system; it is not
 a globally unique signal identifier. Do not invent a competing canonical
 signal-name vocabulary.
 
-Retain necessary source observation codes and UBX/SBF signal identifiers when
-mapping them to common identities. If there is no justified RINEX mapping,
-leave the common code null and retain a typed, namespaced source identity.
-Do not assign the nearest-looking RINEX code. Whether a processor accepts such
-records is an explicit capability decision.
+Importers map native satellite/signal identifiers to the common identity.
+Do not repeat UBX/SBF/RTCM identity structs on normal Observation rows.
+Unresolved or unsupported signal mappings exclude the affected observation
+with a diagnostic; never guess the nearest-looking code. Raw archives preserve
+native identifiers. RINEX 2 and its ambiguous legacy codes are out of scope.
 
 
 ## Normalization and processing boundary
 
-Apply source unit/time conventions and account for RINEX scale factors, phase
-shifts and already-applied clock corrections without applying them twice.
-Exact correction-sign and adapter mappings remain review items.
+Apply source unit/time conventions and decode RINEX scale factors into physical
+values; downstream consumers never reapply ASCII storage scaling. Preserve
+phase convention and already-applied correction metadata with explicit scope.
+Do not apply or undo receiver clock corrections during import: retain the
+source's consistent epoch/code/phase values and correction state. GPST time-scale
+normalization is not receiver clock-error removal. NAV-CLOCK and SBF PVT clock
+bias/drift remain telemetry; never use them to fill or correct raw observations.
+
+`clock_correction_state` contains `epoch_time`, `code`, and `phase`, each with
+`applied`, `not_applied`, or `unknown`. These describe application of the
+source-declared observation clock correction, not absence of residual clock
+error. Preserve a supplied observation offset without estimating a missing one.
+Exact source sign, phase-convention and correction-metadata scope mappings
+remain adapter review items.
 Import does not smooth, interpolate, repair slips, unwrap clocks or estimate
 missing observations. Inferred arcs and scientific corrections are outputs of
 processing facilities, not mutations of imported records.
@@ -342,7 +424,7 @@ transport completion; batch boundaries have no scientific meaning.
 Detailed event encodings remain a review item.
 
 See [current GPST policy](../time-policy.md) for implemented products; this
-draft's unsigned representation does not retroactively reinterpret them.
+draft's decimal representation does not retroactively reinterpret them.
 
 ## Reference
 

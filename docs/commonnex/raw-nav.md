@@ -8,8 +8,8 @@ Status: v0 design draft; not an implemented format or API.
 
 RawNav is a first-class record family in the core data model, with
 capability-dependent presence. It stores receiver-delivered navigation bits for all in-scope systems
-(GPS, Galileo, BeiDou, QZSS, NavIC, and SBAS), including navigation families that
-the current scientific processors cannot decode. The earlier GLONASS exclusion
+(GPS, Galileo, BeiDou, QZSS, and SBAS), including navigation families that
+the current scientific processors cannot decode. The GLONASS/NavIC exclusion
 still applies; the record structure itself is not tied to a constellation.
 A decoded ephemeris or correction record does not replace received raw bits.
 RawNav-only sources and datasets are valid without raw observations. They use
@@ -238,7 +238,7 @@ failed or unknown checks do not prevent general raw-bit preservation.
 
 RawNav timing is solely its NavigationEpoch association. It does not represent
 precise transmission or receiver arrival time. There is no RawNav time_role,
-time_reference, time_basis or independent gpst_ns field. `nav_epoch_id` is
+time_reference, time_basis or independent gpst field. `nav_epoch_id` is
 non-null and must resolve to valid GPST. Importers may buffer records while
 waiting for a justified anchor. If association remains unresolved at the bounded
 buffer limit or finalization, skip the record and count/report the exclusion.

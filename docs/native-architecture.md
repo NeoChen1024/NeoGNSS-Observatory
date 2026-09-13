@@ -86,9 +86,10 @@ serialization or a network transport.
 
 Use contiguous numeric columns and validity bitmaps for nullable fields.
 Variable-length binary/string fields use offsets and data buffers; fixed-size
-binary is appropriate for fixed-length family payloads. Preserve unsigned GPST
-integers, units, rational scales, identities and quality semantics. Integer GPST
-must not become Arrow UTC timestamps or pass through floating point.
+binary is appropriate for fixed-length family payloads. Preserve canonical
+GPST `decimal128(38,12)` seconds, units, rational scales, identities and quality
+semantics. Absolute GPST must not become Arrow UTC timestamps or pass through
+floating point.
 
 Validate incoming schema, lengths, offsets, nullability and supported types
 before native access. Account for sliced arrays and their offsets. Unsupported
@@ -153,6 +154,40 @@ full-archive scientific validity.
 SBF word layout follows the pinned RTKLIB-EX `src/rcv/septentrio.c`
 GEORaw decoder; field definitions come from pinned pysbf2.
 
+## Selected native GPST representation
+
+Design decision; the existing processing APIs and artifacts have not yet been
+converted. CommonNEX canonical timestamps use `DECIMAL(38,12)` seconds since
+1980-01-06 00:00:00 GPST. The native implementation will use a small `GpstTime`
+type backed by `boost::int128::int128` from `contrib/int128`. Its internal
+unscaled integer counts picoseconds: `1000000000000` ticks represents one
+second. A distinct `GpstDuration` represents signed time differences; timestamps
+and durations must not be accidentally interchangeable.
+
+Keep comparison, checked addition/subtraction, decimal input/output and
+round-half-to-even input quantization behind this thin interface. Preserve
+integer week/second contributions during conversion; never construct large
+absolute float64 seconds as an intermediate. Convert relative intervals to
+floating point only when a calculation needs it. Boost.Int128 provides integer
+arithmetic, not automatic overflow checking, GPST semantics or decimal scaling.
+Validate both signed-128 arithmetic limits and the narrower 38-digit decimal
+range; absolute GPST remains nonnegative. Validate input syntax and range before
+conversion rather than relying on wrapping integer arithmetic.
+
+nanoarrow supplies `ArrowSchemaSetTypeDecimal`, `ArrowDecimal`,
+`ArrowArrayAppendDecimal` and `ArrowArrayViewGetDecimalUnsafe` for exchange.
+Set the schema to `NANOARROW_TYPE_DECIMAL128`, precision 38, scale 12. Transfer
+the complete unscaled 128-bit value through an explicit byte/word adapter with
+defined sign and endianness handling. Do not reinterpret a Boost object as an
+Arrow buffer or use the int64-only `ArrowDecimalSetInt` for absolute epochs.
+Preserve array offsets, nullability and buffer ownership on replay. nanoarrow
+is not the arithmetic engine; no full Arrow C++ dependency is required.
+
+Boost types and native tick storage are implementation details, not CommonNEX
+requirements. Before integration, validate decimal round trips, negative
+durations, rounding/carry, range checks and native/PyArrow exchange using small
+representative inputs. This decision does not introduce a new executable backend.
+
 ## Build dependencies
 
 `contrib/pyubx2` and `contrib/pysbf2` supply build-time definitions and retain
@@ -167,3 +202,8 @@ Parquet dependency is introduced.
 `contrib/arrow-nanoarrow` retains its Apache-2.0 license. It is the selected
 interop helper dependency, currently vendored as a submodule but not yet linked
 by the build. Python retains Parquet I/O through PyArrow.
+
+`contrib/int128` supplies Boost.Int128 under BSL-1.0. It is header-only and
+requires no other Boost libraries. It is the selected native time-arithmetic
+dependency, pinned as a submodule but not yet linked by the build. Preserve its
+upstream license and keep its implementation details behind the time interface.
