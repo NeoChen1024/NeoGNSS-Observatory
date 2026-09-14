@@ -8,8 +8,7 @@
 #include <cstdio>
 #include <string>
 
-namespace UBX
-{
+namespace UBX {
 
 // Generated parser validity only covers frame identity, payload length and
 // structural decoding. These helpers apply application-level NAV semantics.

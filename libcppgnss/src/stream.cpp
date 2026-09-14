@@ -12,7 +12,8 @@ uint16_t sbf_crc(std::span<const uint8_t> bytes) {
     }
     return crc;
 }
-void StreamDecoder::feed(std::span<const uint8_t> data, const std::function<void(const FrameView &)> &emit) {
+void StreamDecoder::feed(std::span<const uint8_t> data,
+                         const std::function<void(const FrameView &)> &emit) {
     bytes += data.size();
     pending_.insert(pending_.end(), data.begin(), data.end());
     size_t pos = 0;
@@ -27,7 +28,8 @@ void StreamDecoder::feed(std::span<const uint8_t> data, const std::function<void
         }
         if (pending_.size() - pos < 8)
             break;
-        const size_t length = ubx ? 8u + p[4] + 256u * p[5] : p[6] + 256u * p[7];
+        const size_t length =
+            ubx ? 8u + p[4] + 256u * p[5] : p[6] + 256u * p[7];
         if (length < 8 || (!ubx && length % 4)) {
             ++pos;
             ++invalid;
@@ -59,7 +61,8 @@ void StreamDecoder::feed(std::span<const uint8_t> data, const std::function<void
             continue;
         }
         ++frames;
-        const uint16_t id = ubx ? (p[2] << 8) | p[3] : (p[4] + 256u * p[5]) & 0x1fff;
+        const uint16_t id =
+            ubx ? (p[2] << 8) | p[3] : (p[4] + 256u * p[5]) & 0x1fff;
         emit({detected, offset_ + pos, id, uint8_t(ubx ? 0 : p[5] >> 5), wire,
               wire.subspan(ubx ? 6 : 8, length - 8)});
         pos += length;
@@ -69,6 +72,7 @@ void StreamDecoder::feed(std::span<const uint8_t> data, const std::function<void
 }
 void StreamDecoder::finish() const {
     if (!pending_.empty())
-        throw std::runtime_error("Truncated protocol stream at byte " + std::to_string(offset_));
+        throw std::runtime_error("Truncated protocol stream at byte " +
+                                 std::to_string(offset_));
 }
 } // namespace cppgnss

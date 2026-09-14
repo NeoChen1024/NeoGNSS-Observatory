@@ -12,11 +12,13 @@ std::vector<uint8_t> archive_index(std::span<const uint8_t>);
 Json sbas_message(const cppgnss::SBAS::Result &);
 class DatasetScan {
   public:
-    DatasetScan(const std::string &protocol, bool qa = true, double gap_timeout = 50);
+    DatasetScan(const std::string &protocol, bool qa = true,
+                double gap_timeout = 50);
     ~DatasetScan();
     Json feed(std::span<const uint8_t>);
     Json finish();
     Json summary() const;
+
   private:
     struct State;
     std::unique_ptr<State> state_;
@@ -37,7 +39,8 @@ class SubframeProcessor {
 };
 class ClockProcessor {
   public:
-    ClockProcessor(double max_gap = 50, double tolerance = 50000, double temperature_max_age = 5,
+    ClockProcessor(double max_gap = 50, double tolerance = 50000,
+                   double temperature_max_age = 5,
                    const std::string &protocol = "ubx");
     ~ClockProcessor();
     Json feed(std::span<const uint8_t>, const std::string &source);
@@ -52,7 +55,8 @@ class ClockProcessor {
 };
 class GridProcessor {
   public:
-    GridProcessor(double correction_age = 600, double mask_age = 1200, double gap_timeout = 0);
+    GridProcessor(double correction_age = 600, double mask_age = 1200,
+                  double gap_timeout = 0);
     ~GridProcessor();
     // Rows contain gpst_ms, offset, and a decoded SBAS message. One signal
     // per instance; caller explicitly chooses continuous-group boundaries.

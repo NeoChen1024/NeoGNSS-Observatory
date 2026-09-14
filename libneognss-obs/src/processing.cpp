@@ -8,7 +8,9 @@ std::vector<uint8_t> archive_index(std::span<const uint8_t> bytes) {
     std::vector<uint8_t> out{'U', 'B', 'X', 'I', 'D', 'X', '0', '4'};
     unsigned char digest[32];
     unsigned length = 0;
-    if (EVP_Digest(bytes.data(), bytes.size(), digest, &length, EVP_sha256(), nullptr) != 1 || length != 32)
+    if (EVP_Digest(bytes.data(), bytes.size(), digest, &length, EVP_sha256(),
+                   nullptr) != 1 ||
+        length != 32)
         throw std::runtime_error("Archive SHA256 failed");
     out.insert(out.end(), digest, digest + 32);
     const auto append = [&]<class T>(T value) {
@@ -63,7 +65,8 @@ Json sbas_message(const cppgnss::SBAS::Result &result) {
                 c = {{"kind", "test_mode"}};
             else if constexpr (std::is_same_v<T, S::NullMessage>)
                 c = {{"kind", "null"}};
-            else if constexpr (std::is_same_v<T, S::PrnMask> || std::is_same_v<T, S::IonosphericMask>) {
+            else if constexpr (std::is_same_v<T, S::PrnMask> ||
+                               std::is_same_v<T, S::IonosphericMask>) {
                 c["active_mask_positions"] = Json::array();
                 for (size_t i = 0; i < v.mask.size(); ++i)
                     if (v.mask[i])
@@ -88,9 +91,11 @@ Json sbas_message(const cppgnss::SBAS::Result &result) {
                          {"delay_raw", e.delay_raw},
                          {"givei", e.givei},
                          {"delay_m", e.delay_m() ? Json(*e.delay_m()) : Json()},
-                         {"status", e.status() == S::IgpStatus::usable          ? "usable"
-                                    : e.status() == S::IgpStatus::not_monitored ? "not_monitored"
-                                                                                : "do_not_use"}});
+                         {"status", e.status() == S::IgpStatus::usable
+                                        ? "usable"
+                                    : e.status() == S::IgpStatus::not_monitored
+                                        ? "not_monitored"
+                                        : "do_not_use"}});
                 }
             } else if constexpr (std::is_same_v<T, S::FastCorrections>) {
                 c = {{"kind", "fast_corrections"},
@@ -100,9 +105,13 @@ Json sbas_message(const cppgnss::SBAS::Result &result) {
                      {"satellites", Json::array()}};
                 for (const auto &e : v.satellites)
                     c["satellites"].push_back(
-                        {{"correction_raw", e.correction_raw}, {"correction_m", e.correction_m()}, {"udrei", e.udrei}});
+                        {{"correction_raw", e.correction_raw},
+                         {"correction_m", e.correction_m()},
+                         {"udrei", e.udrei}});
             } else if constexpr (std::is_same_v<T, S::Integrity>)
-                c = {{"kind", "integrity"}, {"iodf", v.iodf}, {"udrei", v.udrei}};
+                c = {{"kind", "integrity"},
+                     {"iodf", v.iodf},
+                     {"udrei", v.udrei}};
             else if constexpr (std::is_same_v<T, S::FastDegradation>)
                 c = {{"kind", "fast_degradation"},
                      {"iodp", v.iodp},
@@ -128,7 +137,8 @@ Json SubframeProcessor::feed(std::span<const uint8_t> data) {
     reader_.feed(data, [&](const cppgnss::FrameView &f) {
         if (f.id != 0x0213)
             return;
-        if (sbas_only_ && f.payload.size() >= 8 && f.payload[6] == 2 && f.payload[0] != 1)
+        if (sbas_only_ && f.payload.size() >= 8 && f.payload[6] == 2 &&
+            f.payload[0] != 1)
             return;
         auto parsed = UBX::parse_subframe(UBX::ubx_frame(f.wire.subspan(2)));
         if (!parsed.subframe) {
@@ -137,15 +147,21 @@ Json SubframeProcessor::feed(std::span<const uint8_t> data) {
         }
         const auto &s = *parsed.subframe;
         ++counts_[s.signal];
-        Json row = {{"offset", f.offset},     {"gnssId", s.signal.gnssId},
-                    {"svId", s.signal.svId},  {"sigId", s.signal.sigId},
-                    {"freqId", s.raw_freqId}, {"chn", s.chn},
-                    {"version", s.version},   {"reserved0", s.reserved0},
-                    {"words", s.words},       {"prn", s.signal.prn() ? Json(*s.signal.prn()) : Json()}};
+        Json row = {{"offset", f.offset},
+                    {"gnssId", s.signal.gnssId},
+                    {"svId", s.signal.svId},
+                    {"sigId", s.signal.sigId},
+                    {"freqId", s.raw_freqId},
+                    {"chn", s.chn},
+                    {"version", s.version},
+                    {"reserved0", s.reserved0},
+                    {"words", s.words},
+                    {"prn", s.signal.prn() ? Json(*s.signal.prn()) : Json()}};
         if (s.signal.gnssId == 1) {
             auto result = UBX::parse_sbas(s);
             ++statuses_[cppgnss::SBAS::status_name(result.status)];
-            if (result.message && result.message->crc_valid && result.message->preamble_valid)
+            if (result.message && result.message->crc_valid &&
+                result.message->preamble_valid)
                 ++types_[std::to_string(result.message->type)];
             row["sbas"] = sbas_message(result);
         }
@@ -160,8 +176,11 @@ Json SubframeProcessor::finish() {
 Json SubframeProcessor::summary() const {
     Json streams = Json::array();
     for (auto &[k, n] : counts_)
-        streams.push_back(
-            {{"gnssId", k.gnssId}, {"svId", k.svId}, {"sigId", k.sigId}, {"freqId", k.freqId}, {"frames", n}});
+        streams.push_back({{"gnssId", k.gnssId},
+                           {"svId", k.svId},
+                           {"sigId", k.sigId},
+                           {"freqId", k.freqId},
+                           {"frames", n}});
     return {{"status", "complete"},
             {"source_bytes", reader_.bytes},
             {"ubx_frames", reader_.frames},

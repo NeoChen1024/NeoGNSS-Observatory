@@ -13,11 +13,12 @@
 namespace cppgnss::SBAS {
 // Offsets are zero-based, most-significant-bit first, in the over-air message.
 class BitView {
-public:
+  public:
     BitView(std::span<const uint8_t> bytes, size_t bit_count);
     uint64_t unsigned_at(size_t offset, size_t width) const;
     int64_t signed_at(size_t offset, size_t width) const;
-private:
+
+  private:
     std::span<const uint8_t> bytes_;
     size_t bit_count_;
 };
@@ -62,11 +63,13 @@ struct IonosphericCorrection {
     uint16_t delay_raw = 0;
     uint8_t givei = 0;
     IgpStatus status() const {
-        return delay_raw == 511 ? IgpStatus::do_not_use :
-               givei == 15 ? IgpStatus::not_monitored : IgpStatus::usable;
+        return delay_raw == 511 ? IgpStatus::do_not_use
+               : givei == 15    ? IgpStatus::not_monitored
+                                : IgpStatus::usable;
     }
     std::optional<double> delay_m() const {
-        return delay_raw == 511 ? std::nullopt : std::optional<double>{delay_raw * 0.125};
+        return delay_raw == 511 ? std::nullopt
+                                : std::optional<double>{delay_raw * 0.125};
     }
 };
 struct IonosphericDelay {
@@ -75,18 +78,26 @@ struct IonosphericDelay {
     std::array<IonosphericCorrection, 15> corrections{};
 };
 using Content = std::variant<std::monostate, TestMode, NullMessage, PrnMask,
-    FastCorrections, Integrity, FastDegradation, GeoNavigation, IonosphericMask, IonosphericDelay>;
+                             FastCorrections, Integrity, FastDegradation,
+                             GeoNavigation, IonosphericMask, IonosphericDelay>;
 struct Message {
-    std::optional<uint32_t> trailing_word; // Observed nine-word receiver variant.
-    std::array<uint8_t, 32> bytes{}; // 250 over-air bits; bottom 6 bits cleared.
+    std::optional<uint32_t>
+        trailing_word; // Observed nine-word receiver variant.
+    std::array<uint8_t, 32>
+        bytes{}; // 250 over-air bits; bottom 6 bits cleared.
     uint8_t padding_bits = 0, preamble = 0, type = 0;
     uint32_t received_crc = 0, computed_crc = 0;
     bool preamble_valid = false, crc_valid = false;
     Content content;
 };
 enum class Status {
-    decoded, unsupported_signal, invalid_word_count, invalid_preamble,
-    invalid_crc, unsupported_message, invalid_content
+    decoded,
+    unsupported_signal,
+    invalid_word_count,
+    invalid_preamble,
+    invalid_crc,
+    unsupported_message,
+    invalid_content
 };
 struct Result {
     Status status;
@@ -94,6 +105,7 @@ struct Result {
 };
 // Receiver-independent 250-bit SBAS L1 message in 32 MSB-first bytes.
 Result parse_l1(std::span<const uint8_t> bytes);
-std::optional<std::pair<int,int>> igp_coordinate(unsigned band, unsigned mask_bit);
+std::optional<std::pair<int, int>> igp_coordinate(unsigned band,
+                                                  unsigned mask_bit);
 const char *status_name(Status status);
-}
+} // namespace cppgnss::SBAS

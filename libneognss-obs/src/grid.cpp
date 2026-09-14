@@ -32,21 +32,23 @@ struct GridProcessor::State {
     void flush_cell(Key key, Cell &c, int64_t time) {
         const auto end = std::min({time, c.expiry, deadline()});
         if (end > c.start) {
-            auto coordinate = cppgnss::SBAS::igp_coordinate(key.first, key.second);
+            auto coordinate =
+                cppgnss::SBAS::igp_coordinate(key.first, key.second);
             if (!coordinate)
                 throw std::runtime_error("Invalid IGP coordinate");
             const double delay = c.delay * 0.125;
-            rows.push_back({{"start_gpst_ms", c.start},
-                            {"end_gpst_ms", end},
-                            {"band", key.first},
-                            {"mask_bit", key.second},
-                            {"latitude", coordinate->first},
-                            {"longitude", coordinate->second},
-                            {"delay_m", delay},
-                            {"vtec_tecu", delay * (1575.42e6 * 1575.42e6 / (40.3 * 1e16))},
-                            {"iodi", c.iodi},
-                            {"givei", c.givei},
-                            {"frame_offset", c.offset}});
+            rows.push_back(
+                {{"start_gpst_ms", c.start},
+                 {"end_gpst_ms", end},
+                 {"band", key.first},
+                 {"mask_bit", key.second},
+                 {"latitude", coordinate->first},
+                 {"longitude", coordinate->second},
+                 {"delay_m", delay},
+                 {"vtec_tecu", delay * (1575.42e6 * 1575.42e6 / (40.3 * 1e16))},
+                 {"iodi", c.iodi},
+                 {"givei", c.givei},
+                 {"frame_offset", c.offset}});
         }
         c.start = time;
     }
@@ -83,13 +85,17 @@ struct GridProcessor::State {
             ++diagnostics["test_mode_reset"];
         } else if (type == 18) {
             flush(time);
-            const int new_count = content.at("number_of_bands_raw"), band = content.at("band"),
-                      new_iodi = content.at("iodi");
-            auto positions = content.at("active_mask_positions").get<std::vector<int>>();
-            bool valid = new_count >= 1 && new_count <= 11 &&
-                         std::set<int>(positions.begin(), positions.end()).size() == positions.size();
+            const int new_count = content.at("number_of_bands_raw"),
+                      band = content.at("band"), new_iodi = content.at("iodi");
+            auto positions =
+                content.at("active_mask_positions").get<std::vector<int>>();
+            bool valid =
+                new_count >= 1 && new_count <= 11 &&
+                std::set<int>(positions.begin(), positions.end()).size() ==
+                    positions.size();
             for (auto p : positions)
-                valid = valid && cppgnss::SBAS::igp_coordinate(band, p).has_value();
+                valid =
+                    valid && cppgnss::SBAS::igp_coordinate(band, p).has_value();
             if (!valid) {
                 reset(time);
                 ++diagnostics["invalid_mask"];
@@ -117,7 +123,8 @@ struct GridProcessor::State {
             masks[band] = {std::move(positions), time};
         } else if (type == 26) {
             const int band = content.at("band"), block = content.at("block");
-            if (content.at("iodi") != iodi || !masks.contains(band) || deadline() <= time) {
+            if (content.at("iodi") != iodi || !masks.contains(band) ||
+                deadline() <= time) {
                 ++diagnostics["correction_without_current_complete_mask"];
                 return;
             }
@@ -132,13 +139,16 @@ struct GridProcessor::State {
                     flush_cell(key, cells.at(key), time);
                     cells.erase(key);
                 }
-                const int delay = correction.at("delay_raw"), givei = correction.at("givei");
+                const int delay = correction.at("delay_raw"),
+                          givei = correction.at("givei");
                 const std::string status = correction.at("status");
                 if (status != "usable" || delay == 511 || givei == 15) {
                     ++diagnostics[status];
                     continue;
                 }
-                cells[key] = {time, time + correction_age, delay, givei, iodi, row.at("offset").get<uint64_t>()};
+                cells[key] = {time,  time + correction_age,
+                              delay, givei,
+                              iodi,  row.at("offset").get<uint64_t>()};
             }
         }
     }
@@ -148,9 +158,12 @@ struct GridProcessor::State {
         return out;
     }
 };
-GridProcessor::GridProcessor(double correction_age, double mask_age, double gap_timeout) : state_(std::make_unique<State>()) {
-    if (!std::isfinite(correction_age) || !std::isfinite(mask_age) || !std::isfinite(gap_timeout) ||
-        correction_age <= 0 || mask_age <= 0 || gap_timeout < 0)
+GridProcessor::GridProcessor(double correction_age, double mask_age,
+                             double gap_timeout)
+    : state_(std::make_unique<State>()) {
+    if (!std::isfinite(correction_age) || !std::isfinite(mask_age) ||
+        !std::isfinite(gap_timeout) || correction_age <= 0 || mask_age <= 0 ||
+        gap_timeout < 0)
         throw std::invalid_argument("Invalid SBAS aging policy");
     state_->correction_age = std::llround(correction_age * 1000);
     state_->mask_age = std::llround(mask_age * 1000);
@@ -173,13 +186,17 @@ Json GridProcessor::process_frames(const Json &rows) {
     for (const auto &row : rows) {
         const auto &bytes = row.at("frame").get_binary();
         if (bytes.size() != 32 || (bytes.back() & 63))
-            throw std::runtime_error("Expected canonical 250-bit SBAS frame with zero padding");
+            throw std::runtime_error(
+                "Expected canonical 250-bit SBAS frame with zero padding");
         auto message = sbas_message(cppgnss::SBAS::parse_l1(bytes));
-        if (message.value("crc_valid", false) != row.at("crc_valid").get<bool>())
+        if (message.value("crc_valid", false) !=
+            row.at("crc_valid").get<bool>())
             throw std::runtime_error("SBAS frame CRC metadata mismatch");
         if (!row.at("accepted").is_null() && !row.at("accepted").get<bool>())
             message["status"] = "receiver_rejected";
-        state_->accept({{"gpst_ms", row.at("gpst_ms")}, {"offset", row.at("frame_id")}, {"sbas", message}});
+        state_->accept({{"gpst_ms", row.at("gpst_ms")},
+                        {"offset", row.at("frame_id")},
+                        {"sbas", message}});
     }
     return state_->drain();
 }

@@ -16,7 +16,9 @@ template <class T> T read(std::span<const uint8_t> p, size_t offset = 0) {
     std::memcpy(&v, p.data() + offset, sizeof v);
     return UBX::little_to_native(v);
 }
-Json optional_time(const std::optional<int64_t> &v) { return v ? Json(*v) : Json(); }
+Json optional_time(const std::optional<int64_t> &v) {
+    return v ? Json(*v) : Json();
+}
 } // namespace
 struct ClockProcessor::State {
     struct Record {
@@ -44,9 +46,12 @@ struct ClockProcessor::State {
         double mean = 0, m2 = 0;
     };
     std::map<int, Bin> bins;
-    Json samples = Json::array(), events = Json::array(), telemetry = Json::array(), pps = Json::array();
+    Json samples = Json::array(), events = Json::array(),
+         telemetry = Json::array(), pps = Json::array();
     Json drain() {
-        Json out = {{"samples", Json::array()}, {"events", Json::array()}, {"telemetry", Json::array()}};
+        Json out = {{"samples", Json::array()},
+                    {"events", Json::array()},
+                    {"telemetry", Json::array()}};
         out["samples"].swap(samples);
         out["events"].swap(events);
         out["telemetry"].swap(telemetry);
@@ -58,7 +63,8 @@ struct ClockProcessor::State {
     }
     void accept(const cppgnss::FrameView &f) {
         if (protocol == cppgnss::Protocol::sbf) {
-            if (f.id != 4007 && f.id != 4014 && f.id != 4027 && f.id != 5911 && f.id != 5914)
+            if (f.id != 4007 && f.id != 4014 && f.id != 4027 && f.id != 5911 &&
+                f.id != 5914)
                 return;
             auto t = read<uint32_t>(f.payload);
             auto w = read<uint16_t>(f.payload, 4);
@@ -70,9 +76,14 @@ struct ClockProcessor::State {
             if (tow && stamp != *tow)
                 finish_epoch();
             tow = stamp;
-            epoch.push_back({source, f.offset, f.id, {f.payload.begin(), f.payload.end()}, f.revision});
+            epoch.push_back({source,
+                             f.offset,
+                             f.id,
+                             {f.payload.begin(), f.payload.end()},
+                             f.revision});
             if (epoch.size() > 4096)
-                throw std::runtime_error("Too many SBF telemetry blocks in epoch");
+                throw std::runtime_error(
+                    "Too many SBF telemetry blocks in epoch");
             return;
         }
         if (f.id == 0x0120 && f.payload.size() == 16 && (f.payload[11] & 4))
@@ -81,17 +92,24 @@ struct ClockProcessor::State {
             tim_tp(f);
             return;
         }
-        if (f.id != 0x0120 && f.id != 0x0122 && f.id != 0x0161 && f.id != 0x0a39 && f.id != 0x0215)
+        if (f.id != 0x0120 && f.id != 0x0122 && f.id != 0x0161 &&
+            f.id != 0x0a39 && f.id != 0x0215)
             return;
         auto p = f.payload;
-        size_t expected = f.id == 0x0120 ? 16 : f.id == 0x0122 ? 20 : f.id == 0x0161 ? 4 : f.id == 0x0a39 ? 24 : 0;
+        size_t expected = f.id == 0x0120   ? 16
+                          : f.id == 0x0122 ? 20
+                          : f.id == 0x0161 ? 4
+                          : f.id == 0x0a39 ? 24
+                                           : 0;
         if (expected && p.size() != expected)
-            throw std::runtime_error("Invalid telemetry payload length at " + source + ":" + std::to_string(f.offset));
+            throw std::runtime_error("Invalid telemetry payload length at " +
+                                     source + ":" + std::to_string(f.offset));
         std::optional<int64_t> next_tow;
         if ((f.id >> 8) == 1) {
             const auto t = read<uint32_t>(p);
             if (t > 604800000)
-                throw std::runtime_error("Invalid iTOW=" + std::to_string(t) + " at " + source + ":" +
+                throw std::runtime_error("Invalid iTOW=" + std::to_string(t) +
+                                         " at " + source + ":" +
                                          std::to_string(f.offset));
             next_tow = ((int64_t(t) + 500) / 1000 * 1000) % 604800000;
         } else if (f.id == 0x0215) {
@@ -101,7 +119,8 @@ struct ClockProcessor::State {
             if (p[11]) {
                 if (!std::isfinite(seconds) || seconds < 0 || seconds >= 604800)
                     throw std::runtime_error("Invalid RAWX rcvTow");
-                next_tow = (int64_t(std::floor(seconds + 0.5)) * 1000) % 604800000;
+                next_tow =
+                    (int64_t(std::floor(seconds + 0.5)) * 1000) % 604800000;
             }
             p = p.first(16);
         } else if (p[0] != 1)
@@ -112,7 +131,8 @@ struct ClockProcessor::State {
             tow = next_tow;
         epoch.push_back({source, f.offset, f.id, {p.begin(), p.end()}});
         if (epoch.size() > 4096)
-            throw std::runtime_error("Too many telemetry messages without an epoch boundary");
+            throw std::runtime_error(
+                "Too many telemetry messages without an epoch boundary");
         if (f.id == 0x0161)
             finish_epoch();
     }
@@ -136,7 +156,9 @@ struct ClockProcessor::State {
             if (r.id == 0x0120 && (p[11] & 3) == 3) {
                 const auto week = read<int16_t>(p, 8);
                 if (week >= 0) {
-                    anchors.insert(week * week_ns + ((int64_t(read<uint32_t>(p)) + 500) / 1000) * 1000000000);
+                    anchors.insert(week * week_ns +
+                                   ((int64_t(read<uint32_t>(p)) + 500) / 1000) *
+                                       1000000000);
                     ftow = read<int32_t>(p, 4);
                     basis = "NAV-TIMEGPS_nominal_iTOW";
                 }
@@ -146,7 +168,8 @@ struct ClockProcessor::State {
                     continue;
                 }
                 anchors.insert(read<uint16_t>(p, 8) * week_ns +
-                               int64_t(std::floor(read<double>(p) + 0.5)) * 1000000000);
+                               int64_t(std::floor(read<double>(p) + 0.5)) *
+                                   1000000000);
                 rawx_reset = bool(p[12] & 2) || rawx_reset.value_or(false);
                 if (basis.empty())
                     basis = "RXM-RAWX_nearest_second";
@@ -156,9 +179,11 @@ struct ClockProcessor::State {
                 monitors.push_back(&r);
         }
         if (anchors.size() > 1)
-            throw std::runtime_error("Conflicting GPST anchors in telemetry epoch");
+            throw std::runtime_error(
+                "Conflicting GPST anchors in telemetry epoch");
         if (clocks.size() > 1)
-            throw std::runtime_error("Multiple NAV-CLOCK messages in one epoch");
+            throw std::runtime_error(
+                "Multiple NAV-CLOCK messages in one epoch");
         std::optional<int64_t> gpst;
         if (!anchors.empty())
             gpst = *anchors.begin();
@@ -184,10 +209,11 @@ struct ClockProcessor::State {
                                   {"receiver_session_id", session}});
             }
             uptime = runtime;
-            temperature = {{"temperature_c", double(read<int8_t>(r->payload, 18))},
-                           {"temperature_reference_gpst_ns", optional_time(gpst)},
-                           {"temperature_source", r->source},
-                           {"temperature_source_offset", r->offset}};
+            temperature = {
+                {"temperature_c", double(read<int8_t>(r->payload, 18))},
+                {"temperature_reference_gpst_ns", optional_time(gpst)},
+                {"temperature_source", r->source},
+                {"temperature_source_offset", r->offset}};
             Json t = {{"kind", "MON-SYS"},
                       {"association", "stream_epoch_not_measurement_time"},
                       {"gpst_ns", optional_time(gpst)},
@@ -205,26 +231,32 @@ struct ClockProcessor::State {
         const auto &p = r.payload;
         const auto itow = read<uint32_t>(p);
         const auto bias = read<int32_t>(p, 4), drift = read<int32_t>(p, 8);
-        Json row = {{"gpst_ns", optional_time(gpst)},
-                    {"iTOW_ms", itow},
-                    {"clock_bias_ns", bias},
-                    {"clock_drift_ns_s", drift},
-                    {"time_accuracy_ns", read<uint32_t>(p, 12)},
-                    {"frequency_accuracy_ps_s", read<uint32_t>(p, 16)},
-                    {"source", r.source},
-                    {"source_offset", r.offset},
-                    {"receiver_session_id", session},
-                    {"runtime_s", optional_time(uptime)},
-                    {"rawx_clock_reset", rawx_reset ? Json(*rawx_reset) : Json()},
-                    {"timegps_fTOW_ns", optional_time(ftow)},
-                    {"time_basis", basis.empty() ? Json() : Json(basis)},
-                    {"temperature_association", "unavailable"}};
-        if (!temperature.is_null() && gpst && !temperature.at("temperature_reference_gpst_ns").is_null()) {
-            const double age = (*gpst - temperature.at("temperature_reference_gpst_ns").get<int64_t>()) / 1e9;
+        Json row = {
+            {"gpst_ns", optional_time(gpst)},
+            {"iTOW_ms", itow},
+            {"clock_bias_ns", bias},
+            {"clock_drift_ns_s", drift},
+            {"time_accuracy_ns", read<uint32_t>(p, 12)},
+            {"frequency_accuracy_ps_s", read<uint32_t>(p, 16)},
+            {"source", r.source},
+            {"source_offset", r.offset},
+            {"receiver_session_id", session},
+            {"runtime_s", optional_time(uptime)},
+            {"rawx_clock_reset", rawx_reset ? Json(*rawx_reset) : Json()},
+            {"timegps_fTOW_ns", optional_time(ftow)},
+            {"time_basis", basis.empty() ? Json() : Json(basis)},
+            {"temperature_association", "unavailable"}};
+        if (!temperature.is_null() && gpst &&
+            !temperature.at("temperature_reference_gpst_ns").is_null()) {
+            const double age =
+                (*gpst - temperature.at("temperature_reference_gpst_ns")
+                             .get<int64_t>()) /
+                1e9;
             if (age >= 0 && age <= temp_age) {
                 row.update(temperature);
                 row["temperature_age_s"] = age;
-                row["temperature_association"] = "stream_epoch_not_measurement_time";
+                row["temperature_association"] =
+                    "stream_epoch_not_measurement_time";
             }
         }
         process_row(std::move(row), gpst, !monitors.empty(), rawx_reset);
@@ -239,28 +271,31 @@ struct ClockProcessor::State {
         const bool utc = flags & 1;
         const bool valid = !(flags & 16);
         std::optional<int64_t> pulse;
-        if (ms < 604800000 && ((!utc && (ref & 15) == 0) || (utc && (flags & 2) && leap_seconds))) {
+        if (ms < 604800000 && ((!utc && (ref & 15) == 0) ||
+                               (utc && (flags & 2) && leap_seconds))) {
             pulse = int64_t(week) * week_ns + int64_t(ms) * 1000000 +
                     int64_t(std::llround(double(sub) * 1000000 / 4294967296.0));
             if (utc)
                 *pulse += int64_t(*leap_seconds) * 1000000000;
         }
-        pps.push_back({{"gpst_ns", optional_time(pulse)},
-                       {"message", "TIM-TP"},
-                       {"time_association", "next_pulse"},
-                       {"reference_time_scale", utc               ? "UTC"
-                                                : (ref & 15) == 0 ? "GPST"
-                                                                  : "other_GNSS"},
-                       {"reference_id", ref & 15},
-                       {"utc_standard", ref >> 4},
-                       {"native_week", week},
-                       {"native_tow_ms", ms},
-                       {"native_tow_sub_ms", sub},
-                       {"quantization_error_ns", valid ? Json(read<int32_t>(p, 8) * .001) : Json()},
-                       {"quantization_error_valid", valid},
-                       {"raim", (flags >> 2) & 3},
-                       {"source", source},
-                       {"source_offset", f.offset}});
+        pps.push_back(
+            {{"gpst_ns", optional_time(pulse)},
+             {"message", "TIM-TP"},
+             {"time_association", "next_pulse"},
+             {"reference_time_scale", utc               ? "UTC"
+                                      : (ref & 15) == 0 ? "GPST"
+                                                        : "other_GNSS"},
+             {"reference_id", ref & 15},
+             {"utc_standard", ref >> 4},
+             {"native_week", week},
+             {"native_tow_ms", ms},
+             {"native_tow_sub_ms", sub},
+             {"quantization_error_ns",
+              valid ? Json(read<int32_t>(p, 8) * .001) : Json()},
+             {"quantization_error_valid", valid},
+             {"raim", (flags >> 2) & 3},
+             {"source", source},
+             {"source_offset", f.offset}});
         ++counts["pps_messages"];
         if (!valid)
             ++counts["pps_error_unavailable"];
@@ -277,14 +312,16 @@ struct ClockProcessor::State {
         Json clock;
         for (const auto &r : records) {
             if (r.id == 4027) {
-                // Fixed MeasEpoch header; observation sub-blocks are irrelevant here.
+                // Fixed MeasEpoch header; observation sub-blocks are irrelevant
+                // here.
                 if (r.payload.size() < 12)
                     throw std::runtime_error("Short MeasEpoch header");
                 if (r.revision >= 1)
                     cumulative = r.payload[10];
                 continue;
             }
-            const auto block = cppgnss::SBF::decode(r.id, r.revision, r.payload);
+            const auto block =
+                cppgnss::SBF::decode(r.id, r.revision, r.payload);
             if (block.status != cppgnss::SBF::Status::decoded) {
                 ++counts["invalid_sbf_payloads"];
                 continue;
@@ -292,10 +329,12 @@ struct ClockProcessor::State {
             auto number = [&](const char *name) -> double {
                 return std::visit(
                     [](const auto &v) -> double {
-                        if constexpr (std::is_arithmetic_v<std::decay_t<decltype(v)>>)
+                        if constexpr (std::is_arithmetic_v<
+                                          std::decay_t<decltype(v)>>)
                             return double(v);
                         else
-                            throw std::runtime_error("Non-numeric SBF telemetry field");
+                            throw std::runtime_error(
+                                "Non-numeric SBF telemetry field");
                     },
                     block.fields.at(name));
             };
@@ -315,15 +354,19 @@ struct ClockProcessor::State {
                 }
                 uptime = runtime;
                 const int temp = number("Temperature");
-                temperature = {{"temperature_c", temp ? Json(temp - 100.0) : Json()},
-                               {"temperature_reference_gpst_ns", optional_time(gpst)},
-                               {"temperature_source", r.source},
-                               {"temperature_source_offset", r.offset}};
+                temperature = {
+                    {"temperature_c", temp ? Json(temp - 100.0) : Json()},
+                    {"temperature_reference_gpst_ns", optional_time(gpst)},
+                    {"temperature_source", r.source},
+                    {"temperature_source_offset", r.offset}};
                 fresh = true;
-                Json t = {
-                    {"kind", "ReceiverStatus"},       {"gpst_ns", optional_time(gpst)},        {"runtime_s", runtime},
-                    {"receiver_session_id", session}, {"fine_time", bool(number("FineTime"))}, {"source", r.source},
-                    {"source_offset", r.offset}};
+                Json t = {{"kind", "ReceiverStatus"},
+                          {"gpst_ns", optional_time(gpst)},
+                          {"runtime_s", runtime},
+                          {"receiver_session_id", session},
+                          {"fine_time", bool(number("FineTime"))},
+                          {"source", r.source},
+                          {"source_offset", r.offset}};
                 t.update(temperature);
                 telemetry.push_back(t);
                 ++counts["receiver_status_messages"];
@@ -331,31 +374,35 @@ struct ClockProcessor::State {
                 const auto offset = number("Offset");
                 const bool valid = std::isfinite(offset) && offset != -2e10;
                 const int scale = number("TimeScale");
-                pps.push_back({{"gpst_ns", optional_time(gpst)},
-                               {"message", "xPPSOffset"},
-                               {"time_association", "sbf_pulse_timestamp"},
-                               {"reference_time_scale", scale == 2   ? "UTC"
-                                                        : scale == 3 ? "receiver"
-                                                        : scale == 4 ? "GLONASS"
-                                                                     : "configured_GNSS"},
-                               {"reference_id", scale},
-                               {"sync_age_s", number("SyncAge")},
-                               {"quantization_error_ns", valid ? Json(offset) : Json()},
-                               {"quantization_error_valid", valid},
-                               {"source", r.source},
-                               {"source_offset", r.offset}});
+                pps.push_back(
+                    {{"gpst_ns", optional_time(gpst)},
+                     {"message", "xPPSOffset"},
+                     {"time_association", "sbf_pulse_timestamp"},
+                     {"reference_time_scale", scale == 2   ? "UTC"
+                                              : scale == 3 ? "receiver"
+                                              : scale == 4 ? "GLONASS"
+                                                           : "configured_GNSS"},
+                     {"reference_id", scale},
+                     {"sync_age_s", number("SyncAge")},
+                     {"quantization_error_ns", valid ? Json(offset) : Json()},
+                     {"quantization_error_valid", valid},
+                     {"source", r.source},
+                     {"source_offset", r.offset}});
                 ++counts["pps_messages"];
                 if (!valid)
                     ++counts["pps_error_unavailable"];
             } else if (r.id == 4007) {
-                const auto bias = number("RxClkBias"), drift = number("RxClkDrift");
-                if (number("Error") || number("TimeSystem") != 0 || !std::isfinite(bias) || !std::isfinite(drift) ||
+                const auto bias = number("RxClkBias"),
+                           drift = number("RxClkDrift");
+                if (number("Error") || number("TimeSystem") != 0 ||
+                    !std::isfinite(bias) || !std::isfinite(drift) ||
                     bias == -2e10 || drift == -2e10) {
                     ++counts["invalid_sbf_clock_samples"];
                     continue;
                 }
                 if (!clock.is_null())
-                    throw std::runtime_error("Multiple PVTGeodetic blocks in clock epoch");
+                    throw std::runtime_error(
+                        "Multiple PVTGeodetic blocks in clock epoch");
                 clock = {{"gpst_ns", optional_time(gpst)},
                          {"iTOW_ms", read<uint32_t>(r.payload)},
                          {"clock_bias_ns", bias * 1e6},
@@ -370,20 +417,29 @@ struct ClockProcessor::State {
             return;
         clock["receiver_session_id"] = session;
         clock["runtime_s"] = optional_time(uptime);
-        clock["cumulative_clock_jumps_ms"] = cumulative ? Json(*cumulative) : Json();
-        if (!temperature.is_null() && gpst && !temperature.at("temperature_reference_gpst_ns").is_null()) {
-            double age = (*gpst - temperature.at("temperature_reference_gpst_ns").get<int64_t>()) / 1e9;
+        clock["cumulative_clock_jumps_ms"] =
+            cumulative ? Json(*cumulative) : Json();
+        if (!temperature.is_null() && gpst &&
+            !temperature.at("temperature_reference_gpst_ns").is_null()) {
+            double age =
+                (*gpst - temperature.at("temperature_reference_gpst_ns")
+                             .get<int64_t>()) /
+                1e9;
             if (age >= 0 && age <= temp_age) {
                 clock.update(temperature);
                 clock["temperature_age_s"] = age;
-                clock["temperature_association"] = "SBF_ReceiverStatus_timestamp";
+                clock["temperature_association"] =
+                    "SBF_ReceiverStatus_timestamp";
             }
         }
         process_row(std::move(clock), gpst, fresh, {}, cumulative);
     }
-    void process_row(Json row, std::optional<int64_t> gpst, bool fresh_temperature, std::optional<bool> rawx_reset = {},
+    void process_row(Json row, std::optional<int64_t> gpst,
+                     bool fresh_temperature,
+                     std::optional<bool> rawx_reset = {},
                      std::optional<int> cumulative = {}) {
-        const double bias = row.at("clock_bias_ns"), drift = row.at("clock_drift_ns_s");
+        const double bias = row.at("clock_bias_ns"),
+                     drift = row.at("clock_drift_ns_s");
         std::string reason = "arc_start";
         if (!gpst) {
             previous = nullptr;
@@ -392,7 +448,9 @@ struct ClockProcessor::State {
             ++counts["unassigned_samples"];
         } else {
             bool valid = !previous.is_null();
-            double dt = valid ? (*gpst - previous.at("gpst_ns").get<int64_t>()) / 1e9 : 0;
+            double dt =
+                valid ? (*gpst - previous.at("gpst_ns").get<int64_t>()) / 1e9
+                      : 0;
             if (valid && dt <= 0)
                 throw std::runtime_error("Non-increasing receiver-clock GPST");
             if (valid && dt > max_gap) {
@@ -410,39 +468,50 @@ struct ClockProcessor::State {
                 }
             }
             if (valid) {
-                const double jump = bias - previous.at("clock_bias_ns").get<double>() -
-                                    previous.at("clock_drift_ns_s").get<double>() * dt;
-                const bool counted = cumulative && previous.contains("cumulative_clock_jumps_ms") &&
-                                     !previous.at("cumulative_clock_jumps_ms").is_null();
+                const double jump =
+                    bias - previous.at("clock_bias_ns").get<double>() -
+                    previous.at("clock_drift_ns_s").get<double>() * dt;
+                const bool counted =
+                    cumulative &&
+                    previous.contains("cumulative_clock_jumps_ms") &&
+                    !previous.at("cumulative_clock_jumps_ms").is_null();
                 const auto milliseconds =
-                    counted
-                        ? int64_t((*cumulative - previous.at("cumulative_clock_jumps_ms").get<int>() + 384) % 256 - 128)
-                        : int64_t(std::nearbyint(jump / 1e6));
+                    counted ? int64_t((*cumulative -
+                                       previous.at("cumulative_clock_jumps_ms")
+                                           .get<int>() +
+                                       384) %
+                                          256 -
+                                      128)
+                            : int64_t(std::nearbyint(jump / 1e6));
                 const int64_t correction = milliseconds * 1000000;
                 if (milliseconds && std::abs(jump - correction) <= tolerance) {
                     adjustment += correction;
-                    reason = counted                      ? "sbf_counted_adjustment"
-                             : rawx_reset.value_or(false) ? "rawx_confirmed_adjustment"
-                                                          : "bias_inferred_adjustment";
+                    reason = counted ? "sbf_counted_adjustment"
+                             : rawx_reset.value_or(false)
+                                 ? "rawx_confirmed_adjustment"
+                                 : "bias_inferred_adjustment";
                     ++counts[reason];
-                    events.push_back({{"kind", "clock_adjustment"},
-                                      {"gpst_ns", *gpst},
-                                      {"receiver_session_id", session},
-                                      {"clock_arc_id", arc},
-                                      {"source", row.at("source")},
-                                      {"source_offset", row.at("source_offset")},
-                                      {"previous_gpst_ns", previous.at("gpst_ns")},
-                                      {"bias_before_ns", previous.at("clock_bias_ns")},
-                                      {"bias_after_ns", bias},
-                                      {"drift_ns_s", drift},
-                                      {"jump_residual_ns", jump},
-                                      {"adjustment_ns", correction},
-                                      {"evidence", reason},
-                                      {"temperature_c", row.value("temperature_c", Json())},
-                                      {"interval_since_previous_adjustment_s",
-                                       last_reset ? Json((*gpst - *last_reset) / 1e9) : Json()}});
+                    events.push_back(
+                        {{"kind", "clock_adjustment"},
+                         {"gpst_ns", *gpst},
+                         {"receiver_session_id", session},
+                         {"clock_arc_id", arc},
+                         {"source", row.at("source")},
+                         {"source_offset", row.at("source_offset")},
+                         {"previous_gpst_ns", previous.at("gpst_ns")},
+                         {"bias_before_ns", previous.at("clock_bias_ns")},
+                         {"bias_after_ns", bias},
+                         {"drift_ns_s", drift},
+                         {"jump_residual_ns", jump},
+                         {"adjustment_ns", correction},
+                         {"evidence", reason},
+                         {"temperature_c", row.value("temperature_c", Json())},
+                         {"interval_since_previous_adjustment_s",
+                          last_reset ? Json((*gpst - *last_reset) / 1e9)
+                                     : Json()}});
                     last_reset = *gpst;
-                } else if (std::abs(jump) > tolerance || rawx_reset.value_or(false)) {
+                } else if (std::abs(jump) > tolerance ||
+                           rawx_reset.value_or(false)) {
                     reason = "unresolved_adjustment";
                     valid = false;
                 } else
@@ -466,9 +535,12 @@ struct ClockProcessor::State {
             previous = row;
         }
         ++counts["samples"];
-        const bool has_temp = row.contains("temperature_c") && !row.at("temperature_c").is_null();
-        ++counts[has_temp ? "samples_with_temperature" : "samples_without_temperature"];
-        for (auto field : {"gpst_ns", "clock_bias_ns", "clock_drift_ns_s", "temperature_c"}) {
+        const bool has_temp =
+            row.contains("temperature_c") && !row.at("temperature_c").is_null();
+        ++counts[has_temp ? "samples_with_temperature"
+                          : "samples_without_temperature"];
+        for (auto field : {"gpst_ns", "clock_bias_ns", "clock_drift_ns_s",
+                           "temperature_c"}) {
             if (row.contains(field) && !row.at(field).is_null()) {
                 const Json value = row.at(field);
                 auto [it, inserted] = ranges.try_emplace(field, value, value);
@@ -488,9 +560,11 @@ struct ClockProcessor::State {
         samples.push_back(std::move(row));
     }
 };
-ClockProcessor::ClockProcessor(double gap, double tolerance, double age, const std::string &protocol)
+ClockProcessor::ClockProcessor(double gap, double tolerance, double age,
+                               const std::string &protocol)
     : state_(std::make_unique<State>()) {
-    if (!std::isfinite(gap) || !std::isfinite(tolerance) || !std::isfinite(age) || gap <= 0 || tolerance <= 0 ||
+    if (!std::isfinite(gap) || !std::isfinite(tolerance) ||
+        !std::isfinite(age) || gap <= 0 || tolerance <= 0 ||
         tolerance >= 500000 || age < 0)
         throw std::invalid_argument("Invalid clock processing policy");
     state_->max_gap = gap;
@@ -498,17 +572,20 @@ ClockProcessor::ClockProcessor(double gap, double tolerance, double age, const s
     state_->temp_age = age;
     if (protocol != "ubx" && protocol != "sbf")
         throw std::invalid_argument("Unknown clock protocol");
-    state_->protocol = protocol == "ubx" ? cppgnss::Protocol::ubx : cppgnss::Protocol::sbf;
+    state_->protocol =
+        protocol == "ubx" ? cppgnss::Protocol::ubx : cppgnss::Protocol::sbf;
     state_->reader = cppgnss::StreamDecoder(state_->protocol);
 }
 ClockProcessor::~ClockProcessor() = default;
-Json ClockProcessor::feed(std::span<const uint8_t> data, const std::string &source) {
+Json ClockProcessor::feed(std::span<const uint8_t> data,
+                          const std::string &source) {
     if (state_->sources.empty() || source != state_->input_source) {
         state_->sources.emplace_back(state_->reader.bytes, source);
         state_->input_source = source;
     }
     state_->reader.feed(data, [&](cppgnss::FrameView frame) {
-        while (state_->sources.size() > 1 && state_->sources[1].first <= frame.offset)
+        while (state_->sources.size() > 1 &&
+               state_->sources[1].first <= frame.offset)
             state_->sources.pop_front();
         state_->source = state_->sources.front().second;
         frame.offset -= state_->sources.front().first;
@@ -555,13 +632,15 @@ Json ClockProcessor::summary() const {
             vt += b.n * (t - mt) * (t - mt);
             vd += b.m2 + b.n * (b.mean - md) * (b.mean - md);
             cov += b.n * (t - mt) * (b.mean - md);
-            out["temperature_drift_bins"].push_back({{"temperature_c", t},
-                                                     {"samples", b.n},
-                                                     {"mean_drift_ns_s", b.mean},
-                                                     {"stddev_drift_ns_s", std::sqrt(b.m2 / b.n)}});
+            out["temperature_drift_bins"].push_back(
+                {{"temperature_c", t},
+                 {"samples", b.n},
+                 {"mean_drift_ns_s", b.mean},
+                 {"stddev_drift_ns_s", std::sqrt(b.m2 / b.n)}});
         }
         if (vt > 0 && vd > 0)
-            out["temperature_drift_pearson_r"] = std::clamp(cov / std::sqrt(vt * vd), -1.0, 1.0);
+            out["temperature_drift_pearson_r"] =
+                std::clamp(cov / std::sqrt(vt * vd), -1.0, 1.0);
     }
     return out;
 }

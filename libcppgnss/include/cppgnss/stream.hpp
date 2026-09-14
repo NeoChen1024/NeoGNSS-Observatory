@@ -19,7 +19,8 @@ struct FrameView {
 class StreamDecoder {
   public:
     explicit StreamDecoder(Protocol protocol) : protocol_(protocol) {}
-    void feed(std::span<const uint8_t>, const std::function<void(const FrameView &)> &);
+    void feed(std::span<const uint8_t>,
+              const std::function<void(const FrameView &)> &);
     void finish() const;
     uint64_t pending_offset() const { return offset_; }
     size_t pending_bytes() const { return pending_.size(); }

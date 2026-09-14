@@ -22,11 +22,14 @@ struct Decoder {
     }
     uint64_t reference(const std::string &ref) const {
         const auto split = ref.find('+');
-        const auto name =
-            ref.substr(0, split) + (split == std::string::npos ? "" : suffix(std::stoul(ref.substr(split + 1))));
+        const auto name = ref.substr(0, split) +
+                          (split == std::string::npos
+                               ? ""
+                               : suffix(std::stoul(ref.substr(split + 1))));
         auto it = fields.find(name);
         if (it == fields.end())
-            throw std::runtime_error("Missing SBF count/condition field: " + name);
+            throw std::runtime_error("Missing SBF count/condition field: " +
+                                     name);
         if (auto p = std::get_if<uint64_t>(&it->second))
             return *p;
         if (auto p = std::get_if<int64_t>(&it->second); p && *p >= 0)
@@ -35,7 +38,8 @@ struct Decoder {
     }
     std::span<const uint8_t> take(size_t n) {
         if (n > bytes.size() - offset)
-            throw std::runtime_error("SBF field exceeds payload at " + std::to_string(offset));
+            throw std::runtime_error("SBF field exceeds payload at " +
+                                     std::to_string(offset));
         auto value = bytes.subspan(offset, n);
         offset += n;
         return value;
@@ -55,7 +59,8 @@ struct Decoder {
             case Kind::padding: {
                 const auto length = reference(f.reference);
                 if (offset - base > length)
-                    throw std::runtime_error("SBF sub-block shorter than its defined fields");
+                    throw std::runtime_error(
+                        "SBF sub-block shorter than its defined fields");
                 take(length - (offset - base));
                 break;
             }
@@ -69,11 +74,13 @@ struct Decoder {
                 break;
             }
             case Kind::repeat: {
-                size_t count = f.reference.empty() ? f.count : reference(f.reference);
+                size_t count =
+                    f.reference.empty() ? f.count : reference(f.reference);
                 if (f.reference == "RLMLength")
                     count = count == 160 ? 5 : 3;
                 if (count > bytes.size())
-                    throw std::runtime_error("SBF repetition count exceeds payload");
+                    throw std::runtime_error(
+                        "SBF repetition count exceeds payload");
                 indices.push_back(0);
                 for (size_t i = 0; i < count; ++i) {
                     indices.back() = i + 1;
@@ -86,39 +93,51 @@ struct Decoder {
                 auto data = take(f.width);
                 size_t bit = 0;
                 for (const auto &member : f.children) {
-                    if (member.width > 64 || bit + member.width > data.size() * 8)
+                    if (member.width > 64 ||
+                        bit + member.width > data.size() * 8)
                         throw std::runtime_error("Invalid SBF bit schema");
                     uint64_t value = 0;
                     for (size_t j = 0; j < member.width; ++j)
-                        value |= uint64_t((data[(bit + j) / 8] >> ((bit + j) % 8)) & 1) << j;
+                        value |=
+                            uint64_t((data[(bit + j) / 8] >> ((bit + j) % 8)) &
+                                     1)
+                            << j;
                     fields[member.name + suffix(indices.size())] = value;
                     bit += member.width;
                 }
                 break;
             }
             case Kind::scalar: {
-                auto data = take(f.type == 'V' ? bytes.size() - offset : f.width);
+                auto data =
+                    take(f.type == 'V' ? bytes.size() - offset : f.width);
                 if (f.type == 'P')
                     break;
                 if (f.type == 'X' || f.type == 'C' || f.type == 'V')
-                    fields[name] = std::vector<uint8_t>(data.begin(), data.end());
+                    fields[name] =
+                        std::vector<uint8_t>(data.begin(), data.end());
                 else if (f.type == 'F') {
                     auto bits = uint(data);
                     if (data.size() != 4 && data.size() != 8)
-                        throw std::runtime_error("Invalid SBF floating-point width");
-                    fields[name] = (data.size() == 4 ? double(std::bit_cast<float>(uint32_t(bits)))
-                                                     : std::bit_cast<double>(bits)) *
-                                   f.scale;
+                        throw std::runtime_error(
+                            "Invalid SBF floating-point width");
+                    fields[name] =
+                        (data.size() == 4
+                             ? double(std::bit_cast<float>(uint32_t(bits)))
+                             : std::bit_cast<double>(bits)) *
+                        f.scale;
                 } else {
                     if (data.size() > 8) {
                         if (f.scale != 1)
-                            throw std::runtime_error("Scaled wide SBF integer is unsupported");
-                        fields[name] = WideInteger{{data.begin(), data.end()}, f.type == 'I'};
+                            throw std::runtime_error(
+                                "Scaled wide SBF integer is unsupported");
+                        fields[name] = WideInteger{{data.begin(), data.end()},
+                                                   f.type == 'I'};
                         break;
                     }
                     auto value = uint(data);
                     if (f.type == 'I') {
-                        if (data.size() < 8 && !data.empty() && (data.back() & 128))
+                        if (data.size() < 8 && !data.empty() &&
+                            (data.back() & 128))
                             value |= ~uint64_t{0} << (8 * data.size());
                         auto n = std::bit_cast<int64_t>(value);
                         if (f.scale == 1)
@@ -138,7 +157,11 @@ struct Decoder {
 };
 } // namespace
 Block decode(uint16_t id, uint8_t revision, std::span<const uint8_t> payload) {
-    Block out{id, revision, "", Status::unknown_block, {}, {payload.begin(), payload.end()}, {}, "", std::nullopt};
+    Block out{id,          revision,
+              "",          Status::unknown_block,
+              {},          {payload.begin(), payload.end()},
+              {},          "",
+              std::nullopt};
     for (const auto &schema : schemas())
         if (schema.id == id) {
             out.name = schema.name;
@@ -163,11 +186,15 @@ Block decode(uint16_t id, uint8_t revision, std::span<const uint8_t> payload) {
 std::optional<SbasFrame> extract_sbas_l1(const Block &block) {
     if (block.id != 4020 || block.status != Status::decoded)
         return std::nullopt;
-    const auto number = [&](const char *name) { return std::get<uint64_t>(block.fields.at(name)); };
+    const auto number = [&](const char *name) {
+        return std::get<uint64_t>(block.fields.at(name));
+    };
     const auto svid = number("SVID"), signal = number("SigIdx");
-    if (signal != 24 || !((svid >= 120 && svid <= 140) || (svid >= 198 && svid <= 215)))
+    if (signal != 24 ||
+        !((svid >= 120 && svid <= 140) || (svid >= 198 && svid <= 215)))
         return std::nullopt;
-    const auto &wire = std::get<std::vector<uint8_t>>(block.fields.at("NavBits"));
+    const auto &wire =
+        std::get<std::vector<uint8_t>>(block.fields.at("NavBits"));
     if (wire.size() != 32)
         return std::nullopt;
     std::array<uint8_t, 32> bits;
