@@ -11,9 +11,9 @@ broadcast navigation parameters supplied by an adapter or derived by a decoder.
 A Core observation consumer may instead obtain navigation products externally.
 Do not manufacture raw navigation occurrences from decoded ephemerides.
 
-Records belong to a navigation collection, not necessarily a receiver Stream.
+Records belong to a navigation collection, not necessarily a receiver station.
 Standalone or merged RINEX NAV input does not require a fabricated Setup or
-Stream. Receiver-derived records may retain acquisition context; a
+station. Receiver-derived records may retain acquisition context; a
 Navigation-context time is not the ephemeris reference epoch.
 
 Unlike RawBits's epoch-only timing, decoded parameters retain the reference
@@ -71,7 +71,7 @@ BeiDou, GPS modernized, QZSS, SBAS, STO, EOP, and ION definitions. Their
 source-specific ranges, equations and availability mappings remain explicitly
 separate from implemented support.
 
-`acquisition_context` contains `stream_id: string` and
+`acquisition_context` contains `setup_id: string` and
 `nav_epoch_gpst: GpstTimestamp?`, stored directly rather than referencing an
 epoch table. Necessary multi-page acquisition context may retain multiple
 explicit times, but they are not unique occurrence keys. No mandatory RawBits

@@ -114,7 +114,7 @@ class Background:
                 or b"day_gpst_ms" not in meta
             ):
                 raise ValueError(
-                    f"Expected current SBAS grid Parquet: {path}; regenerate using neo-cnex-import and ngo-sbas-grid-parquet"
+                    f"Expected current SBAS grid Parquet: {path}; regenerate using ngo-cnex-import and ngo-sbas-grid-parquet"
                 )
             day = int(meta[b"day_gpst_ms"])
             if day in needed:

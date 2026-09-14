@@ -7,29 +7,30 @@ The processing boundary is the SBAS message, not its UBX/SBF transport.
 ```sh
 # Optional read-only QA; extraction does not require evidence of this run.
 ngo-dataset-qa --input-dir /data/ubx
-# Initialize once with actual station metadata, then supply ordered raw files.
-neo-cnex-import init /data/cnex --setup /data/setup.json --stream-id main --antenna-name main
-neo-cnex-import run -p sbf --stream /data/cnex/main /data/first.sbf /data/second.sbf
+# Initialize once with actual station metadata, then supply raw files.
+ngo-cnex-import init /data/cnex --setup /data/setup.json
+ngo-cnex-import run -p sbf --station /data/cnex /data/first.sbf /data/second.sbf
 
-ngo-sbas-grid-parquet --input-dir /data/cnex/main --output /data/sbas-grid
+ngo-sbas-grid-parquet --input-dir /data/cnex --output /data/sbas-grid
 
 ngo-sbas-grid-plot --input-dir /data/sbas-grid --output /data/sbas-maps \
   --coastline contrib/natural-earth/ne_10m_coastline.zip
 ```
 
 Import, grid calculation and plotting are separate commands. Grid reads the
-ParquetNEX Stream's latest RawBits and Events revisions and all their parts.
+ParquetNEX station's latest RawBits and Events revisions and all their parts.
 It has no protocol selection, raw-data path or reconstruction dependency.
 
 ### Explicit wire protocol
 
-Only `neo-cnex-import run` uses `--protocol/-p ubx|sbf` (default UBX).
+Only `ngo-cnex-import run` uses `--protocol/-p ubx|sbf` (default UBX).
 Complete checksum-valid foreign frames are skipped atomically
 with throttled stderr warnings and skipped frame/byte counts. Invalid wire
 frames follow the decoder's corruption/resynchronization policy; incomplete
 tails remain unpublished and can be continued with the import sidecar.
 
-Inputs are explicit expanded files in recording order. Use reconstructed Era A
+Inputs are explicit expanded files; head probes determine their import order.
+Time reversals abort import without overlap removal. Use reconstructed Era A
 segments, excluding unassigned data, or nonoverlapping raw UBX/SBF recordings.
 No reconstruction index, QA stamp, recursive discovery or XZ decompression is
 required. UBX navigation association uses fresh NAV-TIMEGPS and matching EOE,
@@ -73,7 +74,9 @@ broader restart/discontinuity mappings remain future importer work.
 Grid schema version 3 contains RINEX `satellite_system`/`satellite_number`
 identity (`S`/`37`, displayed as `S37`), signal, `stream_id`,
 `frame_id`, IGP band/mask position, coordinates, IODI, GIVEI, delay in meters,
-equivalent VTEC in TECU, and `[start_gpst_ms,end_gpst_ms)`. `frame_id` points
+equivalent VTEC in TECU, and `[start_gpst_ms,end_gpst_ms)`. The derived grid's
+integer `stream_id` is a run-local continuity-segment counter, not a CommonNEX
+station identity or a reference to a Stream metadata file. `frame_id` points
 to a run-local occurrence counter for the originating MT26, not a Parquet
 foreign key or byte offset. SBAS
 bodies are not duplicated for every grid cell. Midnight splits intervals, not

@@ -18,7 +18,7 @@ for range, rounding and nullability, and [ParquetNEX](parquetnex.md) for storage
 | --- | --- |
 | [Core](core.md) | Shared types/context and directly timed wide observation records |
 | [Events](events.md) | Completion, continuity, scoped clock declarations/offsets and daily storage |
-| [Setup JSON](setup-json.md) | Station metadata, named antennas, configuration references and initialization schema decisions |
+| [Setup JSON](setup-json.md) | Single-station receiver/antenna metadata, config and ANTEX companions, initialization |
 | [RawBits](raw-bits.md) | First-class core record family for received navigation occurrences; presence is capability-dependent |
 | [RawBits layouts](raw-bits-layouts.md) | Canonical bit layouts, verified receiver mappings, check scopes and pending validation |
 | [RawBits registry](raw-bits-registry.md) | Primary-source signal vocabulary, legal family/format pairs and reserved extensions |
@@ -31,7 +31,7 @@ for range, rounding and nullability, and [ParquetNEX](parquetnex.md) for storage
 | [ParquetNEX](parquetnex.md) | Optional Parquet persistence and replay mapping |
 
 Core model membership and mandatory data presence are different. Observation
-and RawBits are first-class core record families sharing Setup, Stream, epoch
+and RawBits are first-class core record families sharing Setup identity, epoch
 and continuity semantics; neither must accompany the other. DecodedNav remains
 a standardized optional extension, and auxiliary families remain optional.
 Each supplied family obeys its schema; consumers need only implement the
@@ -55,7 +55,7 @@ raw archives allow later reconstruction. No unknown-time Observation/RawBits
 storage branch is required. RawBits-only remains legal with valid navigation
 time stored in `nav_epoch_gpst`. Legitimate untimed RINEX special events retain
 their separate semantics. No independent epoch tables or mandatory row-to-row
-references exist. Timestamps are not unique keys. Setup/Stream metadata remains
+references exist. Timestamps are not unique keys. Setup metadata remains
 shared; correction-sensitive consumers load applicable Events, including
 earlier still-effective state, rather than joining per-row event IDs.
 
@@ -139,7 +139,7 @@ File, batch and GPST-day boundaries do not reset tracking, clocks, RawBits
 assembly or SBAS aging. Daily storage does not imply a daily solution.
 
 [Events](events.md) describe completion, discontinuities and observation clock
-context using shared Stream identity and explicit time applicability. Their interpretation does not depend on a
+context using shared station identity and explicit time applicability. Their interpretation does not depend on a
 particular processing execution model.
 
 Ordering, bounded buffering, backpressure, checkpoints, scheduling and replay
@@ -166,8 +166,8 @@ for ownership, bidirectional replay and bounded-memory requirements.
 
 Checked items mean a design decision or stated research validation, not shipped code.
 
-- [x] Define Setup, Observation Stream and Recording Source boundaries.
-- [x] Define initialization-only Setup JSON, named antennas, static-station
+- [x] Define single logical station Setup and Recording Source boundaries.
+- [x] Define initialization-only Setup JSON, a single antenna, static-station
   metadata, Unicode strings and decimal nominal periods (see setup-json.md).
 - [x] Select independent direct Observation/RawBits timestamps, with no epoch
   tables or mandatory occurrence IDs; optional counters are file-local.
@@ -204,7 +204,7 @@ Checked items mean a design decision or stated research validation, not shipped 
 - [ ] Complete DecodedNav model mappings and auxiliary catalogs as needed;
   see their focused checklists rather than treating selected structures as code.
 - [ ] Finalize full Parquet schemas/enum encodings and metadata keys beyond the
-  observation pilot; Stream location and revision/part naming are decided.
+  observation pilot; station location and revision/part naming are decided.
 
 ### Implementation
 
@@ -231,7 +231,7 @@ storage/replay before the downstream PPP/IPP engine integration. The initializer
 imports station metadata/configuration separately from routine daily recordings.
 Retroactive repair creates new revisions only for affected days; it is not the
 normal ingestion path. See [ParquetNEX](parquetnex.md) for initialization and
-reader selection, and [Core](core.md) for source-independent Stream identity.
+reader selection, and [Core](core.md) for source-independent station identity.
 
 Validation should cover cross-file/day state, repeated imports, complementary
 coverage and conflicts using small representative inputs. This draft does not

@@ -37,31 +37,33 @@ tuning choices; neither requires buffering an entire GPST day.
 
 A directory initialization operation imports `setup.json` and the optional
 same-directory file named by `vendor_config`. See [Setup JSON](setup-json.md).
-The configuration file's format is opaque to this specification. Validate that
+The vendor configuration file's format is opaque to this specification. Validate that
 the reference names a file in that directory, not an arbitrary external path.
 Keep Setup metadata at Setup scope, outside daily revisions.
 
 Daily input consists of observation recordings such as UBX, SBF or RINEX. It
 does not carry or recopy Setup metadata/configuration. Daily Parquet records
-reference the initialized Setup and Stream; readers resolve them from the
+reference the initialized Setup; readers resolve it from the
 storage root. A detached daily directory alone is not a self-contained Setup.
 Inspect declared constellation/signal compatibility before scanning observations;
 unknown declarations do not justify rejecting an otherwise usable input.
 
 Selected layout:
 
+The Setup directory name is chosen by the caller; `<setup-directory>` is not
+constructed from free-form `setup_id`. Its metadata carries the logical ID.
+
 ```text
-<root>/<setup_id>/
+<root>/<setup-directory>/
   setup.json
   receiver-config.txt       # Example vendor_config filename; format unrestricted
-  <stream_id>/
-    stream.json
-    2025-08-15/
-      r00-observations-part00.parquet
-      r00-observations-part01.parquet  # Completed deferred tail
-      r00-raw-bits-part00.parquet
-      r00-events-part00.parquet       # Completion, continuity and clock context
-      r01-observations-part00.parquet # Complete replacement of this day's observations
+  antenna.atx                # Optional selected receiver calibration
+  2025-08-15/
+    r00-observations-part00.parquet
+    r00-observations-part01.parquet  # Completed deferred tail
+    r00-raw-bits-part00.parquet
+    r00-events-part00.parquet       # Completion, continuity and clock context
+    r01-observations-part00.parquet # Complete replacement of this day's observations
 ```
 
 Only applicable catalogs are written. A catalog is the storage name for a
@@ -74,13 +76,12 @@ RawBits-only revisions omit observation files entirely; they retain required
 navigation times directly on RawBits and applicable Events. Do not create empty observation tables as a
 conformance prerequisite. Only validly timed Observation/RawBits is persisted;
 there is no unassociated scope or unknown-time reader branch.
-Stream declarations must be resolvable at initialization. Each `antenna_name`
-must resolve to a key in the parent Setup's `antennas` dictionary; see
-[named antennas](setup-json.md#named-antennas-and-stream-references).
-Store Stream declarations in `<stream_id>/stream.json`, created at initialization,
-with `setup_id`, `stream_id` and `antenna_name`. The pilot also records
-`source_antenna`, the selected native input index, as importer configuration.
-Date directories denote GPST days.
+One directory represents one logical station with one receiver/antenna. There
+is no additional Stream subdirectory or Stream metadata file. Records and Parquet metadata
+carry the parent `setup_id`; native source-antenna selection is an import option
+retained in the continuation cursor, not a second logical identity.
+Date directories denote GPST days. Companion files are initialized once, not
+replicated per day. See [ANTEX selection](setup-json.md#antex-selection-during-initialization).
 
 ## Serialization rules
 
@@ -92,9 +93,9 @@ This is a file within an applicable partition/revision, not a perpetually
 appended global file. It uses the common header and typed EPH/STO/EOP/ION
 payload branches; no JSON parameter blobs are introduced.
 
-Receiver-derived DecodedNav may live in its Stream's daily revision when the
+Receiver-derived DecodedNav may live in its station's daily revision when the
 model's partition day matches that directory. Standalone navigation collections
-(including merged RINEX NAV) live outside receiver Setup/Stream hierarchies and
+(including merged RINEX NAV) live outside receiver Setup hierarchies and
 do not require synthetic receiver metadata. Both use the same record schema.
 The standalone collection directory naming and collection metadata encoding
 remain to be finalized. Collection identity is file/collection metadata;
@@ -156,7 +157,7 @@ these mappings must eventually be specified rather than left writer-specific.
   interpretation in file metadata. Scientific interpretation does not require
   provenance sidecars, execution snapshots, or artifact hash inventories.
 - Partition Observation by its `gpst` and RawBits by its `nav_epoch_gpst`, within
-  the Stream and GPST day. Neither requires an epoch-table join. Each day may contain several
+  the station and GPST day. Neither requires an epoch-table join. Each day may contain several
   complete part files per record family. Payload timestamps determine coverage;
   filenames alone are not evidence of observation time or continuity.
 - Close each part before publishing it by rename. Published files are immutable;
@@ -165,7 +166,7 @@ these mappings must eventually be specified rather than left writer-specific.
 - Use the [Core wide observation layout](core.md): one row per epoch/satellite/
   signal occurrence, C/L/D/S in separate nullable columns with independent
   quality fields. Do not serialize scalar observable rows as a second v0 layout.
-- Present Setup/Stream metadata references must resolve in the declared dataset scope.
+- Present Setup metadata references must resolve in the declared dataset scope.
   Standalone DecodedNav does not require those references. There are no required
   epoch tables, row IDs, or per-row event foreign keys. Optional row counters
   are file-local and may be reassigned in a new revision.
@@ -191,14 +192,14 @@ mapping remain to be finalized. Use one v0 mapping rather than alternate layouts
 
 ## Daily revisions
 
-The fixed relative filename pattern within a Stream or navigation collection is:
+The fixed relative filename pattern within a station or navigation collection is:
 
 ```text
 <GPST YYYY-MM-DD>/r<revision:02d>-<catalog>-part<part:02d>.parquet
 ```
 
 Revision and part are two-digit decimal numbers, starting at `00`. Each is
-scoped to its day/catalog (and parent Stream or collection); part numbering
+scoped to its day/catalog (and parent station or collection); part numbering
 restarts at `00` for a new revision. No revision directory or repeated date in
 the filename is used. Exhausting `99` requires an explicit naming-policy
 extension, not wrapping or silently emitting a different-width filename.

@@ -19,7 +19,7 @@ the current scientific processors cannot decode. The GLONASS/NavIC exclusion
 still applies; the record structure itself is not tied to a constellation.
 A decoded ephemeris or correction record does not replace received raw bits.
 RawBits-only sources and datasets are valid without raw observations. They use
-the same Setup/Stream identity and navigation-time association as mixed datasets;
+the same Setup identity and navigation-time association as mixed datasets;
 never require observations or fabricate C/L/D/S values. Valid navigation
 time association is required; unresolved records are skipped and counted after
 bounded association attempts, not stored under invented epochs. Storage requires canonical packing support, not
@@ -95,7 +95,7 @@ as unmodified transmitted data bits.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `stream_id` | `string` | Acquisition stream |
+| `setup_id` | `string` | Acquisition stream |
 | `nav_epoch_gpst` | `GpstTimestamp` | Required associated navigation-context time, directly stored as DECIMAL(38,12) GPST seconds |
 | `satellite_system`, `satellite_number` | `string`, `uint16` | Required normalized identity of the broadcasting satellite |
 | `bitstream_source` | `list<string>` | Common signal identifiers for known contributing broadcast signals; empty if unknown |
@@ -121,7 +121,7 @@ not emit an identity-incomplete RawBits record. Raw archives retain the input;
 optional native identifiers do not replace the required normalized identity.
 
 `bitstream_source` is a non-null list of non-null common signal identifiers,
-not UBX/SBF numeric signal codes or receiver Setup/antenna/Stream identifiers.
+not UBX/SBF numeric signal codes or receiver Setup/antenna/station identifiers.
 The [broadcast-signal registry](raw-bits-registry.md#broadcast-signal-identifiers) supplies its vocabulary. A single known contributor
 has one entry; known mixed contributors have multiple distinct entries, with
 no ordering or per-half/page assignment implied. An empty list means unknown
@@ -129,7 +129,7 @@ contributors, not a signal-less broadcast. Do not infer contributors from
 signals merely enabled or tracked by the receiver. A combined report must not
 be presented as exclusively received on the receiver's nominal signal code.
 `signal_composition` retains known combined/unknown status when the list alone
-cannot express it. Receiver-side identity is resolved through Stream metadata,
+cannot express it. Receiver-side identity is resolved through station metadata,
 independently of this list and without an epoch-table reference.
 
 ### Broadcast signal identifiers

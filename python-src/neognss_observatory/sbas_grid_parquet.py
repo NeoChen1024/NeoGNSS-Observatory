@@ -106,10 +106,10 @@ class DailySink:
 
 
 def build_grid(input_dir, output, gap_timeout=50):
-    metadata = json.loads((input_dir / "stream.json").read_text(encoding="utf-8"))
+    metadata = json.loads((input_dir / "setup.json").read_text(encoding="utf-8"))
     days = sorted(p for p in input_dir.iterdir() if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name))
     if not any(latest_parts(day, "raw-bits") for day in days):
-        raise ValueError("No ParquetNEX RawBits inputs in this Stream")
+        raise ValueError("No ParquetNEX RawBits inputs in this station")
     sink = DailySink(output)
     states, identities, pending = {}, {}, {}
     last_frame = {}
@@ -155,7 +155,7 @@ def build_grid(input_dir, output, gap_timeout=50):
         for path in latest_parts(day, catalog):
             with pq.ParquetFile(path) as source:
                 info = source.schema_arrow.metadata or {}
-                if info.get(b"commonnex.catalog") != catalog.encode() or info.get(b"stream_id") != metadata["stream_id"].encode():
+                if info.get(b"commonnex.catalog") != catalog.encode() or info.get(b"setup_id") != metadata["setup_id"].encode():
                     raise ValueError(f"Unexpected ParquetNEX identity/catalog: {path}")
                 if info.get(b"time.scale") != b"GPST" or source.schema_arrow.field(time_field).type != pa.decimal128(38, 12):
                     raise ValueError(f"Expected CommonNEX GPST decimal seconds: {path}")
@@ -165,8 +165,8 @@ def build_grid(input_dir, output, gap_timeout=50):
                     else:
                         batch = batch.filter(pc.equal(batch.column("message_family"), "SBAS_L1"))
                     for row in batch.to_pylist():
-                        if row["stream_id"] != metadata["stream_id"]:
-                            raise ValueError(f"Mixed Stream identity: {path}")
+                        if row["setup_id"] != metadata["setup_id"]:
+                            raise ValueError(f"Mixed Setup identity: {path}")
                         if not start <= row[time_field] < start + 86400:
                             raise ValueError(f"Record outside its GPST day: {path}")
                         yield row
@@ -238,7 +238,7 @@ def build_grid(input_dir, output, gap_timeout=50):
     "--input-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     required=True,
-    help="ParquetNEX Stream directory containing stream.json and daily RawBits/Events catalogs.",
+    help="ParquetNEX station directory containing setup.json and daily RawBits/Events catalogs.",
 )
 @click.option("--output", type=click.Path(path_type=Path), required=True)
 @click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")

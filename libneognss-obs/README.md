@@ -24,9 +24,9 @@ Install the repository Python package to build and install the extension:
 git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json contrib/RTKLIB
 python -m pip install .
 ngo-receiver-clock --input-dir /data/reconstructed --output /data/clock
-neo-cnex-import init /data/cnex --setup /data/setup.json --stream-id main --antenna-name main
-neo-cnex-import run -p ubx --stream /data/cnex/main /data/first.ubx
-ngo-sbas-grid-parquet --input-dir /data/cnex/main --output /data/sbas-grid
+ngo-cnex-import init /data/cnex --setup /data/setup.json
+ngo-cnex-import run -p ubx --station /data/cnex /data/first.ubx
+ngo-sbas-grid-parquet --input-dir /data/cnex --output /data/sbas-grid
 ```
 
 No `--worker` or `--indexer` executable paths are used. The old internal
@@ -47,7 +47,8 @@ The experimental extension is `neognss_observatory._native`:
 | `GridProcessor(correction_age=600, mask_age=1200, gap_timeout=0)` | Protocol-neutral timed SBAS batches to valid IGP intervals |
 | `SbfParser(block_ids=[])` | SBF chunks to typed block records, optionally filtered by block ID, with GEORawL1 SBAS extraction |
 | `ObservationReader(protocol="ubx")` | UBX RAWX / SBF MeasEpoch chunks to opaque GPS observation batches |
-| `CnexObservationReader(protocol, stream_id, antenna=0)` | UBX RAWX / SBF MeasEpoch chunks to CommonNEX pilot observation and completion-event Arrow batches |
+| `CnexObservationReader(protocol, setup_id, antenna=0)` | UBX RAWX / SBF MeasEpoch chunks to CommonNEX pilot observation, RawBits and completion-event Arrow batches |
+| `CnexTimeProbe(protocol)` | Independent head-sample framing and first valid observation/navigation GPST anchors; no Arrow science output |
 | `PppFloat(settings)` | Observation batches and local precise products to Float solution/residual arrays |
 
 Raw-processing CLIs provide `--protocol/-p ubx|sbf` (default `ubx`). The stream

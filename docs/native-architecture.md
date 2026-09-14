@@ -146,7 +146,7 @@ MSB-first SBAS L1 representation used by UBX. `CRCPassed`, raw `SVID`/`SigIdx`,
 channel fields and TOW/WNc remain available; independent SBAS CRC verification
 is also retained. SBAS satellite identity is normalized separately from the
 raw receiver identifiers. `GEORawL5` is never passed to the L1 parser. The SBF
-adapter feeds `neo-cnex-import run -p sbf` through native Arrow batches, using
+adapter feeds `ngo-cnex-import run -p sbf` through native Arrow batches, using
 native TOW/WNc and separate receiver/independent CRC checks. UBX and SBF produce
 the same CommonNEX SBAS L1 RawBits layout. Grid reads these records and Events;
 its derived products retain RINEX `satellite_system`, `satellite_number` and

@@ -10,13 +10,13 @@ particular deduplication algorithm. Do not expose unresolved alternatives as
 independent normal observations.
 
 RecordingSource metadata identifies each input source and its format (ubx, sbf,
-rtcm3 or rinex), relevant version and explicit logical stream association.
-Multiple recording paths may contribute to one Stream without changing Setup.
+rtcm3 or rinex), relevant version and explicit logical station association.
+Multiple recording paths may contribute to one station without changing Setup.
 Equal timestamps or coordinates alone do not establish the same acquisition.
 
-One Recording Source may route to multiple Streams when it carries multiple
-antenna inputs. Conversely, multiple recording paths may feed one Stream.
-Resolve native antenna identity to declared Stream/antenna_name mappings;
+One Recording Source may route to multiple stations when it carries multiple
+antenna inputs. Conversely, multiple recording paths may feed one station.
+Select the native antenna input for each single-antenna station import;
 keep source/antenna decoder state separate before reconciling logical records.
 
 Report family coverage independently: source not providing a family, configured
@@ -88,8 +88,12 @@ unaffected catalogs can retain their current revision.
 The first implementation does not perform automatic deduplication, overlap
 merging, or idempotent repeated import. The caller selects the recording inputs;
 do not claim that repeated imports are scientific no-ops. Multiple recording
-paths can describe the same logical Stream without implying that the importer
+paths can describe the same logical station without implying that the importer
 can automatically fuse them. Restitch/QA is not an enforced prerequisite.
+The importer head-probes and stable-sorts selected files, then rejects backwards
+time within each comparable sequence during the normal read. This does not
+add deduplication, tail probing or automatic overlap repair; see
+[ordering and reversal checks](importer.md#head-only-ordering-and-time-reversal).
 
 Keep framing and association separate for independent recording sources. Do not
 splice unrelated packet fragments because timestamps appear adjacent. Continuous
@@ -110,7 +114,7 @@ have been reduced to unique measurements.
 ### Epoch interval classification
 
 For a known positive nominal observation period P (`epoch_period_s`), compare
-successive distinct measurement-epoch GPST timestamps within the same Stream.
+successive distinct measurement-epoch GPST timestamps within the same station.
 Use exact decimal timestamp differences and P in seconds without rounding
 observations. The standard per-epoch tolerance is +/-20%:
 
@@ -131,7 +135,7 @@ cadence has no percentage-based classification.
 
 Apply this to logical observation epochs, not per-satellite rows, companion
 blocks, RawBits or telemetry arrivals. Reconcile proven logging duplicates before
-classifying the merged Stream; conflict alternatives are not extra normal
+classifying the merged station; conflict alternatives are not extra normal
 epochs. Preserve evidence of time reversals rather than hiding them by sorting.
 Physical file, batch and GPST-day boundaries do not restart the comparison.
 Explicit new continuity contexts are handled separately.

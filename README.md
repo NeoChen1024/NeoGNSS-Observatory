@@ -29,8 +29,7 @@ experimental script contracts. Raw archives remain read-only.
 
 ## Python tools
 
-Existing analysis commands use the `ngo-` prefix; the CommonNEX importer is
-named `neo-cnex-import`. With the installation's
+All Python commands use the `ngo-` prefix, including `ngo-cnex-import`. With the installation's
 executable directory on `PATH`, type `ngo-` and use shell command completion
 to list them. Each command provides `--help`.
 
@@ -39,8 +38,9 @@ declared in `requirements.txt`. The `ngo-cddis-download` command inventories,
 downloads and verifies external GNSS products. `ngo-dataset-qa` performs optional
 read-only QA by default; `--profile restitch` reconstructs overlapping UBX
 archives such as Era A. Nonoverlapping Era B/C inputs need no reconstruction.
-`neo-cnex-import run -p ubx|sbf` imports observations and multi-GNSS RawBits
-into an initialized ParquetNEX Stream.
+`ngo-cnex-import run -p ubx|sbf` imports observations and multi-GNSS RawBits
+into an initialized single-station ParquetNEX directory. `init` accepts a
+vendor-config companion and optional ANTEX catalogs for the station's antenna.
 `ngo-sbas-grid-parquet` reads its RawBits and Events to calculate daily GPST
 grid validity intervals; `ngo-sbas-grid-plot` reads those
 daily files to produce experimental hourly VTEC maps without reopening raw recordings.
@@ -64,7 +64,7 @@ optional RINEX converter is built separately.
 
 ### CommonNEX import pilot
 
-`neo-cnex-import init|run|list` imports UBX RAWX or SBF MeasEpoch into daily
+`ngo-cnex-import init|run|list` imports UBX RAWX or SBF MeasEpoch into daily
 Observation, multi-GNSS RawBits and independent measurement/navigation completion
 Events Parquet, using native Arrow batches. Undefined future RawBits representations and the
 remaining Events/quality mappings are not implemented

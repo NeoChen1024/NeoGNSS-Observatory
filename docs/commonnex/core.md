@@ -9,7 +9,7 @@ Status: v0 design draft; not an implemented format or API.
 This document defines shared context and the Observation family. The
 [RawBits family](raw-bits.md) is also part of the core model, specified separately
 for readability. Either family may be present alone. In a RawBits-only dataset,
-Observation Stream still names the logical receiver input; it does not assert
+Setup still names one logical station; it does not assert
 that code, carrier-phase, Doppler or signal-strength observations are available.
 
 All records follow the format-wide [RINEX interoperability and string rules](overview.md#rinex-interoperability-and-strings).
@@ -23,28 +23,32 @@ not Core identities. V0 does not model a general equipment-configuration history
 | Record | Required fields | Optional context |
 | --- | --- | --- |
 | Setup | `setup_id: string`, receiver/antenna identities, firmware/configuration identity | Marker, position, antenna offsets and installation metadata |
-| Observation Stream (Stream) | `stream_id: string`, `setup_id: string`, `antenna_name: string` | Logical receiver observation input identity |
 
 IDs are scoped to the declared dataset/session and must remain resolvable in
 replay. No UUID service or artifact hash chain is required. Coordinates and
 offsets declare units/frame and whether approximate or independently supplied.
 Do not claim surveyed coordinates from a receiver position estimate.
 
-A Stream represents observations and associated records derived from one
-logical receiver observation source, independently of output interfaces,
-message selections, ordering, or recording paths. Independent antenna inputs
-use distinct streams. A Stream belongs to one Setup; a new Setup creates new
-streams. It does not promise continuous or gapless sampling.
+`setup_id` is a nonempty free-form string, not a path component or an implicit
+RINEX marker name. Preserve separate `marker.name`, `marker.number` and
+`marker.type` in Setup metadata. User-selected storage paths are independent
+of the identity string; never construct paths from its untrusted contents.
+
+A Setup represents one logical station with one receiver and one antenna,
+independently of output interfaces, message selections, ordering or recording
+paths. Different receiver/antenna inputs use separate logical stations and
+Setup directories. There is no separate Stream ID, registry or antenna-name
+reference. A station does not promise continuous or gapless sampling.
 
 Two u-blox UART outputs, or Septentrio Disk Logger and UART/IP outputs, may be
-Recording Sources for the same Stream. Message sets, output rates, order,
+Recording Sources for the same station. Message sets, output rates, order,
 latency and missing records can differ. Equal field values are not a condition
-of Stream identity; corresponding-record conflicts are reconciled explicitly.
-Source-to-Stream association is declared, not inferred solely from matching
+of station identity; corresponding-record conflicts are reconciled explicitly.
+Source-to-station association is declared, not inferred solely from matching
 coordinates, receiver models, timestamps or payloads.
 
 Reconnects, logger handovers, reboots with unchanged settings and midnight do
-not by themselves create a Setup or Stream. Receiver measurement-rate changes
+not by themselves create a Setup. Receiver measurement-rate changes
 are measurement configuration changes; changing only an interface's message
 output rate is not. Restart/continuity evidence is represented separately.
 Recording-source attribution and overlap decisions belong to
@@ -52,8 +56,8 @@ Recording-source attribution and overlap decisions belong to
 
 ## Setup metadata
 
-Setup identities and Stream relationships are defined above. The `setup.json`
-serialization, field groups, named-antenna dictionary, examples and validation
+Setup identities are defined above. The `setup.json`
+serialization, field groups, single antenna, examples and validation
 rules are specified separately in [Setup JSON](setup-json.md). ParquetNEX imports
 this metadata at directory initialization, not with each daily recording.
 
@@ -70,7 +74,7 @@ There are no mandatory epoch/occurrence IDs or row-to-row foreign keys.
 Timestamps are coordinates, not unique keys: retain distinct occurrences with
 equal times and payloads. Optional implementation row counters are file-local,
 can be reassigned on reconstruction, and carry no cross-file/revision meaning.
-Setup/Stream metadata references remain resolvable shared context.
+Setup metadata references remain resolvable shared context.
 
 The [Events family](events.md) carries completion, discontinuities, and scoped
 observation clock-correction declarations/offsets. Consumers load required event
@@ -99,7 +103,7 @@ and expose conflicts without treating timestamps as unique row identities.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `stream_id` | string | Parent logical Stream |
+| `setup_id` | string | Parent logical station Setup |
 | `gpst` | GpstTimestamp | Source measurement time stored directly, not navigation-context time |
 | `satellite_system`, `satellite_number` | string, uint16 | RINEX satellite identity |
 | `signal` | string | System-specific RINEX band/attribute, such as 1C |

@@ -50,6 +50,67 @@ Tick time_of(const cppgnss::Measurements &e) {
     }
     return Tick(e.week) * 604800 * ps + tow;
 }
+py::tuple time_parts(Tick time) {
+    return py::make_tuple(int64_t(time / ps), int64_t(time % ps));
+}
+std::optional<int64_t> timegps(const cppgnss::FrameView &f) {
+    if (f.protocol != cppgnss::Protocol::ubx || f.id != 0x0120 ||
+        f.payload.size() != 16)
+        return {};
+    auto tow = UBX::read_le<uint32_t>(f.payload, 0);
+    auto week = UBX::read_le<int16_t>(f.payload, 8);
+    if ((f.payload[11] & 3) != 3 || week < 0 || tow >= 604800000)
+        return {};
+    return int64_t(week) * 604800000 + tow;
+}
+struct Probe {
+    cppgnss::StreamDecoder decoder;
+    std::mutex mutex;
+    std::optional<Tick> observation, navigation;
+    explicit Probe(const std::string &protocol)
+        : decoder(protocol == "ubx" ? cppgnss::Protocol::ubx
+                                    : cppgnss::Protocol::sbf) {
+        if (protocol != "ubx" && protocol != "sbf")
+            throw std::invalid_argument("Expected ubx or sbf");
+    }
+    void feed(std::span<const uint8_t> bytes) {
+        std::unique_lock lock(mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            throw std::runtime_error("Concurrent probe use");
+        decoder.feed(bytes, [&](const cppgnss::FrameView &f) {
+            if (observation)
+                return;
+            try {
+                if (auto e = cppgnss::decode_measurements(f))
+                    observation = time_of(*e);
+                if (!navigation) {
+                    if (auto ms = timegps(f))
+                        navigation = Tick(*ms) * 1000000000;
+                    else if (f.protocol == cppgnss::Protocol::sbf) {
+                        auto decoded = cppgnss::decode_raw_bits(f);
+                        if (decoded.record && decoded.record->gpst_ms)
+                            navigation =
+                                Tick(*decoded.record->gpst_ms) * 1000000000;
+                    }
+                }
+            } catch (const std::runtime_error &) {
+                // The probe needs a usable anchor, not a full QA pass.
+                // Normal import still diagnoses malformed/unsupported input.
+            }
+        });
+    }
+    py::dict result() {
+        std::unique_lock lock(mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            throw std::runtime_error("Concurrent probe use");
+        py::dict d;
+        d["observation"] =
+            observation ? py::object(time_parts(*observation)) : py::none();
+        d["navigation"] =
+            navigation ? py::object(time_parts(*navigation)) : py::none();
+        return d;
+    }
+};
 void str(ArrowArray *a, const std::string &s) {
     check(ArrowArrayAppendString(a, {s.data(), int64_t(s.size())}));
 }
@@ -141,7 +202,7 @@ std::shared_ptr<Batch> observations() {
     auto b = std::make_shared<Batch>();
     check(ArrowSchemaSetTypeStruct(&b->schema, 16));
     auto c = b->schema.children;
-    field(c[0], "stream_id", NANOARROW_TYPE_STRING, false);
+    field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
     decfield(c[1], "gpst");
     field(c[2], "satellite_system", NANOARROW_TYPE_STRING, false);
     field(c[3], "satellite_number", NANOARROW_TYPE_UINT16, false);
@@ -194,9 +255,9 @@ std::shared_ptr<Batch> observations() {
     return b;
 }
 void append(Batch &b, const cppgnss::Measurement &m, Tick t,
-            const std::string &stream) {
+            const std::string &setup_id) {
     auto c = b.array.children;
-    str(c[0], stream);
+    str(c[0], setup_id);
     decimal(c[1], t);
     str(c[2], m.system);
     integer(c[3], m.satellite);
@@ -264,7 +325,7 @@ std::shared_ptr<Batch> events() {
     auto b = std::make_shared<Batch>();
     check(ArrowSchemaSetTypeStruct(&b->schema, 8));
     auto c = b->schema.children;
-    field(c[0], "stream_id", NANOARROW_TYPE_STRING, false);
+    field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
     field(c[1], "kind", NANOARROW_TYPE_STRING, false);
     field(c[2], "scope", NANOARROW_TYPE_STRING, false);
     decfield(c[3], "gpst");
@@ -302,7 +363,7 @@ std::shared_ptr<Batch> raw_bits() {
     auto b = std::make_shared<Batch>();
     check(ArrowSchemaSetTypeStruct(&b->schema, 16));
     auto c = b->schema.children;
-    field(c[0], "stream_id", NANOARROW_TYPE_STRING, false);
+    field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
     decfield(c[1], "nav_epoch_gpst");
     field(c[2], "satellite_system", NANOARROW_TYPE_STRING, false);
     field(c[3], "satellite_number", NANOARROW_TYPE_UINT16, false);
@@ -334,10 +395,10 @@ std::shared_ptr<Batch> raw_bits() {
     b->init();
     return b;
 }
-void append_bits(Batch &b, Tick t, const std::string &stream,
+void append_bits(Batch &b, Tick t, const std::string &setup_id,
                  const cppgnss::RawBits &bits) {
     auto c = b.array.children;
-    str(c[0], stream);
+    str(c[0], setup_id);
     decimal(c[1], t);
     str(c[2], bits.system);
     integer(c[3], bits.satellite);
@@ -385,12 +446,40 @@ void append_bits(Batch &b, Tick t, const std::string &stream,
 }
 struct Reader {
     cppgnss::StreamDecoder decoder;
-    std::string stream;
+    std::string setup_id;
     unsigned antenna;
     std::optional<cppgnss::Measurements> pending;
     uint64_t pending_start = 0, epochs = 0, unsupported = 0, untimed = 0,
              incomplete = 0, other_antenna = 0, meas3 = 0;
     std::mutex mutex;
+    std::map<std::string, Tick> last_times;
+    std::string reversal_axis;
+    Tick reversal_previous = 0, reversal_current = 0;
+    uint64_t reversal_offset = 0;
+    void monotonic(Tick now, const std::string &axis, uint64_t offset) {
+        auto previous = last_times.find(axis);
+        if (previous != last_times.end() && now < previous->second) {
+            reversal_axis = axis;
+            reversal_previous = previous->second;
+            reversal_current = now;
+            reversal_offset = offset;
+            throw std::runtime_error("GPST time reversal");
+        }
+        last_times[axis] = now;
+    }
+    py::dict time_error() {
+        std::unique_lock lock(mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            throw std::runtime_error("Concurrent importer use");
+        py::dict d;
+        if (!reversal_axis.empty()) {
+            d["axis"] = reversal_axis;
+            d["previous"] = time_parts(reversal_previous);
+            d["current"] = time_parts(reversal_current);
+            d["offset"] = reversal_offset;
+        }
+        return d;
+    }
     uint64_t excluded = 0;
     std::vector<cppgnss::Measurement> extras;
     bool has_measurements = false;
@@ -408,7 +497,7 @@ struct Reader {
         if (f.offset < nav_skip_before)
             return;
         auto emit = [&](int64_t ms, const cppgnss::RawBits &bits) {
-            append_bits(out, Tick(ms) * 1000000000, stream, bits);
+            append_bits(out, Tick(ms) * 1000000000, setup_id, bits);
             ++raw_count;
             ++raw_families[bits.family];
             for (const auto &c : bits.checks)
@@ -433,6 +522,11 @@ struct Reader {
                 return;
             }
             auto ms = *r.gpst_ms;
+            std::string axis = "navigation/" + r.system +
+                               std::to_string(r.satellite) + "/" + r.family;
+            for (const auto &signal : r.signals)
+                axis += "/" + signal;
+            monotonic(Tick(ms) * 1000000000, axis, f.offset);
             emit(ms, r);
             // A timestamped navigation block is not a whole navigation epoch
             // completion boundary. RawBits carries its reception context
@@ -441,13 +535,13 @@ struct Reader {
         }
         const auto p = f.payload;
         if (f.id == 0x0120 && p.size() == 16) {
-            auto tow = UBX::read_le<uint32_t>(p, 0);
-            auto week = UBX::read_le<int16_t>(p, 8);
-            if ((p[11] & 3) != 3 || week < 0 || tow >= 604800000) {
+            auto time = timegps(f);
+            if (!time) {
                 nav_conflict = true;
                 return;
             }
-            int64_t ms = int64_t(week) * 604800000 + tow;
+            int64_t ms = *time;
+            monotonic(Tick(ms) * 1000000000, "navigation/TIMEGPS", f.offset);
             if (nav_ms && *nav_ms != ms) {
                 raw_untimed += nav_bits.size();
                 nav_bits.clear();
@@ -466,7 +560,7 @@ struct Reader {
                 *nav_ms % 604800000 == UBX::read_le<uint32_t>(p, 0)) {
                 for (const auto &bits : nav_bits)
                     emit(*nav_ms, bits);
-                complete(ev, Tick(*nav_ms) * 1000000000, stream, false,
+                complete(ev, Tick(*nav_ms) * 1000000000, setup_id, false,
                          "NAVIGATION");
             } else
                 raw_untimed += nav_bits.size();
@@ -522,7 +616,7 @@ struct Reader {
     Reader(const std::string &protocol, const std::string &id, unsigned ant)
         : decoder(protocol == "ubx" ? cppgnss::Protocol::ubx
                                     : cppgnss::Protocol::sbf),
-          stream(id), antenna(ant) {
+          setup_id(id), antenna(ant) {
         if (protocol != "ubx" && protocol != "sbf")
             throw std::invalid_argument("Expected ubx or sbf");
         if (protocol == "ubx" && ant != 0)
@@ -545,10 +639,10 @@ struct Reader {
                 return;
             }
             ++epochs;
-            complete(*ev, t, stream, !e.tow_ms.has_value());
+            complete(*ev, t, setup_id, !e.tow_ms.has_value());
             for (auto &m : e.rows)
                 if (m.antenna == antenna)
-                    append(*out, m, t, stream);
+                    append(*out, m, t, setup_id);
                 else
                     ++other_antenna;
         };
@@ -583,6 +677,15 @@ struct Reader {
                               extra->rows.end());
             }
             if (e) {
+                std::optional<Tick> time;
+                try {
+                    time = time_of(*e);
+                } catch (const std::runtime_error &) {
+                    // Existing invalid-time handling below remains
+                    // authoritative.
+                }
+                if (time)
+                    monotonic(*time, "observation", f.offset);
                 unsupported += e->unsupported;
                 excluded += e->excluded;
                 if (f.protocol == cppgnss::Protocol::ubx) {
@@ -625,6 +728,10 @@ struct Reader {
         py::dict state;
         state["nav_ms"] = nav_ms;
         state["nav_conflict"] = nav_conflict;
+        py::dict times;
+        for (const auto &[axis, time] : last_times)
+            times[axis.c_str()] = time_parts(time);
+        state["last_times"] = times;
         py::list bits;
         for (const auto &b : nav_bits) {
             std::vector<std::array<std::string, 6>> checks;
@@ -650,6 +757,15 @@ struct Reader {
         nav_ms = state["nav_ms"].cast<std::optional<int64_t>>();
         nav_conflict = state["nav_conflict"].cast<bool>();
         nav_skip_before = state["skip_bytes"].cast<uint64_t>();
+        for (auto item : state["last_times"].cast<py::dict>()) {
+            auto value = item.second.cast<py::sequence>();
+            auto seconds = value[0].cast<int64_t>(),
+                 fraction = value[1].cast<int64_t>();
+            if (seconds < 0 || fraction < 0 || fraction >= ps)
+                throw std::runtime_error("Invalid checkpoint GPST");
+            last_times[item.first.cast<std::string>()] =
+                Tick(seconds) * ps + fraction;
+        }
         for (auto item : state["nav_bits"].cast<py::list>()) {
             auto b = py::cast<py::sequence>(item);
             cppgnss::RawBits r;
@@ -712,12 +828,24 @@ struct Reader {
 };
 } // namespace
 void bind_cnex(py::module_ &m) {
+    py::class_<Probe>(m, "CnexTimeProbe")
+        .def(py::init<const std::string &>(), py::arg("protocol"))
+        .def("feed",
+             [](Probe &r, py::bytes bytes) {
+                 char *p;
+                 Py_ssize_t n;
+                 if (PyBytes_AsStringAndSize(bytes.ptr(), &p, &n))
+                     throw py::error_already_set();
+                 py::gil_scoped_release release;
+                 r.feed({reinterpret_cast<const uint8_t *>(p), size_t(n)});
+             })
+        .def("result", &Probe::result);
     py::class_<Batch, std::shared_ptr<Batch>>(m, "CnexArrowBatch")
         .def("__arrow_c_array__", &Batch::export_array,
              py::arg("requested_schema") = py::none());
     py::class_<Reader>(m, "CnexObservationReader")
         .def(py::init<const std::string &, const std::string &, unsigned>(),
-             py::arg("protocol"), py::arg("stream_id"), py::arg("antenna") = 0)
+             py::arg("protocol"), py::arg("setup_id"), py::arg("antenna") = 0)
         .def("feed",
              [](Reader &r, py::bytes bytes) {
                  char *p;
@@ -729,6 +857,7 @@ void bind_cnex(py::module_ &m) {
                      {reinterpret_cast<const uint8_t *>(p), size_t(n)});
              })
         .def("summary", &Reader::summary)
+        .def("time_error", &Reader::time_error)
         .def("checkpoint", &Reader::checkpoint)
         .def("restore", &Reader::restore);
 }

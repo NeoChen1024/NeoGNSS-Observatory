@@ -1,16 +1,46 @@
 {
-  "setup_id": "example-setup",
+  "setup_id": "Roof station / mosaic-X5 / configuration A",
+  "comment": "Illustrative coordinates, ARP offset and cable length only; replace with actual installation values. Set unknown vectors to null.",
+  "observer": "Station operator",
+  "agency": null,
+  "marker": {
+    "name": "ROOF",
+    "number": null,
+    "type": null,
+    "position_xyz_m": {
+      "x": -3027000.0,
+      "y": 4927000.0,
+      "z": 2670000.0
+    },
+    "reference_frame": null,
+    "position_basis": "approximate"
+  },
   "receiver": {
     "vendor": "Septentrio",
     "model": "mosaic-X5",
+    "rinex_name": "SEPT MOSAIC-X5",
     "serial_number": null,
     "firmware_version": null,
     "comment": "Replace with the actual station metadata before scientific use."
   },
-  "antennas": {
-    "main": {
-      "comment": "Populate antenna model, ARP offset and installation metadata."
-    }
+  "antenna": {
+    "type": "BEIBT800S",
+    "radome": null,
+    "serial_number": null,
+    "comment": "Upright installation. Confirm the catalog radome code before selecting calibration; null does not mean NONE.",
+    "arp_offset_neu_m": {
+      "north": 0.0,
+      "east": 0.0,
+      "up": 1.5
+    },
+    "azimuth_deg": null,
+    "feed_line": {
+      "type": "RG-58",
+      "length_m": 12.5
+    },
+    "calibration_file": null
   },
-  "epoch_period_s": "1.000000000000"
+  "epoch_period_s": "1.000000000000",
+  "tracking": null,
+  "vendor_config": null
 }

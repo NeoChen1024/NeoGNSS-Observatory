@@ -7,7 +7,7 @@ pending. [Overview](overview.md) | [Import policy](import-policy.md)
 
 Events describe boundaries, discontinuities and source-declared observation
 clock context. Observation and RawBits carry their own times; Events are not
-epoch lookup tables. No science row must reference an event ID. Setup/Stream
+epoch lookup tables. No science row must reference an event ID. Setup
 metadata references remain shared descriptive context.
 
 Measurement and navigation scopes are independent even at equal timestamps.
@@ -32,7 +32,7 @@ remain on Observation rows.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `stream_id` | string | Affected logical Stream |
+| `setup_id` | string | Affected logical station |
 | `kind` | enum | Kind above |
 | `scope` | enum | `STREAM`, `OBSERVATION` or `NAVIGATION` |
 | `gpst` | GpstTimestamp | Event location, target epoch time, or state/interval start |
@@ -100,7 +100,7 @@ Direct/live adapters provide the same required state or explicitly UNKNOWN;
 absence of context must not be mistaken for an uncorrected source.
 
 ParquetNEX stores `r00-events-part00.parquet` and subsequent parts/revisions per
-Stream/GPST day, following [ParquetNEX naming](parquetnex.md#daily-revisions).
+station/GPST day, following [ParquetNEX naming](parquetnex.md#daily-revisions).
 Assign by `gpst`:
 an interval comparison belongs to the next available epoch's day even if its
 previous coordinate is from another day; persistent state begins in its start

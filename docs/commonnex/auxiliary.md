@@ -34,7 +34,7 @@ Proposed common context for each telemetry record:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `stream_id` | `string` | Logical Stream; no mandatory telemetry row ID |
+| `setup_id` | `string` | Logical station Setup; no mandatory telemetry row ID |
 | `gpst` | `GpstTimestamp?` | Normalized sample or association time in GPST seconds |
 | `observation_gpst`, `nav_epoch_gpst` | `GpstTimestamp?`, `GpstTimestamp?` | Optional justified context coordinates, not epoch-table references |
 | `time_role`, `time_basis` | enum, enum | Sample/event/context time and source-field/association basis |

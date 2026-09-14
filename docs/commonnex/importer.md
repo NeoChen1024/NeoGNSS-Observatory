@@ -1,6 +1,6 @@
 # CommonNEX batch importer pilot
 
-`neo-cnex-import` is an implemented observation-first pilot, not full CommonNEX
+`ngo-cnex-import` is an implemented observation-first pilot, not full CommonNEX
 acquisition support. Its `observation-pilot-1` Arrow/Parquet schema is experimental.
 The broader format documents remain the target design. Do not use this pilot
 as a lossless replacement for raw archives.
@@ -66,39 +66,100 @@ SBF navigation solutions. The CLI reports its restricted catalog coverage.
 
 ## Initialize
 
-Create one Setup directory with a Stream beneath it. Start from the
+Create one logical station directory with one receiver and one antenna. Start from the
 [example Setup](../../config/commonnex-setup.example.json) and fill actual metadata;
 the example is not a calibrated station description.
 
 ```sh
-neo-cnex-import init data/my-setup \
-  --setup config/my-setup.json --stream-id main --antenna-name main
+ngo-cnex-import init data/my-setup \
+  --setup config/my-setup.json \
+  --vendor-config /path/to/receiver-config.txt \
+  --antenna-catalog /path/to/igs20.atx.gz \
+  --antenna-catalog /path/to/ngs20.atx
 ```
 
-The initializer imports `setup.json`, its optional same-directory vendor config,
-and creates `main/stream.json`. `--source-antenna` selects the native antenna
-index (default 0; RAWX currently requires 0). Scientific antenna identity remains
-the named Setup reference. Initialization validates essential references and
-period representation; it is not a complete Setup JSON Schema validator.
-Existing output directories are not overwritten. Additional Stream initialization
-inside an existing Setup is not yet exposed by this pilot.
+The initializer imports `setup.json` directly at the station root, its optional
+vendor config and selected `antenna.atx`. Both catalog and config options are
+optional. To supply a config from another location, add
+`--vendor-config /path/to/receiver-config.txt`. The file is copied unchanged
+beside the output `setup.json`; its basename replaces `vendor_config` in the
+output metadata, without modifying the input Setup or config. Without this
+option, the initializer uses the filename already declared in the input Setup.
+Config filenames must not collide with `setup.json` or reserved `antenna.atx`.
+For a declared Septentrio receiver of any model, `init` also derives unknown tracking
+entries from the vendor config's `setSignalTracking` command. Explicit tracking
+is retained, with warnings on differences. Unsupported config syntax stays
+opaque rather than yielding guessed or partially complete tracking. See the
+[signal examples and mapping](setup-json.md#tracking-declaration-and-signal-names).
+`setup_id` is a free-form string independent of OUTPUT and `marker.name`;
+only companion filenames are constrained as path components.
+Marker name/number/type are preserved explicitly, never
+inferred from the Setup ID.
+Initialization validates strings, nominal period, tracking, marker XYZ, ARP
+N/E/U, orientation and feed-line length. See [ANTEX selection](setup-json.md#antex-selection-during-initialization)
+for exact type/radome matching, optional matching-serial priority, catalog order
+and validity handling. The example intentionally has unknown radome: confirm
+the correct catalog code before requesting calibration selection.
+Existing output directories are never overwritten. Files are prepared in a
+temporary directory and published by rename; failed initialization removes
+only its own unpublished temporary directory. No receiver is configured.
 
 ## Import local recordings
 
 ```sh
-neo-cnex-import run -p sbf --stream data/my-setup/main first.25_ second.25_
-neo-cnex-import list data/my-setup/main
+ngo-cnex-import run -p sbf --station data/my-setup first.25_ second.25_
+ngo-cnex-import list data/my-setup
 ```
 
-Inputs are explicit expanded files in caller-supplied recording order. Use one
-continuous recording path per invocation; do not mix overlapping logger copies.
+Inputs are explicit expanded files. The importer orders files from bounded head
+samples, not filenames. Use one continuous recording path per invocation; do
+not mix overlapping logger copies.
 The importer does not acquire FTP data, decompress XZ, or require a QA stamp.
 Choose `-p ubx` for RAWX. Frame-validated foreign-protocol messages are skipped
 atomically with a throttled warning and counters.
+`run --source-antenna` selects a native observation input (default 0; RAWX
+requires 0). Different physical antennas use different logical stations. The
+choice is saved in continuation state and must match when resuming. Observations,
+RawBits and Events carry `setup_id`, not a separate Stream/antenna reference.
 
 Ordinary import refuses an already existing day/catalog rather than guessing
 whether data is a duplicate, a missing interval, or a replacement. Summary JSON
 is on stdout; processing progress and warnings are on stderr.
+
+### Head-only ordering and time reversal
+
+For each new input, inspect at most `min(size, max(ceil(size / 100), 1 MiB))`
+bytes from its beginning. No tail read or full indexing pass is performed.
+An independent native framing probe validates complete frames and records the
+first usable observation time (RAWX or MeasEpoch). The probe stops early when
+that anchor is available. If none is present in the window, use the first valid
+UBX NAV-TIMEGPS or supported timed SBF RawBits anchor instead. No observation
+completion event is required merely to read a valid measurement timestamp.
+Do not snap fractional GPST or use a binary64 sort key; probe times use exact
+integer seconds/picoseconds, with the same native conversion as import.
+
+Stable-sort by that timestamp, preserving caller order for ties. Print the
+resulting order and anchor kind on stderr. If a file has no usable anchor in
+the window, fail before staging any output; never guess from its filename or
+silently expand the probe into a full scan. A tiny fragment-only file may need
+to be reassembled before importing.
+
+Formal import starts each sorted file at byte zero and carries framing/epoch
+state across files. Probe state is discarded. Native checks compare observation
+epochs separately from UBX TIMEGPS. SBF RawBits times are checked separately
+per satellite/signal/message family: different families may have different
+receive-time offsets and be interleaved. Never compare these independent time
+sequences against each other. A strict decrease stops import and reports the axis, previous/current
+GPST and source file/byte offset. Equal timestamps are accepted without a
+duplicate check. Head samples do not claim overlap detection or global validity.
+Inspect or re-stitch overlapping/disordered inputs rather than expecting the
+importer to trim or merge them. Failed runs do not publish their staged catalogs;
+unpublished staging remains available for inspection.
+
+Last-seen times for these sequences are retained in the continuation cursor. Previously
+parsed navigation replay is skipped using the existing cursor, so it is not
+mistaken for new backwards time. Saved raw-tail segments always precede the
+sorted new input files and are never independently probed or reordered.
 
 ## Tail continuation and reconstruction
 
@@ -113,8 +174,8 @@ not detect every possible same-size alteration. No pending tail means no raw
 context replay is needed. Downstream processing ignores this sidecar.
 
 ```sh
-neo-cnex-import run -p sbf --stream data/my-setup/main \
-  --resume-from data/my-setup/main/2025-08-15/import-state.json next.25_
+ngo-cnex-import run -p sbf --station data/my-setup \
+  --resume-from data/my-setup/2025-08-15/import-state.json next.25_
 ```
 
 The supplied inputs are new recording files; do not repeat the saved raw-context
@@ -129,7 +190,7 @@ For a real correction or missing interval inside published data, explicitly
 provide the complete replacement input:
 
 ```sh
-neo-cnex-import run -p sbf --stream data/my-setup/main --rebuild complete-day.25_
+ngo-cnex-import run -p sbf --station data/my-setup --rebuild complete-day.25_
 ```
 
 This creates the next revision for affected implemented catalogs. It does not
@@ -145,10 +206,12 @@ transaction or full crash recovery is promised. Old revisions are retained.
 ## Remaining work
 
 - [x] Initializer, filename parsing/allocation and latest-revision selection.
+- [x] Head-only file ordering and independent observation/navigation reversal checks.
 - [x] RAWX/MeasEpoch decoding and native decimal Arrow observation batches.
 - [x] Measurement completion events and daily Parquet writing.
 - [x] Local raw-tail continuation with immutable parts and explicit rebuilding.
 - [x] MeasExtra uncertainty, C/N0, lock/continuity and preprocessing corrections.
 - [ ] Cadence, clock and navigation epoch Events, with context across invocations.
-- [ ] Verified RawBits families and their navigation-time association.
+- [x] Reviewed RawBits layouts and independent navigation-time association;
+  distinguish sample-verified and documentary adapters in the coverage table.
 - [ ] Additional input protocols and any explicitly requested reconciliation.
