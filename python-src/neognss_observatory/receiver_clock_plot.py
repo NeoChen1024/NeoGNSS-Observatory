@@ -20,7 +20,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from .gpst import calendar, label
-from .sbas_extract import write_json
+from .research_output import write_json
 
 HOUR_NS = 3600 * 10**9
 COLUMNS = (

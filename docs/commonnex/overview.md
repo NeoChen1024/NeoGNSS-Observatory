@@ -210,6 +210,10 @@ Checked items mean a design decision or stated research validation, not shipped 
 
 - [x] Implement initialization and RAWX/MeasEpoch observation pilot with completion Events.
 - [x] Implement native-to-Python nanoarrow batches and capsule buffer ownership.
+- [x] Import UBX/SBF SBAS L1 RawBits through Arrow and daily ParquetNEX, with
+  independent navigation context and scoped CRC checks; feed the SBAS grid reader.
+- [x] Extend RawBits to the documented GPS/Galileo/BeiDou/QZSS/SBAS containers,
+  retaining unclassified services and distinguishing sample/documentary validation.
 - [ ] Add native Arrow input/replay consumers and remaining catalog mappings.
 - [x] Implement bounded daily observation writes and raw-tail continuation.
 - [x] Implement filename validation, next revision/part allocation and latest

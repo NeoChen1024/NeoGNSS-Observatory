@@ -7,69 +7,55 @@ The processing boundary is the SBAS message, not its UBX/SBF transport.
 ```sh
 # Optional read-only QA; extraction does not require evidence of this run.
 ngo-dataset-qa --input-dir /data/ubx
-# Choose expanded raw UBX or SBF only at extraction.
-ngo-sbas-frame-parquet -p ubx --input-dir /data/ubx --output /data/sbas-frames
-# Alternatively:
-ngo-sbas-frame-parquet -p sbf --input-dir /data/raw-sbf --output /data/sbas-frames
+# Initialize once with actual station metadata, then supply ordered raw files.
+neo-cnex-import init /data/cnex --setup /data/setup.json --stream-id main --antenna-name main
+neo-cnex-import run -p sbf --stream /data/cnex/main /data/first.sbf /data/second.sbf
 
-ngo-sbas-grid-parquet --input-dir /data/sbas-frames --output /data/sbas-grid
+ngo-sbas-grid-parquet --input-dir /data/cnex/main --output /data/sbas-grid
 
 ngo-sbas-grid-plot --input-dir /data/sbas-grid --output /data/sbas-maps \
   --coastline contrib/natural-earth/ne_10m_coastline.zip
 ```
 
-Extraction, grid calculation and plotting are separate commands. Grid accepts
-only frame Parquet and has no protocol selection, raw-data path, reconstruction
-dependency, or source-offset lookup. Input schemas and stream end records
-carry the information required for independent downstream processing.
+Import, grid calculation and plotting are separate commands. Grid reads the
+ParquetNEX Stream's latest RawBits and Events revisions and all their parts.
+It has no protocol selection, raw-data path or reconstruction dependency.
 
 ### Explicit wire protocol
 
-Only `ngo-sbas-frame-parquet` uses `--protocol/-p ubx|sbf` (default UBX,
-case-insensitive). Complete checksum-valid foreign frames are skipped atomically
+Only `neo-cnex-import run` uses `--protocol/-p ubx|sbf` (default UBX).
+Complete checksum-valid foreign frames are skipped atomically
 with throttled stderr warnings and skipped frame/byte counts. Invalid wire
-frames follow the decoder's corruption/resynchronization policy; corrupt lengths
-can still result in a truncated-tail error.
+frames follow the decoder's corruption/resynchronization policy; incomplete
+tails remain unpublished and can be continued with the import sidecar.
 
-UBX input can be raw nonoverlapping recordings or reconstructed files;
-`unassigned/` is excluded. No completion manifest or reconstruction index is
-opened. A shared native epoch assembler resolves SFRBX GPST from NAV-TIMEGPS
-and supported RAWX anchors while streaming, buffering messages until their
-epoch is resolved. It is also used by QA/reconstruction, but extraction does
-not collect or rerun full QA diagnostics. Files are traversed recursively in
-path order; filenames never supply time. SBF input
-recursively selects expanded `.sbf`, `.YY_`, and `.ubx` candidates in path
-order; arrange files in stream order and do not mix overlapping recordings.
-No XZ decompression occurs. SBF uses GEORawL1 TOW/WNc directly. Missing time
-and reversed timestamps fail rather than receiving invented timestamps.
+Inputs are explicit expanded files in recording order. Use reconstructed Era A
+segments, excluding unassigned data, or nonoverlapping raw UBX/SBF recordings.
+No reconstruction index, QA stamp, recursive discovery or XZ decompression is
+required. UBX navigation association uses fresh NAV-TIMEGPS and matching EOE,
+independently of RAWX measurement time. SBF GEORawL1 uses its own TOW/WNc,
+without claiming that an individual raw block completes a navigation epoch.
+Unusable time is counted and omitted, never invented. See the
+[importer guide](commonnex/importer.md) for continuation and coverage limits.
 
-Continuous file/day boundaries preserve framing and signal state. UBX starts
-a new stream after a navigation-epoch gap greater than `--gap-timeout`. SBF starts a new per-signal stream after a
-gap greater than `--gap-timeout` (default 50 seconds), considering every SBAS
-message type. This is a conservative signal-coverage rule, not proof of reboot.
-At a gap or EOF, stream closure stops at the last observed time; UBX may close
-at its last navigation epoch. No extra second or receiver cadence is invented.
+Continuous file/day boundaries preserve framing and signal state. Grid's
+`--gap-timeout` (default 50 seconds) closes state after a navigation-context or
+per-satellite SBAS reception gap. This is a downstream conservative coverage
+policy, not receiver restart evidence or a CommonNEX format requirement.
+At the selected input end, integration stops at the last available navigation
+context (or final SBAS time if no context events exist), without extrapolation.
+This is not a permanent end-of-stream marker in the input dataset.
 
-### Frame product
+### RawBits product
 
-`daily/GPST-YYYY-MM-DD.parquet` uses frame schema version 1:
-
-| Field | Meaning |
-| --- | --- |
-| `gpst_ms` | Integer milliseconds since 1980-01-06 00:00:00 GPST |
-| `constellation / prn / signal` | Canonical signal identity; currently SBAS L1CA |
-| `time_basis` | `navigation_epoch_context` or `receiver_message_time`; neither asserts SBAS transmit time |
-| `stream_id` | Product-local continuous signal stream; preserved across daily partitions |
-| `kind` | `frame` or `end` |
-| `frame_id` | Product-local frame identity, null on end records |
-| `frame` | Fixed 32 bytes: 250 SBAS bits, MSB-first, final six padding bits zero |
-| `crc_valid` | Independent SBAS CRC result; null on end records |
-| `accepted` | Receiver acceptance when supplied, otherwise null; false blocks grid updates |
-
-End records carry the observed closure time with null payload/validity fields.
-They preserve integration boundaries without raw files or extra source journals.
-Each stream's records remain ordered within a day; days are consumed in order.
-Only complete stream ranges are accepted by grid; missing end records fail.
+`YYYY-MM-DD/r00-raw-bits-part00.parquet` follows the
+[CommonNEX RawBits fields](commonnex/raw-bits.md). SBAS L1 uses
+`SBAS_L1_250_V1`, with DECIMAL(38,12) `nav_epoch_gpst`, normalized broadcaster
+identity, `SBAS_L1` bitstream source and separately scoped independent/receiver
+CRC checks. Failed checks remain records. The grid adapter projects these exact
+timestamps to integer milliseconds for its existing aging engine; source
+Parquet timestamps are unchanged. Navigation completion Events provide context
+separately; observation completion never anchors SBAS reception time.
 
 The SBAS body includes its own preamble, message type and CRC. UBX/SBF headers,
 checksums, native field dictionaries, ninth UBX words, byte offsets and filenames
@@ -80,29 +66,36 @@ and unsupported complete SBAS bodies remain available for inspection/re-decoding
 
 Grid re-decodes SBAS bodies in bounded C++ batches and verifies CRC metadata
 against their bytes. Receiver-rejected frames do not update masks or corrections.
-Independent stream state spans Parquet files and GPST midnight. Explicit end
-records close it; the grid has no protocol-specific continuity branches.
+Independent stream state spans Parquet files and GPST midnight. Grid consumes
+navigation completion Events and rejects unsupported navigation event kinds;
+broader restart/discontinuity mappings remain future importer work.
 
-Grid schema version 3 contains canonical signal identity, `stream_id`,
+Grid schema version 3 contains RINEX `satellite_system`/`satellite_number`
+identity (`S`/`37`, displayed as `S37`), signal, `stream_id`,
 `frame_id`, IGP band/mask position, coordinates, IODI, GIVEI, delay in meters,
 equivalent VTEC in TECU, and `[start_gpst_ms,end_gpst_ms)`. `frame_id` points
-to the originating MT26 in the input frame product, not a byte offset. SBAS
+to a run-local occurrence counter for the originating MT26, not a Parquet
+foreign key or byte offset. SBAS
 bodies are not duplicated for every grid cell. Midnight splits intervals, not
 state. No raw source references or transport identifiers are persisted.
 
 Correction/mask ages remain 600/1200 seconds. Missing masks, expired state,
 invalid and unmonitored values produce no interval, not zero TEC. Values from
-different PRNs are never averaged together. This is SBAS-broadcast equivalent
+different satellites are never averaged together. This is SBAS-broadcast equivalent
 VTEC, not receiver-observed STEC. Empty days have no grid Parquet.
 
-Both products use bounded buffers and temporary shards, compacted into daily
-Zstandard level-3 Parquet without keeping all day writers open. Directory
+Grid uses bounded buffers and temporary shards, compacted into daily
+Zstandard level-3 Parquet without keeping all day writers open. Grid directory
 publication is atomic; `--overwrite` retains the previous output as a backup.
-Concise completion summaries are informational; grid reads frame schemas and
-end records directly without requiring completion JSON or raw sources.
+RawBits publication uses ParquetNEX revision/part rules. Grid does not require
+the import-state sidecar, completion summaries or raw sources.
 
 `ngo-sbas-grid-plot` uses only grid Parquet and a coastline asset. It computes
 valid-duration-weighted hourly means; `--min-coverage` defaults to 0.25.
+Hourly grid records are stored in `hourly/GPST-YYYY-MM-DD.parquet`, using
+Zstandard level 3 and explicit GPST, coordinate and VTEC units. Each file
+contains that day's hourly means, valid durations and coverage fractions;
+rendering reads these Parquet records rather than JSONL.
 `--start/--end YYYY-MM-DDTHH` select GPST hours with an exclusive end.
 Missing cells stay absent. Rendering/PNG compression use independent worker
 processes (`--workers`), with compression level 3 by default
@@ -192,8 +185,8 @@ Encode the PNG manifest in its recorded order with a Vulkan Video HEVC encoder:
 ```sh
 ngo-sbas-map-video \
   --images-manifest work/era-a-vtec-hourly/images.json \
-  --output work/era-a-vtec-hourly/era-a-prn137-hourly-vtec-5fps-hevc.mp4 \
-  --title "Era A SBAS PRN 137 hourly mean VTEC"
+  --output work/era-a-vtec-hourly/era-a-S37-hourly-vtec-5fps-hevc.mp4 \
+  --title "Era A SBAS S37 hourly mean VTEC"
 ```
 
 The defaults are 5 fps, Vulkan physical device 0, CQP 24, an `hvc1` MP4 stream,

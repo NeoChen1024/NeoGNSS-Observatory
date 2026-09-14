@@ -22,9 +22,9 @@ as a lossless replacement for raw archives.
   buffered until matching EndOfMeas; a different epoch before closure is counted
   as incomplete and the previous pending group is omitted. File/chunk boundaries
   do not reset framing or the pending group.
-- Python writes GPST-day `observations` and `events` catalogs with Zstandard
-  compression. Events currently contain only reported OBSERVATION/EPOCH
-  completion, with RECORD_STRUCTURE or PROTOCOL_BOUNDARY basis. Missing other
+- Python writes GPST-day `observations`, `raw-bits` and `events` catalogs with
+  Zstandard level 3 compression. Events contain reported OBSERVATION/EPOCH and
+  NAVIGATION/EPOCH completion, with RECORD_STRUCTURE or PROTOCOL_BOUNDARY basis. Missing other
   events never implies continuity or a known clock-correction state.
 - `list` selects the latest revision independently for each day/catalog and
   returns all its parts. Eight Parquet writers may remain open at once; returning
@@ -49,7 +49,16 @@ ambiguous/unmatched extras are counted and not applied. Extra blocks arriving
 first are included in the raw-tail replay cursor. Summary counters distinguish
 excluded, unsupported, unmatched, ambiguous, pending and matched extras.
 
-Not yet implemented: RawBits/DecodedNav, navigation epoch events, telemetry,
+RawBits import covers the [implemented UBX/SBF adapters](raw-bits-importer.md),
+including documentary mappings without current samples. Independent and
+receiver checks remain separate. Failed-check bodies are retained; downstream
+acceptance is not stored as a canonical property. RawBits-only input is supported.
+UBX uses fresh NAV-TIMEGPS plus matching NAV-EOE, independently of RAWX time;
+unresolved/conflicting groups are counted and omitted. SBF raw-navigation blocks
+use their own TOW/WNc; no whole-epoch completion is inferred from a single block.
+No transmission-time or observation-time equivalence is asserted.
+
+Not yet implemented: undefined future RawBits representations, DecodedNav, telemetry,
 cadence/reset/clock-correction events,
 Meas3 decoding, RINEX/RTCM3 input, and automatic overlap reconciliation.
 Observation values are not corrected using NAV-CLOCK or
@@ -96,7 +105,9 @@ is on stdout; processing progress and warnings are on stderr.
 The latest affected GPST day receives `import-state.json`, a narrow continuation
 cursor for that invocation. It records the published part names, terminal input
 position, and raw file/offset ranges needed to replay the unpublished tail.
-It is not a science catalog, decoder-state dump or general recovery manifest.
+It also stores bounded pending UBX navigation context and a replay skip
+offset, so observation-tail replay does not duplicate published RawBits.
+It is not a science catalog or general recovery manifest.
 Raw context files must remain available and unchanged; the basic size check does
 not detect every possible same-size alteration. No pending tail means no raw
 context replay is needed. Downstream processing ignores this sidecar.

@@ -2,18 +2,22 @@
 """Produce daily GPST grid intervals from protocol-neutral SBAS streams."""
 
 import json
+import re
 from collections import Counter, defaultdict
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import click
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
+from .cnex_import import ORIGIN, latest_parts
 from .gpst import label
 from .research_output import staged_output, write_json
-from .sbas_frames import SCHEMA as FRAME_SCHEMA
 
 SCHEMA = pa.schema(
     [
@@ -21,7 +25,7 @@ SCHEMA = pa.schema(
         for name in (
             "start_gpst_ms",
             "end_gpst_ms",
-            "prn",
+            "satellite_number",
             "band",
             "mask_bit",
             "iodi",
@@ -31,7 +35,7 @@ SCHEMA = pa.schema(
         )
     ]
     + [(name, pa.float64()) for name in ("latitude", "longitude", "delay_m", "vtec_tecu")]
-    + [(name, pa.string()) for name in ("constellation", "signal")],
+    + [(name, pa.string()) for name in ("satellite_system", "signal")],
     metadata={
         b"schema_version": b"3",
         b"time_scale": b"GPST",
@@ -101,68 +105,131 @@ class DailySink:
         return manifest
 
 
-def build_grid(input_dir, output):
-    daily = input_dir / "daily" if (input_dir / "daily").is_dir() else input_dir
-    paths = sorted(daily.glob("GPST-*.parquet"))
-    if not paths:
-        raise ValueError("No daily SBAS frame Parquet inputs")
+def build_grid(input_dir, output, gap_timeout=50):
+    metadata = json.loads((input_dir / "stream.json").read_text(encoding="utf-8"))
+    days = sorted(p for p in input_dir.iterdir() if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name))
+    if not any(latest_parts(day, "raw-bits") for day in days):
+        raise ValueError("No ParquetNEX RawBits inputs in this Stream")
     sink = DailySink(output)
     states, identities, pending = {}, {}, {}
-    ended = set()
+    last_frame = {}
+    next_stream = next_frame = 0
+    previous_nav = previous_raw = None
+    gap_ms = round(gap_timeout * 1000)
     diagnostics = Counter()
 
     def emit(key, rows):
         for row in rows:
             frame_id = row.pop("frame_offset")
-            sink.add(dict(row, **identities[key], stream_id=key, frame_id=frame_id))
+            sink.add(dict(row, **identities[key], frame_id=frame_id))
 
     def flush(key):
         if pending[key]:
             emit(key, states[key].process_frames(pending[key]))
             pending[key].clear()
 
-    for path in tqdm(paths, desc="SBAS frame days", unit="day"):
-        with pq.ParquetFile(path) as source:
-            schema = source.schema_arrow
-            if not schema.equals(FRAME_SCHEMA) or any(
-                (schema.metadata or {}).get(k) != v for k, v in FRAME_SCHEMA.metadata.items()
-            ):
-                raise ValueError(f"Unexpected SBAS frame schema: {path}")
-            day = int(schema.metadata[b"day_gpst_ms"])
-            if day % 86400000:
-                raise ValueError("Frame partition is not a GPST day")
-            for batch in source.iter_batches(batch_size=8192):
-                for row in batch.to_pylist():
-                    if not day <= row["gpst_ms"] < day + 86400000:
-                        raise ValueError("SBAS record outside its GPST day")
-                    key = row["stream_id"]
-                    identity = {k: row[k] for k in ("constellation", "prn", "signal")}
-                    if identity["constellation"] != "SBAS" or identity["signal"] != "L1CA":
-                        raise ValueError("Grid requires SBAS L1CA")
-                    if key in ended:
-                        raise ValueError("SBAS stream continued after its end marker")
-                    if key not in states:
-                        if row["kind"] != "frame":
-                            raise ValueError("SBAS stream has no initial frame")
-                        states[key], pending[key], identities[key] = _native.GridProcessor(), [], identity
-                    elif identities[key] != identity:
-                        raise ValueError("SBAS stream identity changed")
-                    if row["kind"] == "frame":
-                        if row["frame_id"] is None or row["frame"] is None or row["crc_valid"] is None:
-                            raise ValueError("Incomplete SBAS frame record")
-                        pending[key].append({k: row[k] for k in ("gpst_ms", "frame_id", "frame", "crc_valid", "accepted")})
-                    elif row["kind"] == "end":
-                        flush(key)
-                        emit(key, states[key].finish(row["gpst_ms"]))
-                        diagnostics.update(states[key].diagnostics)
-                        del states[key], pending[key], identities[key]
-                        ended.add(key)
+    def close(key, time):
+        flush(key)
+        emit(key, states[key].finish(time))
+        diagnostics.update(states[key].diagnostics)
+        del states[key], pending[key], identities[key], last_frame[key]
+
+    def advance(time):
+        nonlocal previous_nav
+        if previous_nav is not None:
+            if time < previous_nav:
+                raise ValueError("Reversed navigation context; select a non-overlapping recording path")
+            if time - previous_nav > gap_ms:
+                for key in list(states):
+                    close(key, max(previous_nav, last_frame[key]))
+                diagnostics["navigation_gaps"] += 1
+        previous_nav = time
+        for key in list(states):
+            if time - last_frame[key] > gap_ms:
+                close(key, last_frame[key])
+                diagnostics["signal_gaps"] += 1
+
+    def rows(day, catalog):
+        start = Decimal((date.fromisoformat(day.name) - ORIGIN).days * 86400)
+        time_field = "nav_epoch_gpst" if catalog == "raw-bits" else "gpst"
+        for path in latest_parts(day, catalog):
+            with pq.ParquetFile(path) as source:
+                info = source.schema_arrow.metadata or {}
+                if info.get(b"commonnex.catalog") != catalog.encode() or info.get(b"stream_id") != metadata["stream_id"].encode():
+                    raise ValueError(f"Unexpected ParquetNEX identity/catalog: {path}")
+                if info.get(b"time.scale") != b"GPST" or source.schema_arrow.field(time_field).type != pa.decimal128(38, 12):
+                    raise ValueError(f"Expected CommonNEX GPST decimal seconds: {path}")
+                for batch in source.iter_batches(batch_size=8192):
+                    if catalog == "events":
+                        batch = batch.filter(pc.equal(batch.column("scope"), "NAVIGATION"))
                     else:
-                        raise ValueError("Unknown SBAS record kind")
-                for key in states:
-                    flush(key)
-    if states:
-        raise ValueError("Incomplete SBAS streams: missing end markers")
+                        batch = batch.filter(pc.equal(batch.column("message_family"), "SBAS_L1"))
+                    for row in batch.to_pylist():
+                        if row["stream_id"] != metadata["stream_id"]:
+                            raise ValueError(f"Mixed Stream identity: {path}")
+                        if not start <= row[time_field] < start + 86400:
+                            raise ValueError(f"Record outside its GPST day: {path}")
+                        yield row
+
+    for day in tqdm(days, desc="ParquetNEX SBAS days", unit="day"):
+        # Completion context is independent of measurement timestamps. Read one
+        # day's small navigation event catalog, not all observations or RawBits.
+        times = []
+        for event in rows(day, "events"):
+            if event["kind"] == "EPOCH_COMPLETION":
+                if event["payload"]["epoch_completion"]["completion"] != "COMPLETE":
+                    raise ValueError("Incomplete navigation closure requires an explicit downstream policy")
+                times.append(int(event["gpst"] * Decimal(1000)))
+            else:
+                raise ValueError(f"Unsupported navigation event: {event['kind']}")
+        times = iter(sorted(set(times)))
+        context = next(times, None)
+        for row in rows(day, "raw-bits"):
+            time = int(row["nav_epoch_gpst"] * Decimal(1000))
+            if previous_raw is not None and time < previous_raw:
+                raise ValueError("Reversed SBAS occurrence time; select non-overlapping inputs")
+            previous_raw = time
+            while context is not None and context <= time:
+                advance(context)
+                context = next(times, None)
+            if row["satellite_system"] != "S" or row["body_format"] != "SBAS_L1_250_V1" or row["bit_length"] != 250:
+                raise ValueError("Grid requires canonical SBAS L1 250-bit bodies")
+            if row["completeness"] != "complete" or len(row["body"]) != 32 or row["body"][-1] & 63:
+                raise ValueError("Invalid complete SBAS body")
+            key = row["satellite_number"]
+            if key in states and time - last_frame[key] > gap_ms:
+                close(key, last_frame[key])
+                diagnostics["signal_gaps"] += 1
+            if key not in states:
+                states[key], pending[key] = _native.GridProcessor(), []
+                identities[key] = dict(satellite_system="S", satellite_number=key, signal="L1CA", stream_id=next_stream)
+                next_stream += 1
+            checks = {(c["origin"], c["kind"], c["scope"]): c["result"] for c in row["checks"]}
+            independent = checks.get(("independent", "crc", "message"))
+            if independent not in ("pass", "fail"):
+                raise ValueError("Missing independently checked SBAS CRC")
+            receiver = checks.get(("receiver", "crc", "message"))
+            pending[key].append(
+                dict(
+                    gpst_ms=time,
+                    frame_id=next_frame,
+                    frame=row["body"],
+                    crc_valid=independent == "pass",
+                    accepted=receiver == "pass" if receiver in ("pass", "fail") else None,
+                )
+            )
+            next_frame += 1
+            last_frame[key] = time
+            if len(pending[key]) >= 8192:
+                flush(key)
+        while context is not None:
+            advance(context)
+            context = next(times, None)
+        for key in states:
+            flush(key)
+    for key in list(states):
+        close(key, max(last_frame[key], previous_nav if previous_nav is not None else last_frame[key]))
+    diagnostics["raw_bits_frames"] = next_frame
     return sink.finish(), dict(diagnostics)
 
 
@@ -171,16 +238,17 @@ def build_grid(input_dir, output):
     "--input-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     required=True,
-    help="Daily SBAS frame Parquet; no raw recordings or reconstruction indexes required.",
+    help="ParquetNEX Stream directory containing stream.json and daily RawBits/Events catalogs.",
 )
 @click.option("--output", type=click.Path(path_type=Path), required=True)
 @click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")
+@click.option("--gap-timeout", type=click.FloatRange(min=0.001), default=50, show_default=True)
 @staged_output
-def cli(input_dir, output):
-    """Compute daily GPST grid intervals from source-independent SBAS frames."""
+def cli(input_dir, output, gap_timeout):
+    """Compute daily GPST grid intervals from ParquetNEX SBAS RawBits and Events."""
     try:
         output.mkdir()
-        manifest, diagnostics = build_grid(input_dir.resolve(), output)
+        manifest, diagnostics = build_grid(input_dir.resolve(), output, gap_timeout)
         result = dict(
             schema=3,
             status="complete",
@@ -188,7 +256,12 @@ def cli(input_dir, output):
             time_scale="GPST",
             files=manifest,
             diagnostics=diagnostics,
-            policy=dict(correction_age_seconds=600, mask_age_seconds=1200, tail="explicit stream end; no cadence extrapolation"),
+            policy=dict(
+                correction_age_seconds=600,
+                mask_age_seconds=1200,
+                gap_timeout_seconds=gap_timeout,
+                tail="last available navigation context; no cadence extrapolation",
+            ),
         )
         write_json(output / "completed.json", result)
         click.echo(json.dumps(dict(status="complete", days=len(manifest), intervals=sum(r["rows"] for r in manifest))))

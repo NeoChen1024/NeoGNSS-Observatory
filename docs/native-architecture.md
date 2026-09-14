@@ -146,10 +146,12 @@ MSB-first SBAS L1 representation used by UBX. `CRCPassed`, raw `SVID`/`SigIdx`,
 channel fields and TOW/WNc remain available; independent SBAS CRC verification
 is also retained. SBAS satellite identity is normalized separately from the
 raw receiver identifiers. `GEORawL5` is never passed to the L1 parser. The SBF
-parser/batch API feeds `ngo-sbas-frame-parquet -p sbf`, using native TOW/WNc and
-receiver CRC status. UBX and SBF adapters share the same grid processor and
-protocol-neutral Parquet identity fields (`constellation`, `prn`, `signal`).
-The SBF path uses a configurable per-signal reception-gap policy; file and
+adapter feeds `neo-cnex-import run -p sbf` through native Arrow batches, using
+native TOW/WNc and separate receiver/independent CRC checks. UBX and SBF produce
+the same CommonNEX SBAS L1 RawBits layout. Grid reads these records and Events;
+its derived products retain RINEX `satellite_system`, `satellite_number` and
+`signal` fields, displaying SBAS identities as Sxx throughout.
+The grid uses a configurable reception-gap policy; file and
 GPST day boundaries do not reset state. Schema coverage does not establish
 full-archive scientific validity.
 

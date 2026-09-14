@@ -112,6 +112,8 @@ as unmodified transmitted data bits.
 | `source_diagnostics` | typed record? | Applicable receiver-specific diagnostics with their native definitions |
 | `checks` | list of records | Scoped receiver or independently evaluated checks; empty when none are known |
 
+Satellite identity uses the same RINEX `G/E/C/J/S` domain as Observation;
+for example SBAS PRN 137 is `(S,37)`, and QZSS PRN 193 is `(J,1)`.
 The satellite fields identify the broadcaster, not necessarily a satellite
 described by the message (for example, an almanac entry). An importer unable
 to normalize the broadcaster identity reports an unsupported mapping and does
@@ -189,8 +191,8 @@ The schema does not collapse multiple checks into a single successful boolean.
 Receiver output policy is evidence distinct from an explicit per-record flag.
 
 Processor acceptance is derived policy, not a property of the received bits;
-it is omitted from this general record. The existing SBAS processing product
-may retain its own acceptance field. Fragment/assembly context remains an
+it is omitted from this general record. The SBAS grid adapter derives acceptance
+from the scoped checks without persisting an extra acceptance field. Fragment/assembly context remains an
 extension point, not a mandatory generic sequence model: do not invent sequence
 numbers absent from the source. Transport truncation is not automatically a
 legitimate navigation fragment.
@@ -236,8 +238,9 @@ See [current SBF extraction](../../libcppgnss/src/sbf.cpp) and
 ## Canonical payloads
 
 Canonical normalization and the validated layouts in
-[RawBits layouts](raw-bits-layouts.md) are agreed design decisions, not an
-implemented CommonNEX importer. Pending mappings remain explicitly unsupported.
+[RawBits layouts](raw-bits-layouts.md) are agreed design decisions. The
+[importer coverage](raw-bits-importer.md) distinguishes implemented UBX/SBF
+mappings with receiver samples from documentary mappings without samples.
 For canonical bit layouts,
 bit order is MSB-first: body bit zero occupies bit 7 of byte zero. Unused low
 bits in the final byte are zero. Each `body_format` specifies included bits,

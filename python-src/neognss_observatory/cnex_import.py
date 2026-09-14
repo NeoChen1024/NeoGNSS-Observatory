@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # SPDX-License-Identifier: GPL-3.0-only
-"""Experimental CommonNEX observation import; no receiver acquisition or deduplication."""
+"""Experimental CommonNEX import; no receiver acquisition or deduplication."""
 
 import json
 import re
@@ -75,7 +75,7 @@ def component(value):
 
 @click.group()
 def cli():
-    """Import local UBX/SBF observations into experimental daily ParquetNEX."""
+    """Import local UBX/SBF observations and canonical RawBits into ParquetNEX."""
 
 
 @cli.command("init")
@@ -158,9 +158,10 @@ def list_parts(stream):
 def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
     """Process INPUTS in caller order as one continuous recording path.
 
-    Initial catalogs: observations and measurement-completion events only.
-    SBF MeasExtra enriches observations. RawBits, telemetry and cadence/clock
-    events are not imported.
+    Catalogs: observations (including MeasExtra), raw-bits and
+    observation/navigation completion events. See the RawBits coverage table
+    for documented and sample-verified adapters. Telemetry and cadence/clock
+    events are not yet imported.
     No automatic overlap merging. Rebuild requires the complete replacement input.
     """
     writers = {}
@@ -203,7 +204,12 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
         mode = "rebuild" if rebuild else "tail" if resume_from else "new"
         stage = Path(tempfile.mkdtemp(prefix=".cnex-import-", dir=stream))
         reader = _native.CnexObservationReader(protocol, metadata["stream_id"], metadata["source_antenna"])
-        counts = {"observations": 0, "events": 0}
+        if state:
+            reader.restore(state["navigation_context"])
+        counts = {"observations": 0, "events": 0, "raw-bits": 0}
+
+        def time_column(catalog):
+            return "nav_epoch_gpst" if catalog == "raw-bits" else "gpst"
 
         def get_writer(key, schema):
             if key not in writers or writers[key][0] is None:
@@ -233,9 +239,10 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
                         "time.unit": "s",
                         "setup_id": metadata["setup_id"],
                         "stream_id": metadata["stream_id"],
+                        "antenna_name": metadata["antenna_name"],
                     }
                 )
-                writers[key] = (pq.ParquetWriter(temporary, schema, compression="zstd"), temporary, target)
+                writers[key] = (pq.ParquetWriter(temporary, schema, compression="zstd", compression_level=3), temporary, target)
                 active[key] = None
             active.move_to_end(key)
             return writers[key][0]
@@ -247,7 +254,7 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
                 maxima = []
                 for path in latest_parts(stream / key[0], key[1]):
                     with pq.ParquetFile(path) as old:
-                        index = old.schema.names.index("gpst")
+                        index = old.schema.names.index(time_column(key[1]))
                         for i in range(old.metadata.num_row_groups):
                             stat = old.metadata.row_group(i).column(index).statistics
                             if stat and stat.has_min_max:
@@ -256,13 +263,13 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
                                 raise ValueError("Missing GPST statistics for tail validation")
                 tail_limits[key] = max(maxima) if maxima else None
             limit = tail_limits[key]
-            if limit is not None and pc.min(batch.column("gpst")).as_py() < limit:
+            if limit is not None and pc.min(batch.column(time_column(key[1]))).as_py() < limit:
                 raise ValueError("Continuation would insert before published tail; use a complete rebuild")
 
         warned_foreign = False
         total = sum(size - start for _, start, size in segments)
         click.echo(
-            "Importing observations (including SBF MeasExtra) and completion events; RawBits/telemetry are not yet imported.",
+            "Importing observations, canonical RawBits and independent completion events.",
             err=True,
         )
         with tqdm(total=total, unit="B", unit_scale=True, desc="CommonNEX", file=sys.stderr) as progress:
@@ -280,7 +287,7 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
                             schemas[catalog] = batch.schema
                             if not batch.num_rows:
                                 continue
-                            seconds = pc.cast(batch.column("gpst"), pa.int64(), safe=False).to_numpy()
+                            seconds = pc.cast(batch.column(time_column(catalog)), pa.int64(), safe=False).to_numpy()
                             days = seconds // 86400
                             for day in np.unique(days):
                                 day_name = (ORIGIN + timedelta(days=int(day))).isoformat()
@@ -298,7 +305,7 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
                     raise ValueError(f"Input changed while reading: {path}")
         summary = reader.summary()
         if not writers:
-            raise ValueError(f"No completed supported measurement epochs: {summary}")
+            raise ValueError(f"No completed supported records: {summary}")
         if rebuild:
             for day_name in {key[0] for key in writers}:
                 for catalog in counts:
@@ -331,6 +338,7 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
             "tail_inputs": tail,
             "input_end": {"path": str(segments[-1][0]), "offset": segments[-1][2]},
             "continued": False,
+            "navigation_context": reader.checkpoint(),
         }
         # The latest affected day owns this invocation's continuation cursor.
         last_day = max(key[0] for key in writers)
@@ -346,6 +354,8 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
             click.echo("Warning: unsupported/untimed/invalid input was encountered; inspect summary", err=True)
         if summary["measextra_unmatched"] or summary["measextra_ambiguous"] or summary["measextra_unsupported"]:
             click.echo("Warning: some MeasExtra records could not be associated; inspect summary", err=True)
+        if summary["raw_bits_untimed"] or summary["raw_bits_unsupported"] or summary["raw_bits_pending"]:
+            click.echo("Warning: RawBits records were withheld or unsupported; inspect counts and navigation context", err=True)
     except (ValueError, KeyError, OSError, RuntimeError, pa.ArrowException) as exc:
         for writer, _, _ in writers.values():
             if writer is not None:

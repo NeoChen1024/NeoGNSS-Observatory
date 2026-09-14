@@ -84,6 +84,10 @@
   do not decompress XZ during processing or silently fall back to `/hdd`.
   Ignore retained `.xz` copies and report missing expanded inputs explicitly.
 - Keep generated and large observation products out of Git.
+- Use Zstandard level 3 (`compression="zstd", compression_level=3`) by default
+  for all project-owned Parquet writers, including intermediate and derived
+  products. Specify both options explicitly. Do not rewrite existing datasets
+  solely to change compression unless requested.
 - Experimental artifacts need sufficient scientific metadata for interpretation,
   not a complete execution-environment snapshot.
 - Never infer observation coverage or time scale solely from filenames; inspect
@@ -221,9 +225,12 @@ configuring `libcppgnss/` directly.
 - Keep JSON serialization primarily in Python; `contrib/json` is available to
   native processing without introducing C++ Parquet or plotting dependencies.
 - Grid processing consumes protocol-neutral timed SBAS records, not UBX wire
-  identifiers. Use `constellation`, `prn`, and `signal` in derived grid and
+  identifiers. Use RINEX `satellite_system`, `satellite_number`, and `signal` in derived grid and
   hourly products. Persist only SBAS's 250-bit body, normalized GPST and signal
-  identity, validity and generic continuity/end information in frame Parquet.
+  identity and scoped validity checks in CommonNEX RawBits Parquet, with
+  navigation context in Events. Do not introduce a separate SBAS frame format.
+  Keep RINEX Sxx identifiers through SBAS grid, map labels and CLI selection;
+  do not convert them back to broadcast PRNs in downstream tools.
   Do not persist UBX/SBF envelopes, field dictionaries or source offsets in
   SBAS intermediate products; raw archives preserve those. Resolve protocol
   timestamps at extraction, never by reopening raw data in grid processing.

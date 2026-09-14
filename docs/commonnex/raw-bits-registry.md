@@ -48,9 +48,9 @@ pilot entries as contributors merely because a receiver tracks them.
 | `QZS_L5_I` | L5 I5 data | `QZS_CNAV` | QPNT |
 | `QZS_L1C` | L1C, coarse signal identity | `QZS_CNAV2` | QPNT |
 | `QZS_L1S` | L1S | `QZS_L1S` | QL1S |
-| `QZS_L5S` | L5S; operating mode must be respected | `QZS_L5S`, pending canonical mapping | QTV |
-| `QZS_L6D` | L6D | Service-dependent L6 content; pending semantic routing | QSERV |
-| `QZS_L6E` | L6E | Service-dependent L6 content; pending semantic routing | QSERV |
+| `QZS_L5S` | L5S; operating mode must be respected | `QZS_L5S` | QTV |
+| `QZS_L6D` | L6D | `QZS_L6_UNCLASSIFIED` until service is established | QSERV |
+| `QZS_L6E` | L6E | `QZS_L6_UNCLASSIFIED` until service is established | QSERV |
 | `SBAS_L1` | SBAS L1 | `SBAS_L1` | SBAS, SBF |
 | `SBAS_L5` | SBAS L5 | `SBAS_L5` | SBAS |
 
@@ -92,6 +92,11 @@ mappings may emit records, regardless of this registry status.
 | `SBAS_L5` | `SBAS_L5_250_V1` | 250 | CHECKED in full SBF recording |
 | `GPS_CNAV2` | `CNAV2_1800_V1` | 1800 | DOCUMENTED; no current sample |
 | `QZS_CNAV2` | `CNAV2_1800_V1` | 1800 | DOCUMENTED common framing/FEC dimensions; no current sample |
+| `BDS_D1D2_UNCLASSIFIED` | `D1D2_300_V1` | 300 | CHECKED layout; source did not establish subtype |
+| `BDS_B2B_UNCLASSIFIED` | `B2B_984_V1` | 984 | CHECKED layout; service unresolved |
+| `QZS_L1S` | `QZS_L1S_250_V1` | 250 | CHECKED UBX; DOCUMENTED SBF |
+| `QZS_L5S` | `QZS_L5S_250_V1` | 250 | DOCUMENTED; not SBAS L5 |
+| `QZS_L6_UNCLASSIFIED` | `L6_2000_V1` | 2000 | DOCUMENTED; source may identify L6D/L6E without identifying service |
 
 The table fixes names for reviewed layouts, not the full content-decoder field
 catalogs. Format unpackers expose structural regions and check scopes; family
@@ -106,8 +111,7 @@ message; the systematic 486-bit region ends in CRC. The service's subsequent
 field interpretation differs. A CRC pass cannot select the family. Until a
 reliable service discriminator is specified, do not label every BDSRawB2b
 record as either family or silently claim semantic normalization is complete.
-An explicitly unclassified B2b family would require its own decision; it is not
-implicitly introduced by this table.
+Use the explicitly selected `BDS_B2B_UNCLASSIFIED` family when unresolved.
 The formal July 2020 ICDs also define identical LDPC matrices. Their prefix
 semantics and systematic data fields differ; see the
 [B2b comparison](raw-bits-layouts.md#b2b-open-service-versus-ppp-b2b) for exact
@@ -117,21 +121,20 @@ slices, defined message types and service-identification limits.
 1200 SF2 symbols and 548 SF3 symbols. The latter two contain respectively
 600 and 274 systematic bits including CRC. This is NOT
 `BCNAV1_1800_V1` (72 + 1200 + 528). Receiver deinterleaving/ordering must be
-verified before enabling either CNAV-2 adapter; equal dimensions alone do not
-establish sample correctness.
+documented by the receiver before enabling an adapter; equal dimensions alone
+do not establish correctness. The implemented documentary adapters follow the
+Septentrio deinterleaved 1800-symbol definition; no sample validation is claimed.
 
 ## Reserved families and unfinished extensions
 
-`QZS_L1S` has a documented 250-bit structure, but its final canonical-format
-pair and adapter are pending validation; do not automatically assign the SBAS
-L1 format merely because the header dimensions match. `QZS_L5S` likewise has
-no approved canonical pair yet. Its standard and verification modes must not
+`QZS_L1S` and `QZS_L5S` have distinct approved 250-bit container formats,
+not aliases of SBAS formats. Their standard and verification modes must not
 be collapsed into the SBAS L5 family solely by frequency or data rate.
 
 L6D/L6E are signal names, not an unconditional CLAS/MADOCA service selector.
-Retain the documented full 2000 bits including RS parity when mappings are
-validated, but leave semantic family names/pairs pending service routing review.
-Do not force a family prefix into the eventual shared unpacking format.
+Retain the documented full 2000 bits including RS parity as `L6_2000_V1`, with
+`QZS_L6_UNCLASSIFIED` until the service is established. L6D/L6E remain signal
+contributors, not service names.
 
 Galileo OS SIS ICD 2.2 also introduces E5a-QP, and the G2 technical note describes
 future QP/data evolution. These are not evidence of a new I/NAV/F/NAV mapping
@@ -165,12 +168,16 @@ Do not infer source revision coverage from an ICD publication date.
   naming distinctions against primary sources.
 - [x] Confirm shared B2b/PPP-B2b framing and FEC against both formal 1.0 ICDs,
   retaining distinct content semantics and prefix interpretations.
-- [ ] Finalize D1/D2 and B-CNAV3/PPP-B2b semantic routing where source identity
-  does not establish it; decide whether a bounded unclassified family is needed.
+- [x] Permit explicit bounded unclassified D1/D2, B2b and L6 families when
+  receiver identity does not establish the semantic subtype/service.
+- [ ] Add further evidence-based subtype/service classification where useful.
 - [ ] Validate reserved QZSS service mappings and Galileo QP extensions when
   relevant receiver output and adequate specifications are available.
-- [ ] Implement registry validation in importers, keeping source revision
+- [x] Implement registry validation in importers, keeping source revision
   coverage outside CommonNEX reader requirements.
+
+See [implemented coverage](raw-bits-importer.md) for current mappings and the
+distinction between actual-recording checks and documentary/synthetic checks.
 
 ## Primary references
 

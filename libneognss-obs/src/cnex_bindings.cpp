@@ -2,6 +2,9 @@
 #include <bit>
 #include <boost/int128/int128.hpp>
 #include <cppgnss/measurements.hpp>
+#include <cppgnss/raw_bits.hpp>
+#include <cppgnss/sbf.hpp>
+#include <cppgnss/ubx_subframe.hpp>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -278,11 +281,12 @@ std::shared_ptr<Batch> events() {
     b->init();
     return b;
 }
-void complete(Batch &b, Tick t, const std::string &id, bool rawx) {
+void complete(Batch &b, Tick t, const std::string &id, bool rawx,
+              const char *scope = "OBSERVATION") {
     auto c = b.array.children;
     str(c[0], id);
     str(c[1], "EPOCH_COMPLETION");
-    str(c[2], "OBSERVATION");
+    str(c[2], scope);
     decimal(c[3], t);
     str(c[4], "EPOCH");
     check(ArrowArrayAppendNull(c[5], 1));
@@ -292,6 +296,91 @@ void complete(Batch &b, Tick t, const std::string &id, bool rawx) {
     str(q->children[1], rawx ? "RECORD_STRUCTURE" : "PROTOCOL_BOUNDARY");
     check(ArrowArrayFinishElement(q));
     check(ArrowArrayFinishElement(c[7]));
+    check(ArrowArrayFinishElement(&b.array));
+}
+std::shared_ptr<Batch> raw_bits() {
+    auto b = std::make_shared<Batch>();
+    check(ArrowSchemaSetTypeStruct(&b->schema, 16));
+    auto c = b->schema.children;
+    field(c[0], "stream_id", NANOARROW_TYPE_STRING, false);
+    decfield(c[1], "nav_epoch_gpst");
+    field(c[2], "satellite_system", NANOARROW_TYPE_STRING, false);
+    field(c[3], "satellite_number", NANOARROW_TYPE_UINT16, false);
+    field(c[4], "bitstream_source", NANOARROW_TYPE_LIST, false);
+    field(c[4]->children[0], "item", NANOARROW_TYPE_STRING, false);
+    for (int i = 5; i <= 8; ++i)
+        field(c[i],
+              std::array{"signal_composition", "message_family", "body_format",
+                         "content_kind"}[i - 5],
+              NANOARROW_TYPE_STRING, false);
+    field(c[9], "bit_length", NANOARROW_TYPE_UINT32, false);
+    field(c[10], "body", NANOARROW_TYPE_BINARY, false);
+    field(c[11], "unit_kind", NANOARROW_TYPE_STRING, false);
+    field(c[12], "completeness", NANOARROW_TYPE_STRING, false);
+    field(c[13], "checks", NANOARROW_TYPE_LIST, false);
+    auto q = c[13]->children[0];
+    check(ArrowSchemaSetTypeStruct(q, 6));
+    check(ArrowSchemaSetName(q, "item"));
+    q->flags &= ~ARROW_FLAG_NULLABLE;
+    const char *names[] = {"origin", "kind",     "scope",
+                           "result", "evidence", "source_field"};
+    for (int i = 0; i < 6; ++i)
+        field(q->children[i], names[i], NANOARROW_TYPE_STRING, i == 5);
+    field(c[14], "receiver_channel", NANOARROW_TYPE_UINT16);
+    check(ArrowSchemaSetTypeStruct(c[15], 2));
+    check(ArrowSchemaSetName(c[15], "source_diagnostics"));
+    field(c[15]->children[0], "sbf_viterbi_count", NANOARROW_TYPE_UINT8);
+    field(c[15]->children[1], "sbf_rs_corrected_symbols", NANOARROW_TYPE_UINT8);
+    b->init();
+    return b;
+}
+void append_bits(Batch &b, Tick t, const std::string &stream,
+                 const cppgnss::RawBits &bits) {
+    auto c = b.array.children;
+    str(c[0], stream);
+    decimal(c[1], t);
+    str(c[2], bits.system);
+    integer(c[3], bits.satellite);
+    for (const auto &signal : bits.signals)
+        str(c[4]->children[0], signal);
+    check(ArrowArrayFinishElement(c[4]));
+    str(c[5], bits.signals.empty()       ? "unknown"
+              : bits.signals.size() == 1 ? "single"
+                                         : "combined");
+    str(c[6], bits.family);
+    str(c[7], bits.format);
+    str(c[8], bits.content);
+    integer(c[9], bits.bit_length);
+    ArrowBufferView view{};
+    view.data.as_uint8 = bits.body.data();
+    view.size_bytes = bits.body.size();
+    check(ArrowArrayAppendBytes(c[10], view));
+    str(c[11], bits.unit);
+    str(c[12], "complete");
+    for (const auto &item : bits.checks) {
+        auto q = c[13]->children[0];
+        str(q->children[0], item.origin);
+        str(q->children[1], item.kind);
+        str(q->children[2], item.scope);
+        str(q->children[3], item.result);
+        str(q->children[4], item.evidence);
+        if (!item.source_field.empty())
+            str(q->children[5], item.source_field);
+        else
+            check(ArrowArrayAppendNull(q->children[5], 1));
+        check(ArrowArrayFinishElement(q));
+    }
+    check(ArrowArrayFinishElement(c[13]));
+    auto optional_integer = [](ArrowArray *a, auto v) {
+        if (v)
+            integer(a, *v);
+        else
+            check(ArrowArrayAppendNull(a, 1));
+    };
+    optional_integer(c[14], bits.receiver_channel);
+    optional_integer(c[15]->children[0], bits.viterbi_count);
+    optional_integer(c[15]->children[1], bits.rs_corrected_symbols);
+    check(ArrowArrayFinishElement(c[15]));
     check(ArrowArrayFinishElement(&b.array));
 }
 struct Reader {
@@ -307,6 +396,85 @@ struct Reader {
     bool has_measurements = false;
     uint64_t extra_blocks = 0, extra_matched = 0, extra_unmatched = 0,
              extra_ambiguous = 0, extra_excluded = 0, extra_unsupported = 0;
+    std::optional<int64_t> nav_ms;
+    std::vector<cppgnss::RawBits> nav_bits;
+    std::map<std::string, uint64_t> raw_families;
+    std::map<std::string, uint64_t> raw_checks, raw_skipped;
+    bool nav_conflict = false;
+    uint64_t nav_skip_before = 0, raw_count = 0, raw_untimed = 0,
+             raw_unsupported = 0;
+    void navigation(const cppgnss::FrameView &f, Batch &out, Batch &ev) {
+        // Replayed observation tails must not replay already imported RawBits.
+        if (f.offset < nav_skip_before)
+            return;
+        auto emit = [&](int64_t ms, const cppgnss::RawBits &bits) {
+            append_bits(out, Tick(ms) * 1000000000, stream, bits);
+            ++raw_count;
+            ++raw_families[bits.family];
+            for (const auto &c : bits.checks)
+                ++raw_checks[bits.family + "/" + c.origin + "/" + c.kind + "/" +
+                             c.scope + "/" + c.result];
+        };
+        auto decoded = cppgnss::decode_raw_bits(f);
+        if (decoded.status == cppgnss::RawBitsStatus::unsupported ||
+            decoded.status == cppgnss::RawBitsStatus::malformed) {
+            ++raw_unsupported;
+            ++raw_skipped[std::to_string(f.id) + "/" +
+                          std::to_string(f.revision)];
+        }
+        if (decoded.status == cppgnss::RawBitsStatus::excluded)
+            ++raw_skipped["excluded"];
+        if (f.protocol == cppgnss::Protocol::sbf) {
+            if (!decoded.record)
+                return;
+            const auto &r = *decoded.record;
+            if (!r.gpst_ms) {
+                ++raw_untimed;
+                return;
+            }
+            auto ms = *r.gpst_ms;
+            emit(ms, r);
+            // A timestamped navigation block is not a whole navigation epoch
+            // completion boundary. RawBits carries its reception context
+            // itself.
+            return;
+        }
+        const auto p = f.payload;
+        if (f.id == 0x0120 && p.size() == 16) {
+            auto tow = UBX::read_le<uint32_t>(p, 0);
+            auto week = UBX::read_le<int16_t>(p, 8);
+            if ((p[11] & 3) != 3 || week < 0 || tow >= 604800000) {
+                nav_conflict = true;
+                return;
+            }
+            int64_t ms = int64_t(week) * 604800000 + tow;
+            if (nav_ms && *nav_ms != ms) {
+                raw_untimed += nav_bits.size();
+                nav_bits.clear();
+                nav_conflict = false;
+            }
+            nav_ms = ms;
+        } else if (f.id == 0x0213) {
+            if (!decoded.record)
+                return;
+            if (nav_bits.size() >= 65536)
+                throw std::runtime_error("Unresolved RawBits navigation "
+                                         "context exceeds buffer limit");
+            nav_bits.push_back(std::move(*decoded.record));
+        } else if (f.id == 0x0161 && p.size() == 4) {
+            if (nav_ms && !nav_conflict &&
+                *nav_ms % 604800000 == UBX::read_le<uint32_t>(p, 0)) {
+                for (const auto &bits : nav_bits)
+                    emit(*nav_ms, bits);
+                complete(ev, Tick(*nav_ms) * 1000000000, stream, false,
+                         "NAVIGATION");
+            } else
+                raw_untimed += nav_bits.size();
+            nav_bits.clear();
+            nav_ms.reset();
+            nav_conflict = false;
+        }
+    }
     void associate_extras() {
         using Key = std::tuple<unsigned, unsigned, unsigned>;
         auto key = [](const auto &m) {
@@ -361,13 +529,13 @@ struct Reader {
             throw std::invalid_argument(
                 "RAWX importer supports antenna 0 only");
     }
-    std::pair<std::shared_ptr<Batch>, std::shared_ptr<Batch>>
-    feed(std::span<const uint8_t> data) {
+    std::array<std::shared_ptr<Batch>, 3> feed(std::span<const uint8_t> data) {
         std::unique_lock lock(mutex, std::try_to_lock);
         if (!lock.owns_lock())
             throw std::runtime_error("Concurrent importer use");
         auto out = observations();
         auto ev = events();
+        auto raw = raw_bits();
         auto emit = [&](const cppgnss::Measurements &e) {
             Tick t;
             try {
@@ -385,6 +553,7 @@ struct Reader {
                     ++other_antenna;
         };
         decoder.feed(data, [&](const cppgnss::FrameView &f) {
+            navigation(f, *raw, *ev);
             if (f.protocol == cppgnss::Protocol::sbf && f.id >= 4109 &&
                 f.id <= 4113)
                 ++meas3;
@@ -446,7 +615,62 @@ struct Reader {
         });
         out->finish();
         ev->finish();
-        return {out, ev};
+        raw->finish();
+        return {out, ev, raw};
+    }
+    py::dict checkpoint() {
+        std::unique_lock lock(mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            throw std::runtime_error("Concurrent importer use");
+        py::dict state;
+        state["nav_ms"] = nav_ms;
+        state["nav_conflict"] = nav_conflict;
+        py::list bits;
+        for (const auto &b : nav_bits) {
+            std::vector<std::array<std::string, 6>> checks;
+            for (const auto &c : b.checks)
+                checks.push_back({c.origin, c.kind, c.scope, c.result,
+                                  c.evidence, c.source_field});
+            bits.append(py::make_tuple(
+                b.system, b.family, b.format, b.unit, b.content, b.satellite,
+                b.signals, b.bit_length, b.body, checks, b.receiver_channel,
+                b.viterbi_count, b.rs_corrected_symbols));
+        }
+        state["nav_bits"] = bits;
+        auto offset = pending ? pending_start : decoder.pending_offset();
+        state["skip_bytes"] = decoder.pending_offset() - offset;
+        return state;
+    }
+    void restore(const py::dict &state) {
+        std::unique_lock lock(mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            throw std::runtime_error("Concurrent importer use");
+        if (decoder.bytes)
+            throw std::runtime_error("Restore before feeding input");
+        nav_ms = state["nav_ms"].cast<std::optional<int64_t>>();
+        nav_conflict = state["nav_conflict"].cast<bool>();
+        nav_skip_before = state["skip_bytes"].cast<uint64_t>();
+        for (auto item : state["nav_bits"].cast<py::list>()) {
+            auto b = py::cast<py::sequence>(item);
+            cppgnss::RawBits r;
+            r.system = b[0].cast<std::string>();
+            r.family = b[1].cast<std::string>();
+            r.format = b[2].cast<std::string>();
+            r.unit = b[3].cast<std::string>();
+            r.content = b[4].cast<std::string>();
+            r.satellite = b[5].cast<uint16_t>();
+            r.signals = b[6].cast<std::vector<std::string>>();
+            r.bit_length = b[7].cast<uint32_t>();
+            r.body = b[8].cast<std::vector<uint8_t>>();
+            r.receiver_channel = b[10].cast<std::optional<uint16_t>>();
+            r.viterbi_count = b[11].cast<std::optional<uint8_t>>();
+            r.rs_corrected_symbols = b[12].cast<std::optional<uint8_t>>();
+            for (auto c : b[9].cast<std::vector<std::array<std::string, 6>>>())
+                r.checks.push_back({c[0], c[1], c[2], c[3], c[4], c[5]});
+            nav_bits.push_back(std::move(r));
+        }
+        if (nav_bits.size() > 65536)
+            throw std::runtime_error("Invalid navigation checkpoint size");
     }
     py::dict summary() {
         std::unique_lock lock(mutex, std::try_to_lock);
@@ -476,6 +700,13 @@ struct Reader {
         d["measextra_excluded"] = extra_excluded;
         d["measextra_unsupported"] = extra_unsupported;
         d["measextra_pending"] = extras.size();
+        d["raw_bits"] = raw_count;
+        d["raw_bits_families"] = raw_families;
+        d["raw_bits_checks"] = raw_checks;
+        d["raw_bits_skipped"] = raw_skipped;
+        d["raw_bits_untimed"] = raw_untimed;
+        d["raw_bits_unsupported"] = raw_unsupported;
+        d["raw_bits_pending"] = nav_bits.size();
         return d;
     }
 };
@@ -497,5 +728,7 @@ void bind_cnex(py::module_ &m) {
                  return r.feed(
                      {reinterpret_cast<const uint8_t *>(p), size_t(n)});
              })
-        .def("summary", &Reader::summary);
+        .def("summary", &Reader::summary)
+        .def("checkpoint", &Reader::checkpoint)
+        .def("restore", &Reader::restore);
 }

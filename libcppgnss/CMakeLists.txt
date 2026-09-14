@@ -51,7 +51,7 @@ add_custom_command(
     VERBATIM)
 add_custom_target(cppgnss_codegen DEPENDS ${generated_sources} ${generated_headers})
 add_library(cppgnss src/measurements.cpp src/observations.cpp src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/stream.cpp src/sbf.cpp
-    src/ubx_subframe.cpp src/sbas.cpp ${sbf_generated}
+    src/ubx_subframe.cpp src/sbas.cpp src/raw_bits.cpp ${sbf_generated}
     ${generated_sources} ${generated_headers})
 add_library(cppgnss::cppgnss ALIAS cppgnss)
 add_dependencies(cppgnss cppgnss_codegen)

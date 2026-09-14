@@ -202,14 +202,14 @@ Options:
   use black, and the figure reports their count.
 - `--extent WEST EAST SOUTH NORTH`: override the common map bounds. Longitudes
   use a station-centred interval; a dateline-crossing extent may extend past 180.
-- `--sbas-grid /data/sbas-grid --sbas-prn 137`: optional daily SBAS grid Parquet.
+- `--sbas-grid /data/sbas-grid --sbas-satellite S37`: optional daily SBAS grid Parquet.
   Valid-time-weighted hourly mean **VTEC** is a separate faded background using
   the same hue-based `turbo` colourmap as `ngo-sbas-grid-plot`, not a correction
   applied to the plotted STEC. Its colourbar uses the same palette independently
   of the STEC colour scale.
   `--background-alpha` defaults to 0.18, `--sbas-vmax` to 200 TECU and
   `--min-coverage` to 0.25. Missing SBAS cells remain absent and are reported;
-  no nearest-hour or alternate-PRN substitution occurs.
+  no nearest-hour or alternate-satellite substitution occurs.
 - `--workers 4 --png-compression 3`: process-parallel rendering and PNG encoding.
 - `--overwrite`: publish the completed directory by rename, retaining the
   previous output as a backup.

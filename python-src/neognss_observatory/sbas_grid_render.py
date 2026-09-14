@@ -68,8 +68,9 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
     norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
     cmap = matplotlib.colormaps["turbo"]
     for key, cells in tqdm(sorted(grouped.items()), desc="Render hourly PNG", unit="image", disable=not show_progress):
-        constellation, prn, signal, hour = key
-        directory = image_dir / f"{constellation}_prn-{prn}_{signal}"
+        satellite_system, satellite_number, signal, hour = key
+        satellite = f"{satellite_system}{satellite_number:02d}"
+        directory = image_dir / f"{satellite}_{signal}"
         directory.mkdir(exist_ok=True)
         label = gpst_label(hour)
         path = directory / (label.replace(":", "-") + ".png")
@@ -85,7 +86,7 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
             ylim=extent[2:],
             xlabel="Longitude",
             ylabel="Latitude",
-            title=f"SBAS PRN {prn} hourly mean VTEC — {label}\nvalid coverage ≥ {min_coverage:.0%}",
+            title=f"SBAS {satellite} hourly mean VTEC — {label}\nvalid coverage ≥ {min_coverage:.0%}",
         )
         ax.set_aspect("equal", adjustable="box")
         ax.set_xticks(range(int(extent[0]), int(extent[1]) + 1, 10))
@@ -96,7 +97,7 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
             path,
             facecolor="white",
             metadata={
-                "Title": f"SBAS PRN {prn} hourly mean VTEC {label}",
+                "Title": f"SBAS {satellite} hourly mean VTEC {label}",
                 "Description": "Experimental time-weighted MT26 grid; Made with Natural Earth.",
             },
             pil_kwargs={"compress_level": png_compression},
@@ -106,8 +107,8 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
             dict(
                 path=str(path.relative_to(output)),
                 hour_gpst=hour,
-                constellation=constellation,
-                prn=prn,
+                satellite_system=satellite_system,
+                satellite_number=satellite_number,
                 signal=signal,
                 cells=len(cells),
             )

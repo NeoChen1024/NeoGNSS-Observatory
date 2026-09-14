@@ -9,6 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import click
+import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
@@ -16,6 +17,36 @@ from .research_output import staged_output, write_json
 from .sbas_grid_parquet import SCHEMA
 from .sbas_grid_render import extent_for, parse_hour, render_job
 from .sbas_streams import IDENTITY
+
+
+HOURLY_SCHEMA = pa.schema(
+    [
+        pa.field("satellite_system", pa.string(), nullable=False),
+        pa.field("satellite_number", pa.int64(), nullable=False),
+        pa.field("signal", pa.string(), nullable=False),
+        *[pa.field(name, pa.int64(), nullable=False) for name in ("band", "mask_bit", "hour_gpst")],
+        *[
+            pa.field(name, pa.float64(), nullable=False)
+            for name in (
+                "latitude",
+                "longitude",
+                "vtec_integral_tecu_seconds",
+                "valid_seconds",
+                "coverage",
+                "vtec_tecu",
+            )
+        ],
+    ],
+    metadata={
+        b"time_scale": b"GPST",
+        b"time_origin": b"1980-01-06 00:00:00 GPST",
+        b"hour_gpst_unit": b"seconds",
+        b"quantity": b"SBAS VTEC",
+        b"vtec_unit": b"TECU",
+        b"coordinate_unit": b"degrees",
+        b"mean": b"valid-time-weighted sample-and-hold",
+    },
+)
 
 
 def hourly_rows(path, day, start=None, end=None):
@@ -105,10 +136,8 @@ def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, work
         for record in tqdm(sorted(files, key=lambda r: r["day_gpst_ms"]), desc="Aggregate GPST days", unit="day"):
             path = (input_dir / record["path"]).resolve()
             rows = hourly_rows(path, record["day_gpst_ms"], start, end)
-            target = cache / (path.stem + ".jsonl")
-            with target.open("x") as stream:
-                for row in rows:
-                    stream.write(json.dumps(row) + "\n")
+            target = cache / (path.stem + ".parquet")
+            pq.write_table(pa.Table.from_pylist(rows, schema=HOURLY_SCHEMA), target, compression="zstd", compression_level=3)
             daily_cache.append(target)
             visible = [r for r in rows if r["coverage"] >= min_coverage]
             if visible:
@@ -120,11 +149,11 @@ def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, work
         with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
             for path in tqdm(daily_cache, desc="Render GPST days", unit="day"):
                 grouped = defaultdict(list)
-                with path.open() as stream:
-                    for line in stream:
-                        row = json.loads(line)
-                        if row["coverage"] >= min_coverage:
-                            grouped[tuple(row[k] for k in (*IDENTITY, "hour_gpst"))].append(row)
+                with pq.ParquetFile(path) as parquet:
+                    for batch in parquet.iter_batches(batch_size=65536):
+                        for row in batch.to_pylist():
+                            if row["coverage"] >= min_coverage:
+                                grouped[tuple(row[k] for k in (*IDENTITY, "hour_gpst"))].append(row)
                 jobs = [
                     (cells, coastline, output, vmin, vmax, min_coverage, extent, png_compression)
                     for _, cells in sorted(grouped.items())

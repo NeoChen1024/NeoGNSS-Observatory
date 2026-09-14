@@ -12,8 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from .research_output import staged_output
-from .sbas_extract import write_json
+from .research_output import staged_output, write_json
 
 
 class BatchUnwrapper:
@@ -119,7 +118,9 @@ def cli(input_dir, output, max_gap, jump_tolerance_ns):
             b"max_gap_seconds": str(max_gap).encode(),
             b"jump_tolerance_ns": str(jump_tolerance_ns).encode(),
         }
-        with pq.ParquetWriter(output / "clock.parquet", parquet.schema_arrow.with_metadata(metadata), compression="zstd") as writer:
+        with pq.ParquetWriter(
+            output / "clock.parquet", parquet.schema_arrow.with_metadata(metadata), compression="zstd", compression_level=3
+        ) as writer:
             with tqdm(total=parquet.metadata.num_rows, desc="Reunwrap clock", unit="sample", unit_scale=True) as progress:
                 for batch in parquet.iter_batches(batch_size=65536):
                     writer.write_table(tracker.apply(pa.Table.from_batches([batch])).replace_schema_metadata(metadata))

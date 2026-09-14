@@ -39,9 +39,9 @@ declared in `requirements.txt`. The `ngo-cddis-download` command inventories,
 downloads and verifies external GNSS products. `ngo-dataset-qa` performs optional
 read-only QA by default; `--profile restitch` reconstructs overlapping UBX
 archives such as Era A. Nonoverlapping Era B/C inputs need no reconstruction.
-`ngo-sbas-frame-parquet -p ubx|sbf` extracts raw or reconstructed UBX or
-expanded SBF into source-independent daily SBAS frame Parquet.
-`ngo-sbas-grid-parquet` reads only these frames to calculate daily GPST
+`neo-cnex-import run -p ubx|sbf` imports observations and multi-GNSS RawBits
+into an initialized ParquetNEX Stream.
+`ngo-sbas-grid-parquet` reads its RawBits and Events to calculate daily GPST
 grid validity intervals; `ngo-sbas-grid-plot` reads those
 daily files to produce experimental hourly VTEC maps without reopening raw recordings.
 `ngo-sbas-map-video` encodes
@@ -65,8 +65,9 @@ optional RINEX converter is built separately.
 ### CommonNEX import pilot
 
 `neo-cnex-import init|run|list` imports UBX RAWX or SBF MeasEpoch into daily
-Observation and measurement-completion Events Parquet, using native Arrow
-batches. RawBits and the remaining Events/quality mappings are not implemented
+Observation, multi-GNSS RawBits and independent measurement/navigation completion
+Events Parquet, using native Arrow batches. Undefined future RawBits representations and the
+remaining Events/quality mappings are not implemented
 by this pilot. See [the importer guide](docs/commonnex/importer.md) for scope,
 initialization, tail continuation and explicit reconstruction.
 

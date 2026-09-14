@@ -24,8 +24,9 @@ Install the repository Python package to build and install the extension:
 git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json contrib/RTKLIB
 python -m pip install .
 ngo-receiver-clock --input-dir /data/reconstructed --output /data/clock
-ngo-sbas-frame-parquet -p ubx --input-dir /data/reconstructed --output /data/sbas-frames
-ngo-sbas-grid-parquet --input-dir /data/sbas-frames --output /data/sbas-grid
+neo-cnex-import init /data/cnex --setup /data/setup.json --stream-id main --antenna-name main
+neo-cnex-import run -p ubx --stream /data/cnex/main /data/first.ubx
+ngo-sbas-grid-parquet --input-dir /data/cnex/main --output /data/sbas-grid
 ```
 
 No `--worker` or `--indexer` executable paths are used. The old internal
@@ -90,9 +91,10 @@ epoch, without inventing an extra second.
 `GridProcessor.process_frames()` accepts batches with `gpst_ms`, `frame_id`,
 `frame` (32 bytes carrying 250 MSB-first bits with six zero padding bits),
 `crc_valid`, and nullable `accepted`. It re-decodes SBAS content and verifies
-CRC in C++ without any knowledge of the source transport. Python persists
-these records in daily frame Parquet along with canonical identity and explicit
-stream end records. Grid output links to frame IDs, not raw byte offsets.
+CRC in C++ without any knowledge of the source transport. The Python adapter
+constructs these batches from ParquetNEX RawBits and navigation Events; this
+internal batch interface is not an additional storage format. Grid frame IDs
+are run-local occurrence counters, not raw byte offsets or Parquet foreign keys.
 
 The decoded-content interface `GridProcessor.process()` accepts `gpst_ms`, `offset` and `sbas`
 keys. These times are continuous milliseconds since 1980-01-06 GPST. For UBX,
@@ -104,7 +106,8 @@ grid updates. A positive `gap_timeout` clears state after a per-signal message
 gap, closing intervals at the last observed time; zero disables this extra
 policy when explicit frame-stream end records already define continuity. Feed all SBAS
 message types for gap detection, not just mask/correction messages. Python
-attaches canonical `constellation`, `prn`, and `signal` identities to intervals.
+attaches RINEX `satellite_system`, `satellite_number`, and `signal` identities to
+intervals, keeping SBAS Sxx numbering through plotting and selection.
 
 This is pre-Alpha research code, not a stable ABI or safety-critical SBAS
 implementation. See [architecture and limitations](../docs/native-architecture.md).

@@ -1,7 +1,7 @@
 # RawBits canonical layouts and validation status
 
-Status: accepted v0 design decisions where marked validated; implementation
-and unverified receiver mappings remain TODO. See [RawBits](raw-bits.md) for
+Status: accepted v0 layouts; see [implemented adapters](raw-bits-importer.md)
+for sample-validated versus documentary support. See [RawBits](raw-bits.md) for
 record identity, navigation-epoch association, and validity semantics.
 
 ## Conventions
@@ -104,8 +104,9 @@ the check covers the preceding 276 bits. This is not a CNAV-2 layout.
 I/NAV removes both six-bit tails and receiver padding. Preserve its final
 eight non-tail bits even though they are outside this CRC scope. Preserve
 combined E1/E5b contributor information; do not invent per-half signal identity.
-Nominal rules do not establish an alert-page layout. Corrupted page-type bits
-in receiver-failed records are not evidence of genuine alert transmissions.
+The receiver's fixed even/odd pair is preserved even when page-type bits are
+corrupt. This does not establish a genuine alert transmission. Pair CRC checks
+do not assemble horizontal alert pages from separate received records.
 
 F/NAV retains 214 information bits plus CRC. C/NAV retains a 14-bit header,
 448-bit HAS field and CRC. SBF exports a further six-bit tail for each;
@@ -183,7 +184,8 @@ Known service context and a valid, defined message type provide evidence
 for routing. Do not classify solely by a hard-coded PRN range, the availability
 bit, body length, or CRC success. Reserved/corrupt types cannot independently
 identify a family. Actual receiver service routing remains to be verified;
-do not invent a family for an unresolved record.
+use `BDS_B2B_UNCLASSIFIED` for an unresolved record rather than choosing either
+service. The shared format still retains the full coded envelope.
 
 B-CNAV3 SOW refers to the start of its transmitted frame in BDT; it does not
 replace the record's GPST navigation-epoch context. PPP correction epochs
@@ -258,16 +260,11 @@ Completed checkboxes describe research validation, not shipped importer support.
   QZSS L1C/CNAV-2 framing is document-cross-checked in the registry, but its
   receiver mapping still needs samples. SBF schema
   IDs 4221/4227 exist, but current recordings do not supply validation samples.
-- [ ] QZSS L1S: document-supported 250-bit candidate; validate actual receiver
-  output and service identification before enabling an adapter.
-- [ ] QZSS L5S: confirm revision-specific packing, service identity and checks;
-  a 32-byte schema field or GEORawL5 observation is not adequate evidence.
-- [ ] QZSS L6D/L6E: retain full exported 2000-bit messages, including preamble
-  and RS parity, once each receiver mapping is verified. L6D is
-  document-supported; verify L6E independently. Map `Parity` to RS decoding
-  status and `RSCnt` to corrected symbol count, not bit errors. L6D `Source=1`
-  is block-specific, not the common signal index. Include legacy SBF
-  `QZSRawL6` (4069) in the mapping survey alongside 4270/4271.
+- [x] Validate UBX QZSS L1S's 250-bit body and CRC, including the nine-word
+  receiver container; implement the separately documented SBF adapter.
+- [x] Implement documentary QZSS L5S and L6D/L6E mappings using the G5 guide,
+  with distinct L5S layout, full L6 parity retention and correct RS count units.
+- [ ] Validate QZSS L5S/L6 and SBF L1S with actual receiver samples.
 
 Missing receiver support or samples leave these items TODO; do not invent a
 fallback payload or require unrelated acquisition upgrades. GLONASS and NavIC
@@ -275,9 +272,11 @@ remain out of scope.
 
 ### Implementation
 
-- [ ] Implement verified mappings in CommonNEX adapters, storing navigation
+- [x] Implement verified and documentary mappings in CommonNEX adapters, storing navigation
   time directly and publishing applicable Events without epoch-table references.
-- [ ] Resolve the upstream GALRawCNAV schema defect before using generated fields.
+- [x] Read GALRawCNAV's official 12-byte prefix in the canonical adapter without
+  using the defective generated fields or editing generated output.
+- [ ] Resolve the upstream generic GALRawCNAV schema defect.
 
 ## References
 

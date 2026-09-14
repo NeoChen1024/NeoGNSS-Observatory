@@ -20,9 +20,7 @@ def protocol_option(function):
 
 def require_ubx(protocol, operation):
     if protocol != "ubx":
-        raise click.ClickException(
-            f"{operation} currently supports UBX only; use python -m neognss_observatory.sbas_extract -p sbf for SBF extraction."
-        )
+        raise click.ClickException(f"{operation} currently supports UBX only; use neo-cnex-import run -p sbf for SBF import.")
 
 
 class ProtocolWarnings:

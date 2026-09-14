@@ -21,6 +21,7 @@ from .research_output import staged_output, write_json
 from .sbas_grid_parquet import SCHEMA as SBAS_SCHEMA
 from .sbas_grid_plot import hourly_rows
 from .sbas_grid_render import coastline_parts, parse_hour
+from .sbas_streams import sbas_satellite as validate_sbas_satellite
 from .stec import read_stec
 
 HOUR_NS = 3_600_000_000_000
@@ -97,9 +98,9 @@ def prepare_hours(root, scratch, start, end, center):
 class Background:
     """Read each matching SBAS day once; never open raw subframes."""
 
-    def __init__(self, root, hours, prn, coverage):
+    def __init__(self, root, hours, satellite, coverage):
         self.files, self.rows, self.day = {}, {}, None
-        self.prn, self.coverage = prn, coverage
+        self.satellite, self.coverage = satellite, coverage
         if root is None:
             return
         daily = root / "daily" if (root / "daily").is_dir() else root
@@ -113,7 +114,7 @@ class Background:
                 or b"day_gpst_ms" not in meta
             ):
                 raise ValueError(
-                    f"Expected current SBAS grid Parquet: {path}; regenerate using ngo-sbas-frame-parquet and ngo-sbas-grid-parquet"
+                    f"Expected current SBAS grid Parquet: {path}; regenerate using neo-cnex-import and ngo-sbas-grid-parquet"
                 )
             day = int(meta[b"day_gpst_ms"])
             if day in needed:
@@ -128,9 +129,8 @@ class Background:
             self.day = day
             if day in self.files:
                 for row in hourly_rows(self.files[day], day):
-                    if (row["constellation"], row["signal"], row["prn"]) == ("SBAS", "L1CA", self.prn) and row[
-                        "coverage"
-                    ] >= self.coverage:
+                    satellite = f"{row['satellite_system']}{row['satellite_number']:02d}"
+                    if (satellite, row["signal"]) == (self.satellite, "L1CA") and row["coverage"] >= self.coverage:
                         self.rows[row["hour_gpst"]].append(row)
         return self.rows.get(hour, [])
 
@@ -206,7 +206,7 @@ def render_hour(job):
                 ax=ax,
                 shrink=0.72,
                 pad=0.025,
-                label=f"SBAS PRN {opts['sbas_prn']} mean VTEC (TECU)\npale background",
+                label=f"SBAS {opts['sbas_satellite']} mean VTEC (TECU)\npale background",
                 extend="max",
             )
         ax.add_collection(LineCollection(coast, colors="black", linewidths=0.55, zorder=2))
@@ -343,7 +343,7 @@ def render_hour(job):
 @click.option(
     "--sbas-grid", type=click.Path(exists=True, file_okay=False, path_type=Path), help="Optional daily SBAS grid Parquet directory."
 )
-@click.option("--sbas-prn", type=click.IntRange(120, 158), default=137, show_default=True)
+@click.option("--sbas-satellite", callback=validate_sbas_satellite, default="S37", metavar="Sxx", show_default=True)
 @click.option("--min-coverage", type=click.FloatRange(0, 1), default=0.25, show_default=True)
 @click.option("--background-alpha", type=click.FloatRange(0, 1), default=0.18, show_default=True)
 @click.option("--sbas-vmax", type=float, default=200, show_default=True)
@@ -361,7 +361,7 @@ def cli(
     start,
     end,
     sbas_grid,
-    sbas_prn,
+    sbas_satellite,
     min_coverage,
     background_alpha,
     sbas_vmax,
@@ -407,7 +407,7 @@ def cli(
                 )
             if not np.isfinite(extent).all() or not (0 < extent[1] - extent[0] <= 360 and -90 <= extent[2] < extent[3] <= 90):
                 raise ValueError("Invalid map extent")
-            background = Background(sbas_grid, [h for h, _ in hours], sbas_prn, min_coverage)
+            background = Background(sbas_grid, [h for h, _ in hours], sbas_satellite, min_coverage)
             output.mkdir()
             (output / "png").mkdir()
             options = dict(
@@ -419,7 +419,7 @@ def cli(
                 vmin=vmin,
                 vmax=vmax,
                 sbas_vmax=sbas_vmax,
-                sbas_prn=sbas_prn,
+                sbas_satellite=sbas_satellite,
                 sbas_requested=sbas_grid is not None,
                 background_alpha=background_alpha,
                 png_compression=png_compression,
