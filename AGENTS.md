@@ -188,6 +188,7 @@ configuring `libcppgnss/` directly.
   parser bounds, usable time and scientific validity checks.
 - All installed project Python CLI names use the `ngo-` prefix. Keep examples
   aligned with the registered entry points; do not install unprefixed aliases.
+  The user-selected CommonNEX importer name `neo-cnex-import` is an explicit exception.
 
 - Raw processing CLIs expose `--protocol/-p ubx|sbf` (default `ubx`). Validate
   complete foreign-protocol frames before skipping them atomically; report

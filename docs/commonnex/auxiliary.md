@@ -25,18 +25,18 @@ Use separate typed families rather than a sparse universal table:
 
 Families share the following context; their full field catalogs remain open.
 Do not duplicate low-rate temperature into every clock or observation sample.
-Unlike RawNav epoch-only association, pulse and clock quantities retain the
+Unlike RawBits epoch-only association, pulse and clock quantities retain the
 time/reference information necessary to interpret their measurements.
-Observation correction state and source lock-loss evidence remain in Core;
-auxiliary clock series do not replace them.
+Observation correction declarations/offsets belong in Events; source lock-loss
+evidence stays on Observation. Auxiliary clock series replace neither.
 
 Proposed common context for each telemetry record:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `stream_id`, `telemetry_id` | `string`, `uint64` | Logical stream and record identity within it |
+| `stream_id` | `string` | Logical Stream; no mandatory telemetry row ID |
 | `gpst` | `GpstTimestamp?` | Normalized sample or association time in GPST seconds |
-| `epoch_id`, `nav_epoch_id` | `uint64?`, `uint64?` | Distinct optional observation/navigation references, when justified |
+| `observation_gpst`, `nav_epoch_gpst` | `GpstTimestamp?`, `GpstTimestamp?` | Optional justified context coordinates, not epoch-table references |
 | `time_role`, `time_basis` | enum, enum | Sample/event/context time and source-field/association basis |
 | `subject_id` | `string?` | Clock domain, sensor, or pulse output to which the record applies |
 | `reference` | typed record? | Reference clock/time scale, nominal epoch, pulse edge, or sensor location needed by the quantity |

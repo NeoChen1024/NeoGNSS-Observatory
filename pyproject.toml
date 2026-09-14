@@ -10,6 +10,7 @@ authors = [{ name = "Neo_Chen", email = "chenkolei@gmail.com" }]
 dynamic = ["dependencies"]
 
 [project.scripts]
+neo-cnex-import = "neognss_observatory.cnex_import:cli"
 ngo-stec = "neognss_observatory.stec:cli"
 ngo-stec-plot = "neognss_observatory.stec_plot:cli"
 ngo-ppp = "neognss_observatory.ppp:cli"

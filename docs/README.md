@@ -17,10 +17,12 @@ only when they affect present interpretation or processing.
   GIM/bias calibration investigation and implementation checklist.
 - [CommonNEX and ParquetNEX v0](commonnex/overview.md): Core observations,
   optional navigation/auxiliary schemas, receiver profiles, Parquet persistence
-  and batch/incremental/live processing contracts; not implemented functionality.
+  and batch/incremental/live processing contracts; broader than the implemented pilot.
 
 ## Tools
 
+- [CommonNEX importer pilot](commonnex/importer.md): native RAWX/MeasEpoch to daily
+  Observation and completion-event Parquet, tail parts and revisions.
 - [GPS STEC and receiver DCB](stec.md): phase leveling and GIM-constrained absolute estimates from raw observations.
 - [Offline PPP Float](ppp.md): raw GPS observations, local precise products and numerical/plot outputs.
 - [Dataset QA and reconstruction](dataset-qa.md): optional scan and explicit restitch.

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+add_subdirectory(../contrib/arrow-nanoarrow ${CMAKE_CURRENT_BINARY_DIR}/nanoarrow EXCLUDE_FROM_ALL)
+set_target_properties(nanoarrow_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/json/include/nlohmann/json.hpp")
     message(FATAL_ERROR "Initialize contrib/json: git submodule update --init contrib/json")
 endif()
@@ -18,7 +20,9 @@ if(NEOGNSS_BUILD_BINDINGS)
     execute_process(COMMAND "${Python_EXECUTABLE}" -m pybind11 --cmakedir
         OUTPUT_VARIABLE pybind11_DIR OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
     find_package(pybind11 CONFIG REQUIRED)
-    pybind11_add_module(_native src/bindings.cpp src/ppp_bindings.cpp src/stec_bindings.cpp)
+    pybind11_add_module(_native src/bindings.cpp src/ppp_bindings.cpp src/stec_bindings.cpp src/cnex_bindings.cpp)
+    target_include_directories(_native PRIVATE ../contrib/int128/include)
+    target_link_libraries(_native PRIVATE nanoarrow_static)
     target_include_directories(_native PRIVATE ../contrib/json/include)
     target_link_libraries(_native PRIVATE neognss_obs::neognss_obs)
     if(DEFINED NEOGNSS_PYTHON_OUTPUT)

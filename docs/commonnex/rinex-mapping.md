@@ -7,6 +7,13 @@ Support standard RINEX 3.x/4.x content for in-scope constellations. RINEX 2,
 GLONASS and NavIC are excluded. Unknown observation codes are reported, not
 guessed or retained through a generic vendor observation schema.
 
+Preservation is subject to the [conditional import goal](overview.md#rinex-interoperability-and-strings).
+Unmappable or insufficiently timed content may be discarded with diagnostics
+and counts; do not silently substitute invented values. In particular, ION
+header coefficients without transmission time or reliable acquisition context
+are excluded, not copied into an untimed Parquet collection. This does not
+discard usable observations or ephemerides from the same source.
+
 ## Source-only fields
 
 Use `rinex_` for information whose meaning is specific to RINEX encoding or
@@ -17,7 +24,7 @@ import must not synthesize them. Optional source fields are null when absent.
 | --- | --- | --- |
 | `rinex_ssi` | uint8? | Corresponding observable quality; 1-9, zero/blank becomes null |
 | `rinex_lli` | uint8? | Phase tracking; original 0-7 bitmask, blank becomes null |
-| `rinex_epoch_flag` | uint8? | ObservationEpoch for ordinary observations, or a separate special-event record as applicable |
+| `rinex_epoch_flag` | uint8? | Epoch-scoped Events for ordinary observation epochs, or the applicable special-event record |
 | `rinex_version` | string | RINEX source metadata, e.g. `3.04`, never a float or repeated on every observation |
 | `rinex_program` | string? | Source metadata: generating program |
 | `rinex_run_by` | string? | Source metadata: file generator's run-by declaration |
@@ -41,7 +48,8 @@ Satellite/signal identity, C/N0, observation clock offset/application state,
 phase conventions, applied DCB/PCV metadata and station/receiver/antenna metadata
 retain common names. A field does not become RINEX-specific merely because
 RINEX is currently its only implemented source. Retain scientifically necessary
-correction declarations with their scope; never apply or undo receiver clock
+correction declarations and epoch-local observation offsets in Events with
+explicit scope; never apply or undo receiver clock
 correction on import or fill it from NAV-CLOCK/PVT telemetry.
 
 Decode storage scale factors into physical observable values. Do not propagate

@@ -58,10 +58,12 @@ The planned Ginan backend uses one context per worker process; see
 [Ginan shim design and progress](ginan-shim.md). This is a selected direction,
 not a change to the currently linked PPP/STEC implementation.
 
-Status: agreed implementation direction, not yet wired into the bindings.
+Status: native-to-Python output is wired into the CommonNEX observation pilot;
+native replay input and migration of existing analysis bindings remain pending.
 `contrib/arrow-nanoarrow` is available as a pinned submodule. CommonNEX remains
 a logical specification independent of Arrow, while this project's native/Python
-implementation will use Arrow-compatible columnar batches.
+implementation uses Arrow-compatible columnar batches in `CnexObservationReader`.
+See [the importer pilot](commonnex/importer.md) for its restricted coverage.
 
 | Component | Responsibility |
 | --- | --- |
@@ -158,7 +160,9 @@ GEORaw decoder; field definitions come from pinned pysbf2.
 
 Design decision; the existing processing APIs and artifacts have not yet been
 converted. CommonNEX canonical timestamps use `DECIMAL(38,12)` seconds since
-1980-01-06 00:00:00 GPST. The native implementation will use a small `GpstTime`
+1980-01-06 00:00:00 GPST. The observation pilot already uses Boost.Int128 ticks
+with exact binary64-to-picosecond rounding and explicit Arrow word transfer.
+The broader native implementation will use a small `GpstTime`
 type backed by `boost::int128::int128` from `contrib/int128`. Its internal
 unscaled integer counts picoseconds: `1000000000000` ticks represents one
 second. A distinct `GpstDuration` represents signed time differences; timestamps

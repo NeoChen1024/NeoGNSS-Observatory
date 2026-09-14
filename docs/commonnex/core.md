@@ -7,8 +7,8 @@ Status: v0 design draft; not an implemented format or API.
 ## Context and identity
 
 This document defines shared context and the Observation family. The
-[RawNav family](raw-nav.md) is also part of the core model, specified separately
-for readability. Either family may be present alone. In a RawNav-only dataset,
+[RawBits family](raw-bits.md) is also part of the core model, specified separately
+for readability. Either family may be present alone. In a RawBits-only dataset,
 Observation Stream still names the logical receiver input; it does not assert
 that code, carrier-phase, Doppler or signal-strength observations are available.
 
@@ -57,58 +57,50 @@ serialization, field groups, named-antenna dictionary, examples and validation
 rules are specified separately in [Setup JSON](setup-json.md). ParquetNEX imports
 this metadata at directory initialization, not with each daily recording.
 
-## ObservationEpoch and NavigationEpoch
+## Independent epoch times, without epoch tables
 
-Cross-epoch discontinuities use the separate [Events family](events.md).
-Observation quality remains signal-local; events do not replace those fields.
+Measurement epochs and navigation epochs are distinct time contexts, not
+required record tables. Observation stores its own `gpst`; RawBits stores
+`nav_epoch_gpst`. Both are non-null `GpstTimestamp` values backed by
+`DECIMAL(38,12)` seconds. RAWX/Measurements measurement time must not be
+overwritten with navigation context. No one-to-one or equal-time relationship
+is required between the two.
 
-These are independent logical records; there is no required one-to-one mapping.
+There are no mandatory epoch/occurrence IDs or row-to-row foreign keys.
+Timestamps are coordinates, not unique keys: retain distinct occurrences with
+equal times and payloads. Optional implementation row counters are file-local,
+can be reassigned on reconstruction, and carry no cross-file/revision meaning.
+Setup/Stream metadata references remain resolvable shared context.
 
-| ObservationEpoch field | Type | Meaning |
-| --- | --- | --- |
-| `stream_id` | string | Parent stream |
-| `epoch_id` | uint64 | Identity within the stream; not the timestamp |
-| `gpst` | GpstTimestamp | Measurement epoch in GPST seconds |
-| `reported_observation_clock_offset_s` | TimeDelta? | Offset explicitly associated with the source observation epoch, never filled from navigation telemetry |
-| `clock_correction_state` | record | Separate applied/not_applied/unknown states for epoch time, code and phase |
-| `completion` | enum | complete, incomplete or unknown |
-| `completion_basis` | enum | protocol_boundary, record_structure, incomplete_tail or unknown |
-| `rinex_epoch_flag` | uint8? | Original flag when supplied |
+The [Events family](events.md) carries completion, discontinuities, and scoped
+observation clock-correction declarations/offsets. Consumers load required event
+context, possibly from preceding days, without per-row event references.
+Observation quality remains signal-local. Events are not epoch lookup tables.
 
-| NavigationEpoch field | Type | Meaning |
-| --- | --- | --- |
-| `stream_id` | string | Parent stream |
-| `nav_epoch_id` | uint64 | Navigation-context identity within the stream |
-| `gpst` | GpstTimestamp | Associated navigation epoch in GPST seconds, not precise transmission time |
-| `completion` | enum | complete, incomplete or unknown |
-| `completion_basis` | enum | protocol_boundary, record_structure, incomplete_tail or unknown |
+After bounded association attempts, skip untimeable Observation/RawBits and
+report counts; preserve raw archives. RawBits-only sources need no observations.
+Legitimate untimed RINEX special events retain separate mapping semantics.
+Completion closes the relevant producer epoch, not a promise of every signal
+being received. Navigation completion does not close measurements or future
+pulses; source-local completion does not imply merged-stream completion.
 
-RawNav may reference NavigationEpoch without any ObservationEpoch.
-An adapter must not overwrite a measurement timestamp with navigation context.
-ObservationEpoch and NavigationEpoch require valid, non-null GPST. Unknown time
-does not become a fabricated epoch: after bounded association attempts, skip
-untimeable Observation/RawNav records and report their counts. Preserve raw
-archives; do not create a separate unknown-time observation/navigation dataset.
-This does not remove legitimate untimed special-event metadata from RINEX.
-Repeated timestamps can have distinct epoch IDs. Timestamp rounding does not
-prove occurrence equality.
-
-Completion means the producer closed the relevant epoch under its adapter
-contract, not that every expected signal was received. Navigation completion
-does not close unrelated measurements or future pulse events.
-A source-local boundary is not automatically merged-stream completion.
+A complete UBX RXM-RAWX frame contains its measurement epoch and `numMeas`
+records; validated structure completes that measurement record without NAV-EOE.
+NAV-EOE closes navigation messages, not RAWX. SBF Measurements group completion
+uses a matching EndOfMeas. Complete messages can span a group/file boundary;
+missing optional observables do not make a structurally complete RAWX incomplete.
 
 ## Observation: one row per epoch/satellite/signal occurrence
 
 The logical record and primary Parquet layout are wide, not scalar observable
 rows. A normal row groups C/L/D/S of one system-specific signal. If genuinely
-distinct or conflicting occurrences share those keys, their observation IDs
-remain distinct and reconciliation must expose the relationship.
+distinct or conflicting occurrences share those values, retain separate rows
+and expose conflicts without treating timestamps as unique row identities.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `stream_id`, `epoch_id` | string, uint64 | Parent ObservationEpoch |
-| `observation_id` | uint64 | Row identity within the epoch |
+| `stream_id` | string | Parent logical Stream |
+| `gpst` | GpstTimestamp | Source measurement time stored directly, not navigation-context time |
 | `satellite_system`, `satellite_number` | string, uint16 | RINEX satellite identity |
 | `signal` | string | System-specific RINEX band/attribute, such as 1C |
 | `pseudorange_m` | float64? | C observable |
@@ -301,8 +293,8 @@ Raw observables are an agreed exception to integer-first storage: retain the
 observation `float64` values and uncertainty `float32` fields. Direct
 source binary64 observations and phase/Doppler reconstruction involving
 frequency ratios justify avoiding additional fixed-point quantization here.
-No conversion of these fields to scaled integers is planned for v0. The epoch
-clock-offset field uses `TimeDelta`. Continuous non-time physical parameters, including
+No conversion of these fields to scaled integers is planned for v0. The Events
+epoch-local clock-offset payload uses `TimeDelta`. Continuous non-time physical parameters, including
 decoded navigation parameters, may use `float64` with defined units; do not
 force them onto a broadcast fixed-point grid solely for integer-first storage.
 Telemetry integer types and scales
@@ -408,20 +400,24 @@ source's consistent epoch/code/phase values and correction state. GPST time-scal
 normalization is not receiver clock-error removal. NAV-CLOCK and SBF PVT clock
 bias/drift remain telemetry; never use them to fill or correct raw observations.
 
-`clock_correction_state` contains `epoch_time`, `code`, and `phase`, each with
-`applied`, `not_applied`, or `unknown`. These describe application of the
+The Events `CLOCK_CORRECTION_STATE` payload contains `epoch_time`, `code`, and `phase`, each with
+`APPLIED`, `NOT_APPLIED`, or `UNKNOWN`. These describe application of the
 source-declared observation clock correction, not absence of residual clock
-error. Preserve a supplied observation offset without estimating a missing one.
+error. Preserve a supplied offset as an epoch-scoped Event without estimating
+a missing one or extending it to subsequent epochs. Neither clock state nor
+offset is a required Observation column. Consumers resolve applicable Events
+before using correction-sensitive values.
 Exact source sign, phase-convention and correction-metadata scope mappings
 remain adapter review items.
 Import does not smooth, interpolate, repair slips, unwrap clocks or estimate
 missing observations. Inferred arcs and scientific corrections are outputs of
 processing facilities, not mutations of imported records.
 
-Shared continuity events identify stream, optional affected epoch, event kind
+Shared continuity events identify stream, explicit time scope, event kind
 and reported/inferred evidence. They must distinguish actual restart/loss from
 transport completion; batch boundaries have no scientific meaning.
-Detailed event encodings remain a review item.
+Selected Events semantics are defined in [Events](events.md); exact payload
+encodings and source mappings remain review items.
 
 See [current GPST policy](../time-policy.md) for implemented products; this
 draft's decimal representation does not retroactively reinterpret them.

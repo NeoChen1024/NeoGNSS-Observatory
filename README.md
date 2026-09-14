@@ -29,7 +29,8 @@ experimental script contracts. Raw archives remain read-only.
 
 ## Python tools
 
-All installed Python commands use the `ngo-` prefix. With the installation's
+Existing analysis commands use the `ngo-` prefix; the CommonNEX importer is
+named `neo-cnex-import`. With the installation's
 executable directory on `PATH`, type `ngo-` and use shell command completion
 to list them. Each command provides `--help`.
 
@@ -52,6 +53,7 @@ See the [RINEX conversion guide](docs/rinex-conversion.md) for options and limit
 ```sh
 git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json
 git submodule update --init contrib/RTKLIB
+git submodule update --init contrib/arrow-nanoarrow contrib/int128
 python -m pip install .
 ```
 
@@ -59,6 +61,14 @@ Python dependencies use minimum versions to allow upgrades. Building the package
 also requires CMake 3.24+, a C++20 compiler/standard library with `std::format`,
 and OpenSSL Crypto development files. Installation builds the native extension used by UBX/SBF processing. The
 optional RINEX converter is built separately.
+
+### CommonNEX import pilot
+
+`neo-cnex-import init|run|list` imports UBX RAWX or SBF MeasEpoch into daily
+Observation and measurement-completion Events Parquet, using native Arrow
+batches. RawBits and the remaining Events/quality mappings are not implemented
+by this pilot. See [the importer guide](docs/commonnex/importer.md) for scope,
+initialization, tail continuation and explicit reconstruction.
 
 See [the downloader guide](docs/cddis-downloader.md) and
 [example configuration](config/products.example.toml) for Earthdata setup,

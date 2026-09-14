@@ -1,0 +1,16 @@
+{
+  "setup_id": "example-setup",
+  "receiver": {
+    "vendor": "Septentrio",
+    "model": "mosaic-X5",
+    "serial_number": null,
+    "firmware_version": null,
+    "comment": "Replace with the actual station metadata before scientific use."
+  },
+  "antennas": {
+    "main": {
+      "comment": "Populate antenna model, ARP offset and installation metadata."
+    }
+  },
+  "epoch_period_s": "1.000000000000"
+}

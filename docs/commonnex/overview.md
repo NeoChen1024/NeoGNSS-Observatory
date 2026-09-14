@@ -16,11 +16,14 @@ for range, rounding and nullability, and [ParquetNEX](parquetnex.md) for storage
 
 | Specification | Responsibility |
 | --- | --- |
-| [Core](core.md) | Shared types/context, observation epochs and wide observation records |
-| [Events](events.md) | Shared continuity event semantics and daily storage |
+| [Core](core.md) | Shared types/context and directly timed wide observation records |
+| [Events](events.md) | Completion, continuity, scoped clock declarations/offsets and daily storage |
 | [Setup JSON](setup-json.md) | Station metadata, named antennas, configuration references and initialization schema decisions |
-| [RawNav](raw-nav.md) | First-class core record family for received navigation occurrences; presence is capability-dependent |
+| [RawBits](raw-bits.md) | First-class core record family for received navigation occurrences; presence is capability-dependent |
+| [RawBits layouts](raw-bits-layouts.md) | Canonical bit layouts, verified receiver mappings, check scopes and pending validation |
+| [RawBits registry](raw-bits-registry.md) | Primary-source signal vocabulary, legal family/format pairs and reserved extensions |
 | [DecodedNav](decoded-nav.md) | Optional standardized decoded navigation parameters |
+| [Additional navigation models](navigation-models.md) | Additional EPH, STO, EOP and ION structures and mapping constraints |
 | [Auxiliary](auxiliary.md) | Typed receiver clock, pulse, environment, status and solution records |
 | [Receiver profiles](receiver-profiles.md) | Input message requirements and adapter mapping contracts |
 | [RINEX mapping](rinex-mapping.md) | RINEX-only observation fields and source metadata |
@@ -28,7 +31,7 @@ for range, rounding and nullability, and [ParquetNEX](parquetnex.md) for storage
 | [ParquetNEX](parquetnex.md) | Optional Parquet persistence and replay mapping |
 
 Core model membership and mandatory data presence are different. Observation
-and RawNav are first-class core record families sharing Setup, Stream, epoch
+and RawBits are first-class core record families sharing Setup, Stream, epoch
 and continuity semantics; neither must accompany the other. DecodedNav remains
 a standardized optional extension, and auxiliary families remain optional.
 Each supplied family obeys its schema; consumers need only implement the
@@ -36,21 +39,25 @@ families they use, not every navigation-content decoder.
 
 | Source capability | Legal record set |
 | --- | --- |
-| Observation-only | ObservationEpoch and Observation, with shared context |
-| Observation + RawNav | Both families with their respective epoch associations |
-| RawNav-only | RawNav and applicable NavigationEpoch/context, without ObservationEpoch or Observation |
+| Observation-only | Directly timed Observation and applicable Events/context |
+| Observation + RawBits | Both families with their respective epoch associations |
+| RawBits-only | Directly timed RawBits and applicable Events/context, without Observation |
 
-RawNav-only is a valid CommonNEX dataset, not an incomplete observation dataset.
+RawBits-only is a valid CommonNEX dataset, not an incomplete observation dataset.
 Do not synthesize empty observations, require RAWX, or reject it because PPP/TEC
 cannot run. Processors declare their required capabilities and reject only an
-unsupported requested operation. RawNav remains first-class even when stored
+unsupported requested operation. RawBits remains first-class even when stored
 in separate Parquet files. Decoded ephemerides do not reconstruct received bits.
 
-Observation and RawNav require usable GPST epoch association. Records whose
+Observation and RawBits require usable GPST epoch association. Records whose
 time remains unresolved after bounded importer buffering are skipped and counted;
-raw archives allow later reconstruction. No unknown-time Observation/RawNav
-storage branch is required. RawNav-only remains legal with valid NavigationEpoch
-context. Legitimate untimed RINEX special events retain their separate semantics.
+raw archives allow later reconstruction. No unknown-time Observation/RawBits
+storage branch is required. RawBits-only remains legal with valid navigation
+time stored in `nav_epoch_gpst`. Legitimate untimed RINEX special events retain
+their separate semantics. No independent epoch tables or mandatory row-to-row
+references exist. Timestamps are not unique keys. Setup/Stream metadata remains
+shared; correction-sensitive consumers load applicable Events, including
+earlier still-effective state, rather than joining per-row event IDs.
 
 The project excludes GLONASS and NavIC observations/navigation and processing.
 These are intentional scope exclusions, not a future implementation backlog. Mixed inputs must
@@ -60,7 +67,9 @@ Raw archives remain the preservation masters, not CommonNEX or ParquetNEX.
 
 ## RINEX interoperability and strings
 
-The format-wide design requirement is lossless RINEX import, not lossless
+The format-wide goal is lossless preservation of reliably mappable RINEX
+scientific information, subject to declared scope and mapping limitations,
+not unconditional field-by-field or byte-reversible import or lossless
 RINEX export. This applies to observations, navigation, events, quality,
 correction semantics and metadata across core families and extensions, not only
 `setup.json`. Preserve source information in its appropriate record family or
@@ -83,7 +92,14 @@ CommonNEX may contain information RINEX cannot express. An exporter may reject
 such an export or use an explicitly chosen lossy mapping, reporting what cannot
 be represented. Silent information loss is not an acceptable export policy.
 
-This is a format requirement, not a claim that the current draft/importer covers
+Content that cannot be reliably mapped, lacks required timing, or is outside
+scope may be discarded with diagnostics and counts. Preserve usable records;
+do not guess times, fabricate parameters, or replace unknowns with zeros.
+Raw archives permit later reconstruction but do not replace mapping supported
+fields. ION coefficients with neither transmission time nor reliable acquisition
+epoch are one explicit exclusion; no untimed-model storage branch is required.
+
+This is a design goal, not a claim that the current draft/importer covers
 all RINEX versions and records. Only standard RINEX 3.x/4.x is targeted; RINEX 2
 is excluded. In particular, the GLONASS/NavIC exclusions
 and fixed-station scope remain limitations, not exceptions that can be called
@@ -106,24 +122,24 @@ SBF / UBX / RTCM3 / RINEX
 
 Writing ParquetNEX is optional. Direct input and replay expose the same logical
 records, identities, quality and scientific interpretation to consumers.
-Processors select their required families: observations for PPP/TEC, RawNav
+Processors select their required families: observations for PPP/TEC, RawBits
 for SBAS decoding, auxiliary records for receiver-clock analysis. External
 orbit/bias products are processing inputs, not mandatory Core records.
 
 | Mode | Processing contract |
 | --- | --- |
 | Archive batch | Read an archive range as bounded batches; no whole-archive in-memory requirement |
-| Incremental daily | Add/reconcile new records; preserve or replay required earlier processing state |
+| Incremental daily | Add new days and completed tail parts; preserve or replay required earlier processing state |
 | Live | Produce records and epoch completion incrementally, without knowing the final stream length |
 
 Neither a day nor a Setup is a mandatory computational unit. The format must
 not require a complete day, total record count, known stream end, prior QA,
 a reconstruction index, or a Parquet round trip before processing.
-File, batch and GPST-day boundaries do not reset tracking, clocks, RawNav
+File, batch and GPST-day boundaries do not reset tracking, clocks, RawBits
 assembly or SBAS aging. Daily storage does not imply a daily solution.
 
-[Continuity events](events.md) describe detected discontinuities using shared
-Stream and epoch identities. Their interpretation does not depend on a
+[Events](events.md) describe completion, discontinuities and observation clock
+context using shared Stream identity and explicit time applicability. Their interpretation does not depend on a
 particular processing execution model.
 
 Ordering, bounded buffering, backpressure, checkpoints, scheduling and replay
@@ -146,19 +162,65 @@ a CommonNEX compliance requirement, mandate persistence, or restrict batch,
 incremental or live use. See the [interop design](../native-architecture.md#selected-commonnex-interop-design)
 for ownership, bidirectional replay and bounded-memory requirements.
 
-Review in this order:
+### Agreed design
+
+Checked items mean a design decision or stated research validation, not shipped code.
 
 - [x] Define Setup, Observation Stream and Recording Source boundaries.
-- [x] Select initialization-only Setup JSON/configuration and complete daily revisions.
-- [x] Select native Arrow batches with Python/PyArrow Parquet I/O.
-- [ ] Finalize Setup JSON fields, stream declarations and signal capability semantics.
-- [ ] Finalize Core quality records, correction semantics and identity keys.
-- [ ] Specify adapter epoch association/completion, including SBF Measurements and RTCM3.
-- [ ] Validate canonical RawNav family layouts and source mappings.
-- [ ] Complete auxiliary and DecodedNav field catalogs as consumers require.
-- [ ] Finalize ParquetNEX metadata, nested field schemas and publication layout.
-- [ ] Implement nanoarrow-backed columnar export/import and buffer ownership in the bindings.
-- [ ] Implement bounded import/replay and compare representative direct/replay inputs.
+- [x] Define initialization-only Setup JSON, named antennas, static-station
+  metadata, Unicode strings and decimal nominal periods (see setup-json.md).
+- [x] Select independent direct Observation/RawBits timestamps, with no epoch
+  tables or mandatory occurrence IDs; optional counters are file-local.
+- [x] Select wide C/L/D/S rows, nullable quality/lock fields and decimal time types.
+- [x] Preserve source clock corrections without applying/undoing them; store
+  scoped declarations and epoch-local offsets in Events, not science rows.
+- [x] Define Events completion/continuity versus persistent context semantics,
+  including earlier-day context lookup and UNKNOWN when declarations are absent.
+- [x] Separate RawBits satellite identity, bitstream_source, semantic family and
+  unpacking format; record validated bit layouts and check scopes.
+- [x] Select DecodedNav typed model families, native/GPST reference times and
+  partition-time policies; model-specific mappings are not implied complete.
+- [x] Select GPST date directories and `r00-<catalog>-part00.parquet` naming;
+  tail completion adds parts, while reconstruction replaces affected day/catalog
+  revisions. Local counter changes do not force subsequent revisions.
+- [x] Scope the initial importer to supplied local files, without automatic
+  deduplication, acquisition/FTP, or reading while writing.
+- [x] Select native Arrow batches and Python/PyArrow Parquet I/O.
+
+### Remaining specification and source validation
+
+- [x] Select uppercase broadcast-signal names and source-granularity rules;
+  keep protocol revision handling in importers, not the storage contract.
+- [x] Enumerate signal entries and legal family/format pairs for reviewed
+  layouts against primary sources (raw-bits-registry.md).
+- [ ] Resolve reserved service-family mappings and source-discriminator gaps
+  listed in the registry; names alone do not establish importer support.
+- [ ] Finalize adapter association/completion and source-specific quality,
+  lock, phase and clock mappings (receiver-profiles.md).
+- [ ] Finalize Events payload encodings, evidence and equal-time conflict scopes
+  (events.md); avoid restoring a row-reference graph.
+- [ ] Complete missing receiver/family validation only when supported output
+  is available (raw-bits-layouts.md); do not block verified families on it.
+- [ ] Complete DecodedNav model mappings and auxiliary catalogs as needed;
+  see their focused checklists rather than treating selected structures as code.
+- [ ] Finalize full Parquet schemas/enum encodings and metadata keys beyond the
+  observation pilot; Stream location and revision/part naming are decided.
+
+### Implementation
+
+- [x] Implement initialization and RAWX/MeasEpoch observation pilot with completion Events.
+- [x] Implement native-to-Python nanoarrow batches and capsule buffer ownership.
+- [ ] Add native Arrow input/replay consumers and remaining catalog mappings.
+- [x] Implement bounded daily observation writes and raw-tail continuation.
+- [x] Implement filename validation, next revision/part allocation and latest
+  catalog selection without overwriting existing parts.
+- [x] Withhold incomplete measurement tails and replay preceding raw context when subsequent
+  input arrives, without emitting the already published prefix again.
+- [x] Validate observation pilot Arrow/Parquet round trips, tail parts and revision
+  selection without adding permanent tests.
+- [ ] Extend validation to remaining RawBits, quality and scoped Event mappings.
+
+See [the implemented importer pilot](importer.md) for actual coverage and commands.
 
 Implementation priority is UBX/SBF import and incremental daily ParquetNEX
 storage/replay before the downstream PPP/IPP engine integration. The initializer

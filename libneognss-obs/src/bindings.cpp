@@ -9,6 +9,7 @@
 namespace py = pybind11;
 void bind_ppp(py::module_ &);
 void bind_stec(py::module_ &);
+void bind_cnex(py::module_ &);
 using neognss_obs::Json;
 namespace {
 py::object to_python(const Json &value) {
@@ -107,6 +108,7 @@ struct SbfBatch {
 PYBIND11_MODULE(_native, m) {
     bind_ppp(m);
     bind_stec(m);
+    bind_cnex(m);
     using Scan = Guarded<neognss_obs::DatasetScan>;
     py::class_<Scan>(m, "DatasetScan")
         .def(py::init<std::string, bool, double>(), py::arg("protocol") = "ubx", py::arg("qa") = true,

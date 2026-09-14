@@ -276,6 +276,13 @@ sections 5.2 and 8.2, the following Setup decisions are settled:
 - [x] Exclude mobile operation, tilt, body frames and center of mass.
 - [x] Define marker identity, position context and per-antenna H/E/N offsets.
 - [x] Allow Unicode without RINEX width restrictions; lossless export is not required.
+- [x] Keep vendor configuration in an initialization-time companion file,
+  and declare nominal period using decimal seconds.
+
+These are schema decisions, not an implemented initializer. Remaining work:
+
+- [ ] Finalize physical Stream declaration placement and canonical signal registry bindings.
+- [ ] Implement initialization and validation against the selected schema.
 
 File metadata (producer, dates, comments, DOI/license), actual observation
 inventory/interval/coverage, time interpretation, and applied clock/DCB/PCV,

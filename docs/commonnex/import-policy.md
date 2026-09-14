@@ -23,11 +23,11 @@ Report family coverage independently: source not providing a family, configured
 omission, no occurrences in the selected range, and unsupported importer mapping
 are different situations. Do not infer actual coverage from Setup configuration
 alone. Keep this a concise capability/coverage report, not a provenance framework.
-Absence of Observation is valid for RawNav-only import and is not a QA failure.
+Absence of Observation is valid for RawBits-only import and is not a QA failure.
 
 ## One-pass extraction contract
 
-Formal Observation/RawNav output requires valid GPST epoch association. Allow
+Formal Observation/RawBits output requires valid GPST epoch association. Allow
 bounded buffering for later anchors; once the limit is reached or input is
 finalized, skip and count records still lacking usable time. Retain the original
 archive, not an unassociated Parquet dataset or an automatic repair queue.
@@ -41,10 +41,19 @@ event semantics and source ordering in the event/source mapping. They are not
 unknown-time observations. Cross-source occurrence ambiguity between already
 timed records remains a separate reconciliation concern.
 
-Follow the [format-wide lossless-import requirement](overview.md#rinex-interoperability-and-strings).
+Follow the [conditional RINEX preservation goal](overview.md#rinex-interoperability-and-strings).
 Report unsupported RINEX content and mapping limitations; a partial import must
 not be labeled lossless. Preserve source metadata and interpretation alongside
 normalized fields without requiring a lossless reverse RINEX export.
+
+Skip and count ION models with neither known transmission time nor reliable
+acquisition epoch, including otherwise complete untimed RINEX header
+coefficients. Do not infer their time from filenames, filesystem timestamps,
+import time, or neighboring ephemerides. Reliable acquisition context may locate
+ION records but must not be relabeled as transmission time or a validity period.
+This exception does not relax mandatory model reference times for EPH/STO/EOP.
+Do not create collection-level untimed DecodedNav files. Other usable input
+records continue normally and the raw archive remains unchanged.
 
 Decode each source stream once and route all supported records to observation,
 navigation, raw-bit, telemetry, metadata, and event batches. Share time/epoch
@@ -54,9 +63,8 @@ PPP, SBAS, or clock-analysis algorithm.
 
 Bounded buffering may be needed to resolve a later time anchor, companion block,
 or pulse association. Unresolved timing remains explicit at finalization.
-Permissive reconciliation applies to telemetry too: logging copies can collapse,
-but equal numerical readings at different occurrences or from different sensors
-must not. A navigation EOE does not finalize an unrelated future pulse record.
+Telemetry is not automatically deduplicated either; equal numerical readings
+at different occurrences or from different sensors remain distinct. A navigation EOE does not finalize an unrelated future pulse record.
 
 "One pass" means a single sequential raw decode for all supported extraction
 families, not a guarantee that unknown/proprietary fields or information never
@@ -72,80 +80,37 @@ Retroactive repair is an exceptional, explicit rebuild of affected GPST days,
 not a requirement for a generic automatic repair/resume system. Preserve older
 daily revisions as described in [ParquetNEX](parquetnex.md#daily-revisions).
 Multi-day repair creates a new revision for each affected day, not a new Setup
-or a dataset-wide version. Reconciliation rules below also apply during repair.
+or a dataset-wide version. Each affected catalog is a complete replacement;
+unaffected catalogs can retain their current revision.
 
-### Permissive overlap reconciliation
+### Initial batch importer scope
 
-Permissive import is an agreed requirement. The default accepts overlapping
-time ranges from multiple logging sources of the same logical acquisition,
-including repeated imports and late additions to an existing day. It must not
-require a separate restitch/QA run or reject an entire input because its bounds
-overlap earlier data. [Core normalization](core.md), framing, scientific validity,
-and the GLONASS/NavIC exclusions still apply.
+The first implementation does not perform automatic deduplication, overlap
+merging, or idempotent repeated import. The caller selects the recording inputs;
+do not claim that repeated imports are scientific no-ops. Multiple recording
+paths can describe the same logical Stream without implying that the importer
+can automatically fuse them. Restitch/QA is not an enforced prerequisite.
 
-Each logging source is framed and associated independently before records are
-reconciled into a logical stream. Do not concatenate overlapping byte streams
-or splice unrelated packet fragments because their times appear adjacent.
-Byte-level overlap repair, where needed, requires actual source alignment
-evidence and remains an importer operation.
+Keep framing and association separate for independent recording sources. Do not
+splice unrelated packet fragments because timestamps appear adjacent. Continuous
+files from the same recording path may retain decoder state across boundaries.
 
-| Relationship between input records | Default import behavior |
-| --- | --- |
-| Proven duplicate occurrence, equal canonical content and interpretation | Keep one logical occurrence and associate its contributing sources |
-| Same established epoch, different satellites/signals/observables or record families | Retain the union of records |
-| Same occurrence with compatible additional metadata or quality information | Retain the additional information without duplicating the observation |
-| Same apparent occurrence with different values, bits, corrections, or incompatible metadata | Preserve alternatives and explicitly mark the conflict; do not average or use last-write-wins |
-| Uncertain occurrence identity or acquisition association | Preserve separately and mark unresolved association; do not force a merge |
-| A source is incomplete but another supplies the missing records | Use the actual complementary records; retain unresolved completeness where evidence is insufficient |
+If overlap reconciliation is added later, the agreed preference is first-imported
+valid information wins; later input supplements missing records/nullable values,
+not existing values. Actual conflicts must be reported, never averaged or silently
+overwritten. This is a future policy, not functionality promised by the initial
+importer. Editing published rows or inserting records inside published coverage
+requires a replacement revision rather than a deferred-tail part.
 
-Time equality is a candidate lookup, not a deduplication proof. Match identity
-within the receiver/antenna and acquisition context, including restarts,
-canonical family/observable and applicable corrections. Nanosecond
-rounding can make distinct source timestamps equal. Do not snap nearby epochs
-together or apply an implicit numeric tolerance to observation values.
-
-For navigation bits, identical content may be broadcast repeatedly. Payload
-equality alone does not identify the same received occurrence. Native source
-timestamps can denote different events and are not directly equal occurrence
-keys. RawNav exposes only NavigationEpoch association. A justified association
-rule is required before collapsing
-cross-source copies. Without it, preserve both with unresolved association.
-
-Different source formats may expose different precision or correction states.
-A RINEX-derived value is not an exact duplicate of a raw-derived value solely
-because they are numerically close. Any future equivalence/preference rule
-must account for those transformations explicitly. Contradictory flags remain
-source-attributed evidence rather than being combined into apparent certainty.
-
-Proposed minimal logical relations for reconciliation:
-
-- `RecordSource`: canonical record reference and `recording_source_id`.
-- `RecordConflict`: `conflict_id`, candidate record references, and a typed
-  reason such as differing value, body, metadata, or ambiguous occurrence.
-
-These relations must survive persistence/replay where needed to avoid treating
-alternatives as independent observations. Exact relation types and reference
-keys remain review items. They are small functional metadata, not source-offset
-inventories or artifact provenance bundles. Existing SBAS analysis products
-retain their current body-only boundary; reconciliation relations belong to
-the general import dataset, not a requirement to expand those products.
-
-Keep canonical IDs stable for already imported occurrences. Reimporting the
-same material should not add duplicate scientific records or source relations;
-input order must not silently decide retained values. Candidate IDs for genuinely
-different or conflicting records remain distinct. If an importer lacks enough
-evidence to recognize a cross-source duplicate, report that limitation instead
-of claiming full deduplication.
-
-Conflict handling must be explicit in consumers: stop, exclude the affected
-occurrence, or apply a declared source-selection policy. A tolerant importer
-does not authorize a solver to count conflicting alternatives as separate
-measurements. Source selection is a processing view and preserves alternatives.
+RawBits has no payload-based deduplication: equal payloads can be distinct
+broadcast occurrences. Equal navigation-epoch timestamps likewise do not prove
+identical occurrences. Consumers must not assume overlapping logging inputs
+have been reduced to unique measurements.
 
 ### Epoch interval classification
 
 For a known positive nominal observation period P (`epoch_period_s`), compare
-successive distinct ObservationEpoch GPST timestamps within the same Stream.
+successive distinct measurement-epoch GPST timestamps within the same Stream.
 Use exact decimal timestamp differences and P in seconds without rounding
 observations. The standard per-epoch tolerance is +/-20%:
 
@@ -165,7 +130,7 @@ do not assert a specific cause from this check alone. Unknown/non-periodic
 cadence has no percentage-based classification.
 
 Apply this to logical observation epochs, not per-satellite rows, companion
-blocks, RawNav or telemetry arrivals. Reconcile proven logging duplicates before
+blocks, RawBits or telemetry arrivals. Reconcile proven logging duplicates before
 classifying the merged Stream; conflict alternatives are not extra normal
 epochs. Preserve evidence of time reversals rather than hiding them by sorting.
 Physical file, batch and GPST-day boundaries do not restart the comparison.
@@ -200,31 +165,42 @@ logger or receiving its EOE does not close other sources' contributions. The
 merger uses a declared source set/completion policy or live buffering window;
 no generic network synchronization protocol is prescribed.
 
-An adapter emits epoch completion when its protocol-specific association rule
-has closed that epoch. UBX EOE is one source of this evidence; other adapters
-use their documented rules. An incomplete tail at daily input EOF must not be
-declared complete solely because the import invocation ended.
+An adapter emits completion for its particular epoch context. A complete,
+length/checksum-valid UBX RAWX completes its measurement record without waiting
+for NAV-EOE. EOE closes navigation messages only. SBF Measurements requires the
+matching EndOfMeas. Missing satellites, nullable measurements or optional telemetry
+do not alone mean an incomplete epoch. Only actually unfinished frames/groups
+are withheld at EOF; normal message-boundary rollover does not defer RAWX.
 
-Adapters can carry pending state across invocations or reread a bounded input
-overlap to resolve boundary records. The format does not prescribe how that
-state is encoded. A daily import must handle pending epochs and navigation
-messages explicitly and report unresolved tails.
+A per-day `import-state.json` sidecar may retain the input position already
+published and the raw context restart position for a withheld tail. This is
+importer bookkeeping, not scientific metadata or a serialized native decoder.
+Update it only after corresponding parts are published. Downstream processing
+does not depend on it. Complete crash recovery is not promised.
 
-Stream/epoch/observation identities allow repeated timestamps without silent
-overwriting. Overlap reconciliation maintains those identities; assigning new
-IDs to every import is not deduplication. Exactly-once delivery is not guaranteed
-by the schema or transport, so the importer must tolerate repeated input.
+For the initial batch importer, withhold incomplete tail epochs from publication
+and report them. Once the next local recording is supplied, reread the necessary
+preceding raw context and publish newly completed records as the next part of
+the same revision, on their GPST day. Do not re-emit the published prefix during
+context replay. Prior Parquet alone cannot restore an unpublished fragment.
+If the tail still cannot be completed, omit and report it. Do not fetch receiver
+files through FTP, wait for acquisition, or require a generic checkpoint system.
+See [daily revisions](parquetnex.md#daily-revisions) for naming and publication.
+
+Repeated timestamps do not authorize overwriting. Exactly-once delivery and
+automatic recognition of repeated input are not guaranteed by the schema or
+initial importer; optional file-local counters are not deduplication evidence.
 
 Ordering and late-data policy belong to the producer/consumer contract. A live
 consumer may require ordered completed epochs, buffer a declared late window,
-or decline immediate processing of late records. The importer still accepts
-and reconciles recoverable late data for persistence/replay. V0 does not require
+or decline immediate processing of late records. Recoverable late data can be handled through an explicit rebuild for
+persistence/replay. V0 does not require
 watermarks, record retractions, or an update protocol for already emitted
 epochs. Proposed default: an epoch completed for a consumer is not silently
 amended; later information is reported for explicit replay or reprocessing.
 
-Report newly contributed records, duplicates, conflicts, unresolved associations,
-and affected GPST ranges. A newly added reset/event or navigation record may
+Report emitted records, unresolved tails/associations and affected GPST ranges.
+Report detected conflicts or duplicates without claiming exhaustive detection. A newly added reset/event or navigation record may
 invalidate state beyond the overlap itself; each consumer determines the needed
 replay interval, not merely the importer-reported bounds.
 

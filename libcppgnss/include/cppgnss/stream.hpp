@@ -21,6 +21,8 @@ class StreamDecoder {
     explicit StreamDecoder(Protocol protocol) : protocol_(protocol) {}
     void feed(std::span<const uint8_t>, const std::function<void(const FrameView &)> &);
     void finish() const;
+    uint64_t pending_offset() const { return offset_; }
+    size_t pending_bytes() const { return pending_.size(); }
     uint64_t bytes = 0, frames = 0, invalid = 0, noise = 0;
     // Valid frames of the other protocol are skipped atomically, not scanned
     // as noise. Applications decide how to present these diagnostics.

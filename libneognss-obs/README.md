@@ -46,6 +46,7 @@ The experimental extension is `neognss_observatory._native`:
 | `GridProcessor(correction_age=600, mask_age=1200, gap_timeout=0)` | Protocol-neutral timed SBAS batches to valid IGP intervals |
 | `SbfParser(block_ids=[])` | SBF chunks to typed block records, optionally filtered by block ID, with GEORawL1 SBAS extraction |
 | `ObservationReader(protocol="ubx")` | UBX RAWX / SBF MeasEpoch chunks to opaque GPS observation batches |
+| `CnexObservationReader(protocol, stream_id, antenna=0)` | UBX RAWX / SBF MeasEpoch chunks to CommonNEX pilot observation and completion-event Arrow batches |
 | `PppFloat(settings)` | Observation batches and local precise products to Float solution/residual arrays |
 
 Raw-processing CLIs provide `--protocol/-p ubx|sbf` (default `ubx`). The stream
@@ -56,6 +57,10 @@ see [supported extraction paths](../docs/subframes.md#explicit-wire-protocol).
 
 `feed()` accepts a contiguous **read-only** byte buffer, such as `bytes` or a
 read-only mmap. A caller must not modify backing storage during the call.
+The CommonNEX pilot currently accepts `bytes` specifically; consume each returned
+batch once with `pyarrow.record_batch()`. It does not use the GPS-only
+`ObservationReader` or RTKLIB normalization. See [its guide](../docs/commonnex/importer.md)
+for deferred-tail handling and incomplete catalog coverage.
 Native work releases the GIL. Results own their memory; there are no borrowed
 per-frame objects escaping into Python and no per-frame Python callbacks.
 Concurrent calls on the same processor are rejected; independent processors
