@@ -58,7 +58,7 @@ constructed from free-form `setup_id`. Its metadata carries the logical ID.
   setup.json
   receiver-config.txt       # Example vendor_config filename; format unrestricted
   antenna.atx                # Optional selected receiver calibration
-  2025-08-15/
+  2025/08/15/
     r00-observations-part00.parquet
     r00-observations-part01.parquet  # Completed deferred tail
     r00-raw-bits-part00.parquet
@@ -82,6 +82,12 @@ carry the parent `setup_id`; native source-antenna selection is an import option
 retained in the continuation cursor, not a second logical identity.
 Date directories denote GPST days. Companion files are initialized once, not
 replicated per day. See [ANTEX selection](setup-json.md#antex-selection-during-initialization).
+
+The importer publishes completed days during a multi-day run, not only at its
+end. Daily `import-state.json` files track continuation; the latest unconsumed
+state is selected by default. A publication barrier can also close the next
+day's first partial part to align the cursor with all emitted rows. See
+[publication and continuation](importer.md#tail-continuation-and-reconstruction).
 
 ## Serialization rules
 
@@ -195,7 +201,7 @@ mapping remain to be finalized. Use one v0 mapping rather than alternate layouts
 The fixed relative filename pattern within a station or navigation collection is:
 
 ```text
-<GPST YYYY-MM-DD>/r<revision:02d>-<catalog>-part<part:02d>.parquet
+<GPST YYYY>/<MM>/<DD>/r<revision:02d>-<catalog>-part<part:02d>.parquet
 ```
 
 Revision and part are two-digit decimal numbers, starting at `00`. Each is

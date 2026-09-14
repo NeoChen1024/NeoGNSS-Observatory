@@ -63,6 +63,18 @@ std::optional<int64_t> timegps(const cppgnss::FrameView &f) {
         return {};
     return int64_t(week) * 604800000 + tow;
 }
+// Synchronous navigation blocks only: RawNavBits headers carry SIS time.
+std::optional<int64_t> sbf_navigation_time(const cppgnss::FrameView &f) {
+    if (f.protocol != cppgnss::Protocol::sbf ||
+        (f.id != 4006 && f.id != 4007 && f.id != 5914 && f.id != 5921) ||
+        f.payload.size() < 6)
+        return {};
+    auto tow = UBX::read_le<uint32_t>(f.payload, 0);
+    auto week = UBX::read_le<uint16_t>(f.payload, 4);
+    if (tow >= 604800000 || week == 65535)
+        return {};
+    return int64_t(week) * 604800000 + tow;
+}
 struct Probe {
     cppgnss::StreamDecoder decoder;
     std::mutex mutex;
@@ -87,10 +99,8 @@ struct Probe {
                     if (auto ms = timegps(f))
                         navigation = Tick(*ms) * 1000000000;
                     else if (f.protocol == cppgnss::Protocol::sbf) {
-                        auto decoded = cppgnss::decode_raw_bits(f);
-                        if (decoded.record && decoded.record->gpst_ms)
-                            navigation =
-                                Tick(*decoded.record->gpst_ms) * 1000000000;
+                        if (auto ms = sbf_navigation_time(f))
+                            navigation = Tick(*ms) * 1000000000;
                     }
                 }
             } catch (const std::runtime_error &) {
@@ -456,9 +466,6 @@ struct Reader {
     std::string reversal_axis;
     Tick reversal_previous = 0, reversal_current = 0;
     uint64_t reversal_offset = 0;
-    uint64_t raw_time_reversals = 0, raw_reversal_offset = 0;
-    std::string raw_reversal_axis;
-    Tick raw_reversal_previous = 0, raw_reversal_current = 0;
     void monotonic(Tick now, const std::string &axis, uint64_t offset) {
         auto previous = last_times.find(axis);
         if (previous != last_times.end() && now < previous->second) {
@@ -499,6 +506,13 @@ struct Reader {
         // Replayed observation tails must not replay already imported RawBits.
         if (f.offset < nav_skip_before)
             return;
+        if (f.protocol == cppgnss::Protocol::sbf &&
+            (f.id == 4006 || f.id == 4007 || f.id == 5914 || f.id == 5921)) {
+            nav_ms = sbf_navigation_time(f);
+            if (nav_ms)
+                monotonic(Tick(*nav_ms) * 1000000000, "navigation/receiver",
+                          f.offset);
+        }
         auto emit = [&](int64_t ms, const cppgnss::RawBits &bits) {
             append_bits(out, Tick(ms) * 1000000000, setup_id, bits);
             ++raw_count;
@@ -520,30 +534,13 @@ struct Reader {
             if (!decoded.record)
                 return;
             const auto &r = *decoded.record;
-            if (!r.gpst_ms) {
+            if (!nav_ms) {
                 ++raw_untimed;
                 return;
             }
-            auto ms = *r.gpst_ms;
-            std::string axis = "navigation/" + r.system +
-                               std::to_string(r.satellite) + "/" + r.family;
-            for (const auto &signal : r.signals)
-                axis += "/" + signal;
-            // SIS transmission timestamps need not follow receiver output
-            // order.
-            const Tick now = Tick(ms) * 1000000000;
-            auto previous = last_times.find(axis);
-            if (previous != last_times.end() && now < previous->second) {
-                ++raw_time_reversals;
-                raw_reversal_axis = axis;
-                raw_reversal_previous = previous->second;
-                raw_reversal_current = now;
-                raw_reversal_offset = f.offset;
-            }
-            last_times[axis] = now;
-            emit(ms, r);
+            emit(*nav_ms, r);
             // A timestamped navigation block is not a whole navigation epoch
-            // completion boundary. Preserve its source SIS timestamp unchanged.
+            // completion boundary. SIS timestamps do not enter CommonNEX.
             return;
         }
         const auto p = f.payload;
@@ -819,6 +816,18 @@ struct Reader {
         d["pending_epoch"] = bool(pending);
         d["pending_frame_bytes"] = decoder.pending_bytes();
         d["resume_offset"] = pending ? pending_start : decoder.pending_offset();
+        std::optional<int64_t> safe_day, cursor_day;
+        for (const auto &[axis, time] : last_times) {
+            auto day = int64_t(time / ps / 86400);
+            safe_day = safe_day ? std::min(*safe_day, day) : day;
+            cursor_day = cursor_day ? std::max(*cursor_day, day) : day;
+        }
+        if (pending && safe_day && pending->week < 65535 && pending->tow_ms &&
+            *pending->tow_ms < 604800000)
+            *safe_day =
+                std::min(*safe_day, int64_t(time_of(*pending) / ps / 86400));
+        d["safe_day"] = safe_day;
+        d["cursor_day"] = cursor_day;
         d["skipped_protocol_frames"] = decoder.skipped_protocol_frames;
         d["skipped_protocol_bytes"] = decoder.skipped_protocol_bytes;
         d["ignored_meas3_blocks"] = meas3;
@@ -836,15 +845,6 @@ struct Reader {
         d["raw_bits_untimed"] = raw_untimed;
         d["raw_bits_unsupported"] = raw_unsupported;
         d["raw_bits_pending"] = nav_bits.size();
-        d["raw_bits_time_reversals"] = raw_time_reversals;
-        py::dict warning;
-        if (raw_time_reversals) {
-            warning["axis"] = raw_reversal_axis;
-            warning["previous"] = time_parts(raw_reversal_previous);
-            warning["current"] = time_parts(raw_reversal_current);
-            warning["offset"] = raw_reversal_offset;
-        }
-        d["last_raw_bits_time_reversal"] = warning;
         return d;
     }
 };

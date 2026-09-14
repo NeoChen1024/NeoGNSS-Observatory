@@ -55,7 +55,8 @@ receiver checks remain separate. Failed-check bodies are retained; downstream
 acceptance is not stored as a canonical property. RawBits-only input is supported.
 UBX uses fresh NAV-TIMEGPS plus matching NAV-EOE, independently of RAWX time;
 unresolved/conflicting groups are counted and omitted. SBF raw-navigation blocks
-use their own TOW/WNc; no whole-epoch completion is inferred from a single block.
+use the currently valid synchronous receiver navigation TOW/WNc, not their SIS
+headers; no whole-epoch completion is inferred from a single raw block.
 No transmission-time or observation-time equivalence is asserted.
 
 Not yet implemented: undefined future RawBits representations, DecodedNav, telemetry,
@@ -151,12 +152,23 @@ is on stdout; processing progress and warnings are on stderr.
 
 ### Head-only ordering and time reversal
 
+Import uses an ordered parsing producer and one Parquet writer thread. The
+writer partitions Arrow batches by GPST day and compresses with Zstandard level
+3 while native parsing continues. At most two writes are outstanding (including
+the active write), bounding queued data to two decoded input chunks; decoded
+memory can be substantially larger than `--chunk-mib`. Arrow buffers cross the
+thread boundary without serialization. Writer failures propagate to the importer;
+each publication barrier drains its writes before updating continuation state. Decoder
+state remains sequential across files. The progress bar measures parsed input;
+the importer waits for the final queued writes before completing.
+
 For each new input, inspect at most `min(size, max(ceil(size / 100), 1 MiB))`
 bytes from its beginning. No tail read or full indexing pass is performed.
 An independent native framing probe validates complete frames and records the
 first usable observation time (RAWX or MeasEpoch). The probe stops early when
 that anchor is available. If none is present in the window, use the first valid
-UBX NAV-TIMEGPS or supported timed SBF RawBits anchor instead. No observation
+UBX NAV-TIMEGPS or synchronous SBF navigation anchor instead. SIS timestamps
+are never probe anchors. No observation
 completion event is required merely to read a valid measurement timestamp.
 Do not snap fractional GPST or use a binary64 sort key; probe times use exact
 integer seconds/picoseconds, with the same native conversion as import.
@@ -169,20 +181,18 @@ to be reassembled before importing.
 
 Formal import starts each sorted file at byte zero and carries framing/epoch
 state across files. Probe state is discarded. Native checks compare observation
-epochs separately from UBX TIMEGPS. SBF RawBits times are checked separately
-per satellite/signal/message family. SBF SIS timestamps describe transmission
-time and need not follow output order. RawBits decreases produce throttled
-warnings and a summary count, preserving timestamps and canonical payloads
-unchanged. They are not evidence that restitch is required. RawBits tail
-continuation likewise does not require times to exceed previously published
-maxima; readers must not assume chronological row order.
+epochs separately from receiver navigation time. UBX uses TIMEGPS; SBF uses
+PVTCartesian, PVTGeodetic, ReceiverTime and EndOfPVT. RawBits receives the currently
+valid navigation context in stream order, never its source SIS timestamp. Missing
+SBF context is counted as untimed; invalid anchors clear it. The canonical body
+is unchanged. Observation time does not substitute for navigation context.
 Never compare these independent time sequences against each other. A strict
-decrease in observation time or UBX TIMEGPS still stops import and reports the
+decrease in observation or receiver navigation time stops import and reports the
 axis, previous/current GPST and source file/byte offset. Equal timestamps are accepted without a
 duplicate check. Head samples do not claim overlap detection or global validity.
 Inspect or re-stitch overlapping/disordered inputs rather than expecting the
-importer to trim or merge them. Failed runs do not publish their staged catalogs;
-unpublished staging remains available for inspection.
+importer to trim or merge them. Failed runs retain already published daily parts;
+unpublished staging remains available for inspection and is not selected by readers.
 
 Last-seen times for these sequences are retained in the continuation cursor. Previously
 parsed navigation replay is skipped using the existing cursor, so it is not
@@ -191,9 +201,13 @@ sorted new input files and are never independently probed or reordered.
 
 ## Tail continuation and reconstruction
 
-The latest affected GPST day receives `import-state.json`, a narrow continuation
-cursor for that invocation. It records the published part names, terminal input
-position, and raw file/offset ranges needed to replay the unpublished tail.
+The station uses `YYYY/MM/DD/` GPST directories. The latest receiver/observation
+context day receives `import-state.json`, a narrow continuation cursor. It records
+published parts, previously read input paths/sizes/positions, and raw ranges for
+tail replay. No SIS timestamp affects the directory or cursor location.
+The importer rejects the old flat-date directory layout and incompatible
+continuation cursors. Initialize a new station for these experimental products;
+it does not rename or relabel previously generated SIS-timed data.
 It also stores bounded pending UBX navigation context and a replay skip
 offset, so observation-tail replay does not duplicate published RawBits.
 It is not a science catalog or general recovery manifest.
@@ -203,11 +217,20 @@ context replay is needed. Downstream processing ignores this sidecar.
 
 ```sh
 ngo-cnex-import run -p sbf --station data/my-setup \
-  --resume-from data/my-setup/2025-08-15/import-state.json next.25_
+  --resume-from data/my-setup/2025/08/15/import-state.json next.25_
 ```
 
-The supplied inputs are new recording files; do not repeat the saved raw-context
-files. Tail completion produces the next `partNN` under the existing revision;
+By default, select the latest unconsumed daily state automatically. Explicit
+`--resume-from` overrides selection; `--rebuild` disables automatic continuation.
+Validate the selected state, Setup/protocol/antenna, published parts, and saved
+input sizes. Invalid state fails, without trying an older state or fresh import.
+Reusing the same recursive input directory skips previously read paths before
+head probing, replays only the necessary tail, and imports new files. Partially
+read files continue from the saved cursor. Print the state and skipped/new counts;
+no new input or unread remainder is a successful `up-to-date` result. Input files
+must be immutable; growing/replaced recordings are not silently accepted.
+
+Tail completion produces the next `partNN` under the existing revision;
 new days start at `r00`/`part00`. Context replay starts at the withheld frame/group,
 not at the already published prefix. Insertion before existing catalog coverage
 is rejected, not silently treated as an append. No general deduplication is offered.
@@ -226,15 +249,26 @@ merge old rows automatically, nor rebuild unsupported catalogs. A rebuilt empty
 catalog uses an empty part when necessary to supersede an older nonempty catalog.
 Keep all related future catalogs consistent when expanding the importer.
 
+At each parsing-batch barrier where both time axes and any pending measurement
+have passed an open day, close and publish its parts immediately. To keep the
+checkpoint exactly aligned with emitted rows, the barrier also publishes any
+completed rows already emitted for the next day as its first small part; later
+batches append another part. No incomplete measurement group is published.
+End of input publishes remaining completed records and saves pending raw context.
+Daily publication continues in the writer thread, without resetting native state.
+
 Files are staged, closed and renamed without overwriting existing parts. Update
-state after publishing parts. Do not read while writing. Failed/interrupted
+state after publishing parts. Completed publications survive a later parsing or
+writing failure and can be resumed automatically. Do not read while writing. Failed/interrupted
 publication requires manual resolution before readers run; no atomic multi-file
 transaction or full crash recovery is promised. Old revisions are retained.
 
 ## Remaining work
 
 - [x] Initializer, filename parsing/allocation and latest-revision selection.
-- [x] Head-only ordering, strict observation/TIMEGPS checks and nonfatal RawBits reversal warnings.
+- [x] Head-only ordering and independent observation/receiver-navigation checks.
+- [x] Receiver-context RawBits time, nested GPST dates and incremental daily publication.
+- [x] Automatic latest-state continuation and previously read input skipping.
 - [x] RAWX/MeasEpoch decoding and native decimal Arrow observation batches.
 - [x] Measurement completion events and daily Parquet writing.
 - [x] Local raw-tail continuation with immutable parts and explicit rebuilding.

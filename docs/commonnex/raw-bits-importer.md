@@ -93,10 +93,15 @@ never substitutes for it. Pending records survive physical boundaries and
 daily continuation through the bounded import context. Missing/invalid
 association is counted, not fabricated.
 
-SBF RawBits uses its own valid TOW/WNc. An individual raw-navigation block is
-not treated as a whole navigation-epoch completion event. Observation Events
-remain independent. Native range checks reject no-data time values; they do not
-certify that arbitrary valid-range timestamps are scientifically trustworthy.
+SBF RawBits uses the latest valid synchronous receiver navigation context from
+PVTCartesian (4006), PVTGeodetic (4007), ReceiverTime (5914), or EndOfPVT (5921).
+Their receiver TOW/WNc supplies `nav_epoch_gpst`; observation time is independent.
+An invalid navigation anchor clears the context. Before a usable anchor,
+RawBits is skipped and counted as untimed. RawBits block SIS timestamps are not
+stored, used for partitioning, or used as a fallback. They need not be recoverable
+from the canonical body alone. An individual RawBits block does not create a
+navigation completion event. Canonical payloads remain unchanged, including
+any erroneous broadcast time bits. Receiver-navigation time reversals still fail.
 
 `ngo-sbas-grid-parquet` selects only `SBAS_L1` from mixed RawBits. Other families,
 including SBAS L5 and QZSS L1S/L5S, do not enter the L1 grid decoder.

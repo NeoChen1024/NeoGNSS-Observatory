@@ -2,7 +2,6 @@
 """Produce daily GPST grid intervals from protocol-neutral SBAS streams."""
 
 import json
-import re
 from collections import Counter, defaultdict
 from datetime import date
 from decimal import Decimal
@@ -15,7 +14,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
-from .cnex_import import ORIGIN, latest_parts
+from .cnex_import import ORIGIN, day_directories, latest_parts
 from .gpst import label
 from .research_output import staged_output, write_json
 
@@ -107,7 +106,7 @@ class DailySink:
 
 def build_grid(input_dir, output, gap_timeout=50):
     metadata = json.loads((input_dir / "setup.json").read_text(encoding="utf-8"))
-    days = sorted(p for p in input_dir.iterdir() if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name))
+    days = list(day_directories(input_dir))
     if not any(latest_parts(day, "raw-bits") for day in days):
         raise ValueError("No ParquetNEX RawBits inputs in this station")
     sink = DailySink(output)
@@ -150,7 +149,7 @@ def build_grid(input_dir, output, gap_timeout=50):
                 diagnostics["signal_gaps"] += 1
 
     def rows(day, catalog):
-        start = Decimal((date.fromisoformat(day.name) - ORIGIN).days * 86400)
+        start = Decimal((date.fromisoformat("-".join(day.relative_to(input_dir).parts)) - ORIGIN).days * 86400)
         time_field = "nav_epoch_gpst" if catalog == "raw-bits" else "gpst"
         for path in latest_parts(day, catalog):
             with pq.ParquetFile(path) as source:

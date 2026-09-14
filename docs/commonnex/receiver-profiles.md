@@ -1,6 +1,6 @@
 # CommonNEX minimal receiver message profiles
 
-Status: v0 design draft; not an implemented format or API.
+Status: v0 design draft with an implemented UBX/SBF importer subset.
 
 [Overview](overview.md)
 
@@ -18,7 +18,7 @@ incomplete status under the adapter contract, not guessed completion.
 | Input | Observation target | RawBits target | Optional auxiliary / navigation |
 | --- | --- | --- | --- |
 | UBX | RXM-RAWX, NAV-TIMEGPS, NAV-EOE | RXM-SFRBX | NAV-CLOCK, NAV-PVT, TIM-TP, MON-SYS |
-| SBF | Measurements: MeasEpoch, MeasExtra, EndOfMeas | RawNavBits group | Clock/pulse/environment/status blocks; decoded navigation if wanted |
+| SBF | Measurements: MeasEpoch, MeasExtra, EndOfMeas | RawNavBits group plus synchronous receiver navigation time | Clock/pulse/environment/status blocks; decoded navigation if wanted |
 | RTCM3 | MSM7 for each enabled in-scope constellation, resolvable full time context | Not supplied by ordinary decoded ephemeris messages | Applicable broadcast ephemerides for DecodedNav; station descriptors |
 | RINEX | Supported observation records and interpretation metadata | Not reconstructed from decoded NAV | Supported NAV records for DecodedNav |
 
@@ -64,6 +64,13 @@ epoch; the adapter must specify the relationship to RAWX completion explicitly.
 SBF measurement epochs and companion-block completion require an explicit
 MeasEpoch/MeasExtra/EndOfMeas association rule. RawBits stores associated navigation time directly,
 not given an additional transmission-time column in the RawBits family.
+The current SBF importer anchors it to the latest valid PVTCartesian (4006),
+PVTGeodetic (4007), ReceiverTime (5914), or EndOfPVT (5921) in stream order.
+Include at least one of these when recording RawBits. MeasEpoch timestamps do
+not substitute for independent navigation context. RawBits block SIS timestamps
+are neither retained nor used as fallback; complete SIS time need not be
+recoverable from an individual canonical body. Unknown context skips RawBits
+with a count, while invalid navigation anchors clear the current context.
 
 RTCM3 mapping must resolve the full epoch/date/time-scale context; a partial
 time-of-week alone is not a complete GPST timestamp. The adapter must validate

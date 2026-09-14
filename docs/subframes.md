@@ -31,14 +31,14 @@ tails remain unpublished and can be continued with the import sidecar.
 
 Inputs are expanded files, supplied explicitly or discovered with importer
 `-r/--recursive`; head probes determine their import order.
-Observation and UBX TIMEGPS reversals abort import without overlap removal.
-RawBits SIS time reversals only warn and are counted; original timestamps and
-canonical bits are retained, without guaranteeing chronological row order.
+Observation and receiver navigation reversals abort import without overlap removal.
+RawBits uses current receiver navigation context; source SIS timestamps are not
+retained or used as fallback. Canonical bits remain unchanged.
 Use reconstructed Era A
 segments, excluding unassigned data, or nonoverlapping raw UBX/SBF recordings.
 No reconstruction index, QA stamp or XZ decompression is
 required. UBX navigation association uses fresh NAV-TIMEGPS and matching EOE,
-independently of RAWX measurement time. SBF GEORawL1 uses its own TOW/WNc,
+independently of RAWX measurement time. SBF GEORawL1 uses synchronous receiver navigation time,
 without claiming that an individual raw block completes a navigation epoch.
 Unusable time is counted and omitted, never invented. See the
 [importer guide](commonnex/importer.md) for continuation and coverage limits.
@@ -53,7 +53,7 @@ This is not a permanent end-of-stream marker in the input dataset.
 
 ### RawBits product
 
-`YYYY-MM-DD/r00-raw-bits-part00.parquet` follows the
+`YYYY/MM/DD/r00-raw-bits-part00.parquet` follows the
 [CommonNEX RawBits fields](commonnex/raw-bits.md). SBAS L1 uses
 `SBAS_L1_250_V1`, with DECIMAL(38,12) `nav_epoch_gpst`, normalized broadcaster
 identity, `SBAS_L1` bitstream source and separately scoped independent/receiver

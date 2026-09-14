@@ -224,8 +224,10 @@ combination flags, rather than masking it down to a nominal signal index.
 Keep `CRCSF2` and `CRCSF3` as separate scoped results. Preserve applicable
 `ViterbiCnt` in the `sbf` diagnostics namespace; not-applicable fields become
 absent, not measurements of zero errors. Resolve the containing navigation epoch using an explicit adapter rule.
-Native SIS timing may inform association internally; do not copy it as a second
-RawBits time axis or silently equate it with an observation timestamp.
+Use the currently valid receiver navigation epoch in stream order for association.
+Do not use native SIS timestamps as anchors or fallbacks, and do not persist them
+as a second RawBits time axis. Reconstructing complete SIS time from one canonical
+body is not guaranteed. Observation timestamps remain independent.
 
 Names in the installed/generated schema can differ from the manual's display
 names. The current SBF adapter accesses `NavBits` and decoded `SigIdx`, whereas
