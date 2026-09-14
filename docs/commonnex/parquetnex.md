@@ -175,8 +175,15 @@ these mappings must eventually be specified rather than left writer-specific.
   Clock-sensitive readers load applicable Events, including still-effective
   states from earlier days; reading only yesterday is not a guaranteed bound.
   Epoch-specific offsets are not carried forward. Missing state is UNKNOWN.
-- Compression, row-group sizing, sorting, and optional compaction are physical
-  choices to measure. Do not promise a compression ratio relative to RINEX;
+- The recommended compression method for CommonNEX persisted as ParquetNEX is
+  **Zstandard (ZSTD), level 3**. Writers should select the level explicitly
+  rather than relying on a library's codec default (with PyArrow:
+  `compression="zstd", compression_level=3`). This is a recommended storage
+  default, not a mandatory conformance requirement or an Arrow in-memory
+  compression rule. Other Parquet-supported codecs or uncompressed storage
+  do not change CommonNEX record semantics.
+- Compression tuning, row-group sizing, sorting, and optional compaction remain
+  physical choices to measure. Do not promise a compression ratio relative to RINEX;
   compare equal retained content, including compressed RINEX baselines.
 
 Concrete family schemas, metadata keys, and event context selection
@@ -241,6 +248,8 @@ new days; a rebuilt revision may require transferring a complete new catalog.
 ## Progress
 
 - [x] Select PyArrow I/O and native Arrow-compatible batches without C++ Parquet.
+- [x] Recommend explicit ZSTD level 3 for ParquetNEX storage, without requiring
+  that codec or level for format conformance.
 - [x] Select direct decimal timestamps, no epoch tables or required row references.
 - [x] Fix GPST date directories and two-digit revision/part filenames.
 - [x] Separate deferred tail parts from complete replacement catalog revisions;

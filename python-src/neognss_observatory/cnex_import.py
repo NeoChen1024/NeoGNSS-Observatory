@@ -159,7 +159,8 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
     """Process INPUTS in caller order as one continuous recording path.
 
     Initial catalogs: observations and measurement-completion events only.
-    RawBits, telemetry, MeasExtra and cadence/clock events are not imported.
+    SBF MeasExtra enriches observations. RawBits, telemetry and cadence/clock
+    events are not imported.
     No automatic overlap merging. Rebuild requires the complete replacement input.
     """
     writers = {}
@@ -261,7 +262,8 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
         warned_foreign = False
         total = sum(size - start for _, start, size in segments)
         click.echo(
-            "Importing observations and completion events only; RawBits/telemetry/extra quality are not yet imported.", err=True
+            "Importing observations (including SBF MeasExtra) and completion events; RawBits/telemetry are not yet imported.",
+            err=True,
         )
         with tqdm(total=total, unit="B", unit_scale=True, desc="CommonNEX", file=sys.stderr) as progress:
             for path, start, size in segments:
@@ -342,6 +344,8 @@ def run(inputs, stream, protocol, rebuild, resume_from, chunk_mib):
             click.echo("Warning: incomplete frames/groups withheld; inspect summary and continuation state", err=True)
         if summary["unsupported_signals"] or summary["untimed_epochs"] or summary["invalid_frames"]:
             click.echo("Warning: unsupported/untimed/invalid input was encountered; inspect summary", err=True)
+        if summary["measextra_unmatched"] or summary["measextra_ambiguous"] or summary["measextra_unsupported"]:
+            click.echo("Warning: some MeasExtra records could not be associated; inspect summary", err=True)
     except (ValueError, KeyError, OSError, RuntimeError, pa.ArrowException) as exc:
         for writer, _, _ in writers.values():
             if writer is not None:

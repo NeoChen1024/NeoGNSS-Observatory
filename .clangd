@@ -1,0 +1,9 @@
+CompileFlags:
+  CompilationDatabase: build
+  Compiler: /usr/bin/c++
+
+---
+If:
+  PathMatch: (.*_generated|.*_gen)\.(cpp|hpp)
+Diagnostics:
+  Suppress: [unused-includes]

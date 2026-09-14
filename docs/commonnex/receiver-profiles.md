@@ -81,6 +81,46 @@ already present in the source are neither applied again nor undone.
 
 ## Observation quality mapping
 
+### MeasExtra uncertainty bounds
+
+Use separate `stddev_is_lower_bound` fields for code, phase and Doppler.
+MeasExtra has no global saturation bit: `CodeVar` and `CarrierVar` independently
+use 65534 as their clipped maximum and 65535 as unavailable. Check these codes
+before conversion. Code stddev is sqrt(CodeVar * 1e-4) meters; phase stddev is
+sqrt(CarrierVar * 1e-6) cycles. Store both as float32, not integer variances.
+The clipped maximum maps to true, other available codes to false, and unavailable
+codes to null stddev and null bound flag.
+
+Doppler variance is carrier variance times `DopplerVarFactor` in Hz2/cycles2.
+For a finite positive factor, propagate the carrier uncertainty bound flag to
+Doppler quality. This is a derived bound, not an independently clipped Doppler
+counter, and says nothing about clipping of the Doppler observable itself.
+Unavailable inputs must not produce an apparently uncensored uncertainty.
+
+The importer implements MeasExtra revisions 0-3. A finite zero Doppler factor
+produces zero derived uncertainty with a false lower-bound flag, not proof of
+perfect accuracy. Invalid/missing inputs remain null. RAWX bound flags remain
+unknown; a finite RAWX stddev alone does not establish bound semantics.
+
+MeasExtra joins the same source epoch by WNc/TOW, RxChannel, native signal and
+antenna. MeasEpoch Type2 inherits the parent channel. Either block may arrive
+first, including across a chunk or file boundary; matching EndOfMeas triggers
+the join. The replay cursor starts at the first contributing block. Unmatched
+or ambiguous keys are counted, not guessed or applied multiple times.
+
+MeasExtra CodeVar/CarrierVar replace unavailable base uncertainties. CN0HighRes
+adds only to an available base C/N0. Available MeasExtra LockTime supplies the
+longer lock counter (65534 is a lower bound); unavailable extra lock leaves the
+base duration intact. CumLossCont is preserved modulo 256 without unwrapping.
+Map MPCorrection and SmoothingCorr by 0.001 m, and CarMPCorr by 1/512 cycles,
+into `receiver_corrections`; no correction is applied during import.
+Preserve the finite nonnegative DopplerVarFactor as `doppler_variance_factor`.
+Revision 0 lacks CumLossCont/CarMPCorr; revision 3 adds CN0HighRes and extended
+signal IDs. Reserved bits and padding are not scientific fields. Decode N as
+modulo 256 using actual block/sub-block lengths, not as a plain loop bound.
+
+### Source mappings
+
 These are selected schema mappings, not a claim of implemented adapter coverage.
 
 | Source | `cn0_db_hz` | `half_cycle_ambiguity` | `half_cycle_subtracted` |

@@ -180,6 +180,12 @@ configuring `libcppgnss/` directly.
 
 ## Native library boundaries
 
+- Format project-owned C/C++ with the root `.clang-format` and analyze it with
+  `.clang-tidy`, adapted from the sibling NeoTape project. Use the CMake compile
+  database in `build/`. Exclude vendored submodules and generated build files
+  from formatting and tidy targets. Review behavior-changing tidy fixes before
+  applying them; diagnostics alone do not authorize broad semantic rewrites.
+
 - `ngo-dataset-qa` defaults to optional, read-only `scan`; `--profile restitch`
   explicitly enables overlap indexes/proofs and reconstruction. QA is not a
   prerequisite enforced by extraction. Do not require QA stamps, manifests,

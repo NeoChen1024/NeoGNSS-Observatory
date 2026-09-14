@@ -109,6 +109,8 @@ and expose conflicts without treating timestamps as unique row identities.
 | `cn0_db_hz` | float64? | S observable only when its unit is known to be dB-Hz |
 | `code_quality`, `phase_quality`, `doppler_quality`, `cn0_quality` | ObservableQuality? | Independent per-observable quality |
 | `phase_tracking` | PhaseTracking? | Phase-specific indicators and reported lock duration |
+| `receiver_corrections` | ReceiverCorrections? | Reported per-observable preprocessing corrections, not applied or undone by import |
+| `doppler_variance_factor` | float32? | Finite nonnegative factor in Hz2/cycles2 used to derive Doppler variance from phase variance |
 
 ### ObservableQuality
 
@@ -116,12 +118,20 @@ and expose conflicts without treating timestamps as unique row identities.
 | --- | --- | --- |
 | `status` | enum | `valid`, `invalid`, or `unknown`: source-reported validity, not downstream scientific acceptance |
 | `stddev` | float32? | Finite nonnegative standard deviation in the corresponding observable's unit |
+| `stddev_is_lower_bound` | bool? | Whether the uncertainty represents a lower bound rather than an uncensored estimate |
 | `rinex_ssi` | uint8? | Original RINEX strength indicator, 1-9; zero/blank becomes null |
 
 Store only standard deviation, not a second variance column. Decode a source
 variance's units and no-data rules before taking its square root; do not infer
 uncertainty from C/N0. This normalization does not promise bitwise reversibility
 of a floating-point square root. Missing quality is not evidence of validity.
+`stddev_is_lower_bound` belongs to each observable's quality independently,
+not the entire row. True identifies a known lower-bound uncertainty, including
+one derived from a clipped variance. False requires an established uncensored
+source mapping; null means unknown or unavailable. A null stddev requires a
+null bound flag. This describes uncertainty, not clipping of the observable,
+RF signal or ADC. Keep stddev as float32: converted bounds have the same
+rounding limits as other uncertainties, not exact interval-arithmetic semantics.
 There is no generic `saturated` flag: lock saturation has its own representation,
 and RF/ADC clipping belongs to receiver diagnostics, not inferred from C/N0.
 
@@ -134,6 +144,8 @@ and RF/ADC clipping belongs to receiver diagnostics, not inferred from C/N0.
 | `half_cycle_subtracted` | bool? | Source explicitly reports a half-cycle already subtracted from the exported phase |
 | `rinex_lli` | uint8? | Original RINEX phase LLI bitmask, 0-7; blank becomes null |
 | `lock` | LockDuration? | Source-reported duration or bounds, not an importer-generated counter |
+| `continuity_counter` | uint32? | Source-reported signal continuity-change counter, not an inferred loss-of-lock boolean |
+| `continuity_counter_modulus` | uint32? | Modulus of that counter, greater than one; null when counter is absent |
 
 | LockDuration field | Type | Meaning |
 | --- | --- | --- |
@@ -145,6 +157,30 @@ An interval is `[lower_s, upper_s)` with upper greater than lower. The other
 representations require null upper bounds. A reported value retains source
 quantization; it does not claim perfect duration accuracy. Saturated counters
 use lower bounds. No lock information means a null lock record.
+
+Continuity counter and modulus are supplied together, with counter less than
+modulus. SBF MeasExtra reports modulo 256; acquisition and cycle slips can both
+increment it. Preserve the reported value without unwrapping or deriving a
+receiver restart from a decrease. An unchanged value is not proof of continuity
+across a gap, and a change does not uniquely identify a PLL loss of lock.
+
+### ReceiverCorrections
+
+| Field | Type | Unit |
+| --- | --- | --- |
+| `code_multipath_m` | float64? | m |
+| `code_smoothing_m` | float64? | m |
+| `phase_multipath_cycles` | float64? | cycles |
+
+These are signed finite amounts to add to the receiver's exported observable
+to undo the corresponding preprocessing correction. Import retains the exported
+code and phase; it does not add these values back or confuse them with clock
+corrections. Null is unavailable; zero is a reported zero, not proof that the
+feature is disabled. Fields use physical-unit float64 values, not source-specific
+scaled integer encodings. These non-time corrections are an explicit exception
+to the integer-first preference, like the observables they accompany.
+
+### Tracking interpretation
 
 Half-cycle ambiguity and subtraction are independent. Subtraction reports an
 operation already performed, not an instruction to subtract again. See the

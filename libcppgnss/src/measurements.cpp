@@ -149,6 +149,8 @@ std::optional<Measurements> decode_measurements(const FrameView &f) {
     if (sig == 31)
       sig = 32 + (u(p, info, 1) >> 3);
     m.antenna = u(p, type, 1) >> 5;
+    m.native_signal = sig;
+    m.receiver_channel = type1 ? u(p, q, 1) : 0;
     if (!identify(m, sbf_codes, sig, sv, false)) {
       if ((sig >= 8 && sig <= 12) || sig == 15 || sig == 36 || sig == 37)
         ++e.excluded;
@@ -193,6 +195,7 @@ std::optional<Measurements> decode_measurements(const FrameView &f) {
       if (o + 12 > p.size())
         throw std::runtime_error("Truncated MeasEpoch Type2");
       auto a = make(o, sv, false);
+      a.receiver_channel = m.receiver_channel;
       int cm = u(p, o + 3, 1) & 7;
       if (cm >= 4)
         cm -= 8;
@@ -216,6 +219,81 @@ std::optional<Measurements> decode_measurements(const FrameView &f) {
   }
   if (o > p.size())
     throw std::runtime_error("MeasEpoch sub-block length exceeds payload");
+  return e;
+}
+std::optional<Measurements> decode_measurement_extras(const FrameView &f) {
+  if (f.protocol != Protocol::sbf || f.id != 4000)
+    return {};
+  auto p = f.payload;
+  if (p.size() < 12 || f.revision > 3)
+    throw std::runtime_error("Unsupported/malformed MeasExtra revision");
+  size_t length = p[7], minimum = f.revision == 0   ? 12
+                                  : f.revision == 1 ? 14
+                                  : f.revision == 2 ? 15
+                                                    : 16;
+  if (length < minimum)
+    throw std::runtime_error("Short MeasExtra sub-block");
+  size_t capacity = (p.size() - 12) / length;
+  if (capacity < p[6])
+    throw std::runtime_error("Invalid MeasExtra count");
+  size_t count = p[6] + 256 * ((capacity - p[6]) / 256);
+  if (p.size() - 12 - count * length > 3)
+    throw std::runtime_error("MeasExtra count/length mismatch");
+  Measurements e;
+  e.week = u(p, 4, 2);
+  e.tow_ms = u(p, 0, 4);
+  e.tow_seconds = *e.tow_ms * .001;
+  float factor = std::bit_cast<float>(uint32_t(u(p, 8, 4)));
+  for (size_t i = 0, o = 12; i < count; ++i, o += length) {
+    Measurement m;
+    m.has_extra = true;
+    m.receiver_channel = p[o];
+    m.antenna = p[o + 1] >> 5;
+    int sig = p[o + 1] & 31;
+    if (sig == 31) {
+      if (f.revision < 3)
+        throw std::runtime_error("Extended MeasExtra signal before revision 3");
+      sig = 32 + (p[o + 15] >> 3);
+    }
+    m.native_signal = sig;
+    if ((sig >= 8 && sig <= 12) || sig == 15 || sig == 36 || sig == 37) {
+      ++e.excluded;
+      continue;
+    }
+    if (!sbf_codes.contains(sig)) {
+      ++e.unsupported;
+      continue;
+    }
+    m.code_multipath_m = s(p, o + 2, 2) * .001;
+    m.code_smoothing_m = s(p, o + 4, 2) * .001;
+    auto cv = u(p, o + 6, 2), pv = u(p, o + 8, 2), lock = u(p, o + 10, 2);
+    if (cv != 65535) {
+      m.code_sigma = std::sqrt(cv * 1e-4);
+      m.code_sigma_lower_bound = cv == 65534;
+    }
+    if (pv != 65535) {
+      m.phase_sigma = std::sqrt(pv * 1e-6);
+      m.phase_sigma_lower_bound = pv == 65534;
+    }
+    if (std::isfinite(factor) && factor >= 0) {
+      m.doppler_variance_factor = factor;
+      if (pv != 65535) {
+        m.doppler_sigma = std::sqrt(pv * 1e-6 * double(factor));
+        m.doppler_sigma_lower_bound = factor > 0 && pv == 65534;
+      }
+    }
+    if (lock != 65535) {
+      m.lock_ms = lock * 1000;
+      m.lock_lower_bound = lock == 65534;
+    }
+    if (f.revision >= 1) {
+      m.continuity_counter = p[o + 12];
+      m.phase_multipath_cycles = s(p, o + 13, 1) / 512.0;
+    }
+    if (f.revision >= 3)
+      m.cn0_increment = (p[o + 15] & 7) / 32.0;
+    e.rows.push_back(m);
+  }
   return e;
 }
 } // namespace cppgnss

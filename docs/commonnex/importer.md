@@ -30,6 +30,8 @@ as a lossless replacement for raw archives.
   returns all its parts. Eight Parquet writers may remain open at once; returning
   to an evicted partition creates another bounded part without rewriting it.
 
+Each quality struct includes nullable `stddev_is_lower_bound`; MeasExtra supplies
+variance-derived bounds, while RAWX bound semantics remain unknown.
 Quality structs use string enums, nullable standard deviations and RINEX-only
 fields left null. RAWX supplies code/phase validity, uncertainties, independent
 half-cycle flags and millisecond lock duration. MeasEpoch supplies reconstructed
@@ -37,11 +39,20 @@ code/phase/Doppler, C/N0, half-cycle ambiguity and lock duration; source no-data
 sentinels become null, while absent validity declarations remain UNKNOWN.
 Clipped RAWX/SBF lock durations use lower bounds. No slip inference is performed.
 
+MeasExtra revisions 0-3 are joined within the measurement epoch before
+EndOfMeas: code/phase/Doppler uncertainties, high-resolution C/N0, longer lock
+duration, modulo-256 continuity counter, Doppler variance factor and signed
+code/phase preprocessing corrections are retained. Code/phase are not adjusted.
+The join tolerates companion-block order and physical file boundaries, not
+interleaved unrelated epochs. Missing MeasExtra keeps base observations usable;
+ambiguous/unmatched extras are counted and not applied. Extra blocks arriving
+first are included in the raw-tail replay cursor. Summary counters distinguish
+excluded, unsupported, unmatched, ambiguous, pending and matched extras.
+
 Not yet implemented: RawBits/DecodedNav, navigation epoch events, telemetry,
-cadence/reset/clock-correction events, MeasExtra refinements and corrections,
+cadence/reset/clock-correction events,
 Meas3 decoding, RINEX/RTCM3 input, and automatic overlap reconciliation.
-In particular, MeasExtra high-resolution C/N0, variance and correction fields
-are not retained yet. Observation values are not corrected using NAV-CLOCK or
+Observation values are not corrected using NAV-CLOCK or
 SBF navigation solutions. The CLI reports its restricted catalog coverage.
 
 ## Initialize
@@ -126,7 +137,7 @@ transaction or full crash recovery is promised. Old revisions are retained.
 - [x] RAWX/MeasEpoch decoding and native decimal Arrow observation batches.
 - [x] Measurement completion events and daily Parquet writing.
 - [x] Local raw-tail continuation with immutable parts and explicit rebuilding.
-- [ ] MeasExtra and complete scientific quality/correction mappings.
+- [x] MeasExtra uncertainty, C/N0, lock/continuity and preprocessing corrections.
 - [ ] Cadence, clock and navigation epoch Events, with context across invocations.
 - [ ] Verified RawBits families and their navigation-time association.
 - [ ] Additional input protocols and any explicitly requested reconciliation.

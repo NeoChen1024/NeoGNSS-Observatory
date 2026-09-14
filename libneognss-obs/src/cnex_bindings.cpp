@@ -2,10 +2,12 @@
 #include <bit>
 #include <boost/int128/int128.hpp>
 #include <cppgnss/measurements.hpp>
+#include <map>
 #include <mutex>
 #include <nanoarrow/nanoarrow.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <tuple>
 
 namespace py = pybind11;
 namespace {
@@ -125,7 +127,7 @@ void decfield(ArrowSchema *s, const char *name, bool nullable = false) {
 }
 std::shared_ptr<Batch> observations() {
   auto b = std::make_shared<Batch>();
-  check(ArrowSchemaSetTypeStruct(&b->schema, 14));
+  check(ArrowSchemaSetTypeStruct(&b->schema, 16));
   auto c = b->schema.children;
   field(c[0], "stream_id", NANOARROW_TYPE_STRING, false);
   decfield(c[1], "gpst");
@@ -139,14 +141,15 @@ std::shared_ptr<Batch> observations() {
     field(c[i + 5], names[i], NANOARROW_TYPE_DOUBLE);
   for (int i = 0; i < 3; ++i) {
     auto q = c[i + 9];
-    check(ArrowSchemaSetTypeStruct(q, 3));
+    check(ArrowSchemaSetTypeStruct(q, 4));
     check(ArrowSchemaSetName(q, quality[i]));
     field(q->children[0], "status", NANOARROW_TYPE_STRING, false);
     field(q->children[1], "stddev", NANOARROW_TYPE_FLOAT);
     field(q->children[2], "rinex_ssi", NANOARROW_TYPE_UINT8);
+    field(q->children[3], "stddev_is_lower_bound", NANOARROW_TYPE_BOOL);
   }
   auto q = c[12];
-  check(ArrowSchemaSetTypeStruct(q, 5));
+  check(ArrowSchemaSetTypeStruct(q, 7));
   check(ArrowSchemaSetName(q, "phase_tracking"));
   field(q->children[0], "loss_of_lock", NANOARROW_TYPE_BOOL);
   field(q->children[1], "half_cycle_ambiguity", NANOARROW_TYPE_BOOL);
@@ -158,12 +161,22 @@ std::shared_ptr<Batch> observations() {
   decfield(l->children[0], "lower_s");
   decfield(l->children[1], "upper_s", true);
   field(l->children[2], "representation", NANOARROW_TYPE_STRING, false);
+  field(q->children[5], "continuity_counter", NANOARROW_TYPE_UINT32);
+  field(q->children[6], "continuity_counter_modulus", NANOARROW_TYPE_UINT32);
   q = c[13];
-  check(ArrowSchemaSetTypeStruct(q, 3));
+  check(ArrowSchemaSetTypeStruct(q, 4));
   check(ArrowSchemaSetName(q, "cn0_quality"));
   field(q->children[0], "status", NANOARROW_TYPE_STRING, false);
   field(q->children[1], "stddev", NANOARROW_TYPE_FLOAT);
   field(q->children[2], "rinex_ssi", NANOARROW_TYPE_UINT8);
+  field(q->children[3], "stddev_is_lower_bound", NANOARROW_TYPE_BOOL);
+  q = c[14];
+  check(ArrowSchemaSetTypeStruct(q, 3));
+  check(ArrowSchemaSetName(q, "receiver_corrections"));
+  field(q->children[0], "code_multipath_m", NANOARROW_TYPE_DOUBLE);
+  field(q->children[1], "code_smoothing_m", NANOARROW_TYPE_DOUBLE);
+  field(q->children[2], "phase_multipath_cycles", NANOARROW_TYPE_DOUBLE);
+  field(c[15], "doppler_variance_factor", NANOARROW_TYPE_FLOAT);
   b->init();
   return b;
 }
@@ -181,6 +194,9 @@ void append(Batch &b, const cppgnss::Measurement &m, Tick t,
   number(c[8], m.cn0);
   int statuses[] = {m.code_status, m.phase_status, 2};
   float sigmas[] = {m.code_sigma, m.phase_sigma, m.doppler_sigma};
+  std::optional<bool> bounds[] = {m.code_sigma_lower_bound,
+                                  m.phase_sigma_lower_bound,
+                                  m.doppler_sigma_lower_bound};
   for (int i = 0; i < 3; ++i) {
     auto q = c[9 + i];
     str(q->children[0], statuses[i] == 0   ? "valid"
@@ -188,6 +204,10 @@ void append(Batch &b, const cppgnss::Measurement &m, Tick t,
                                            : "unknown");
     number(q->children[1], sigmas[i]);
     check(ArrowArrayAppendNull(q->children[2], 1));
+    if (std::isfinite(sigmas[i]) && bounds[i].has_value())
+      integer(q->children[3], *bounds[i]);
+    else
+      check(ArrowArrayAppendNull(q->children[3], 1));
     check(ArrowArrayFinishElement(q));
   }
   auto q = c[12];
@@ -206,8 +226,24 @@ void append(Batch &b, const cppgnss::Measurement &m, Tick t,
     check(ArrowArrayFinishElement(l));
   } else
     check(ArrowArrayAppendNull(l, 1));
+  if (m.continuity_counter) {
+    integer(q->children[5], *m.continuity_counter);
+    integer(q->children[6], 256);
+  } else {
+    check(ArrowArrayAppendNull(q->children[5], 1));
+    check(ArrowArrayAppendNull(q->children[6], 1));
+  }
   check(ArrowArrayFinishElement(q));
   check(ArrowArrayAppendNull(c[13], 1));
+  if (m.has_extra) {
+    auto x = c[14];
+    number(x->children[0], m.code_multipath_m);
+    number(x->children[1], m.code_smoothing_m);
+    number(x->children[2], m.phase_multipath_cycles);
+    check(ArrowArrayFinishElement(x));
+  } else
+    check(ArrowArrayAppendNull(c[14], 1));
+  number(c[15], m.doppler_variance_factor);
   check(ArrowArrayFinishElement(&b.array));
 }
 std::shared_ptr<Batch> events() {
@@ -256,6 +292,54 @@ struct Reader {
            incomplete = 0, other_antenna = 0, meas3 = 0;
   std::mutex mutex;
   uint64_t excluded = 0;
+  std::vector<cppgnss::Measurement> extras;
+  bool has_measurements = false;
+  uint64_t extra_blocks = 0, extra_matched = 0, extra_unmatched = 0,
+           extra_ambiguous = 0, extra_excluded = 0, extra_unsupported = 0;
+  void associate_extras() {
+    using Key = std::tuple<unsigned, unsigned, unsigned>;
+    auto key = [](const auto &m) {
+      return Key{m.receiver_channel, m.native_signal, m.antenna};
+    };
+    std::map<Key, std::vector<cppgnss::Measurement *>> targets;
+    std::map<Key, size_t> source_counts;
+    for (auto &m : pending->rows)
+      targets[key(m)].push_back(&m);
+    for (auto &x : extras)
+      ++source_counts[key(x)];
+    for (auto &x : extras) {
+      auto found = targets.find(key(x));
+      if (found == targets.end()) {
+        ++extra_unmatched;
+        continue;
+      }
+      if (found->second.size() != 1 || source_counts[key(x)] != 1) {
+        ++extra_ambiguous;
+        continue;
+      }
+      auto &m = *found->second[0];
+      m.has_extra = true;
+      m.code_sigma = x.code_sigma;
+      m.phase_sigma = x.phase_sigma;
+      m.doppler_sigma = x.doppler_sigma;
+      m.code_sigma_lower_bound = x.code_sigma_lower_bound;
+      m.phase_sigma_lower_bound = x.phase_sigma_lower_bound;
+      m.doppler_sigma_lower_bound = x.doppler_sigma_lower_bound;
+      m.code_multipath_m = x.code_multipath_m;
+      m.code_smoothing_m = x.code_smoothing_m;
+      m.phase_multipath_cycles = x.phase_multipath_cycles;
+      m.doppler_variance_factor = x.doppler_variance_factor;
+      m.continuity_counter = x.continuity_counter;
+      if (std::isfinite(m.cn0))
+        m.cn0 += x.cn0_increment;
+      if (x.lock_ms) {
+        m.lock_ms = x.lock_ms;
+        m.lock_lower_bound = x.lock_lower_bound;
+      }
+      ++extra_matched;
+    }
+    extras.clear();
+  }
   Reader(const std::string &protocol, const std::string &id, unsigned ant)
       : decoder(protocol == "ubx" ? cppgnss::Protocol::ubx
                                   : cppgnss::Protocol::sbf),
@@ -292,6 +376,29 @@ struct Reader {
       if (f.protocol == cppgnss::Protocol::sbf && f.id >= 4109 && f.id <= 4113)
         ++meas3;
       auto e = cppgnss::decode_measurements(f);
+      auto extra = cppgnss::decode_measurement_extras(f);
+      auto adopt = [&](const cppgnss::Measurements &time) {
+        if (!pending || pending->week != time.week ||
+            pending->tow_ms != time.tow_ms) {
+          if (has_measurements)
+            ++incomplete;
+          extra_unmatched += extras.size();
+          extras.clear();
+          has_measurements = false;
+          pending = cppgnss::Measurements{};
+          pending->week = time.week;
+          pending->tow_ms = time.tow_ms;
+          pending->tow_seconds = time.tow_seconds;
+          pending_start = f.offset;
+        }
+      };
+      if (extra) {
+        ++extra_blocks;
+        extra_excluded += extra->excluded;
+        extra_unsupported += extra->unsupported;
+        adopt(*extra);
+        extras.insert(extras.end(), extra->rows.begin(), extra->rows.end());
+      }
       if (e) {
         unsupported += e->unsupported;
         excluded += e->excluded;
@@ -299,15 +406,10 @@ struct Reader {
           emit(*e);
           return;
         }
-        if (pending && pending->week == e->week && pending->tow_ms == e->tow_ms)
-          pending->rows.insert(pending->rows.end(), e->rows.begin(),
-                               e->rows.end());
-        else {
-          if (pending)
-            ++incomplete;
-          pending = std::move(e);
-          pending_start = f.offset;
-        }
+        adopt(*e);
+        has_measurements = true;
+        pending->rows.insert(pending->rows.end(), e->rows.begin(),
+                             e->rows.end());
       }
       if (f.protocol == cppgnss::Protocol::sbf && f.id == 5922 &&
           f.payload.size() >= 6 && pending) {
@@ -316,8 +418,15 @@ struct Reader {
           tow |= uint32_t(f.payload[i]) << (i * 8);
         uint16_t week = f.payload[4] + 256u * f.payload[5];
         if (week == pending->week && tow == pending->tow_ms) {
-          emit(*pending);
+          if (has_measurements) {
+            associate_extras();
+            emit(*pending);
+          } else {
+            extra_unmatched += extras.size();
+            extras.clear();
+          }
           pending.reset();
+          has_measurements = false;
         }
       }
     });
@@ -346,6 +455,13 @@ struct Reader {
     d["skipped_protocol_frames"] = decoder.skipped_protocol_frames;
     d["skipped_protocol_bytes"] = decoder.skipped_protocol_bytes;
     d["ignored_meas3_blocks"] = meas3;
+    d["measextra_blocks"] = extra_blocks;
+    d["measextra_matched"] = extra_matched;
+    d["measextra_unmatched"] = extra_unmatched;
+    d["measextra_ambiguous"] = extra_ambiguous;
+    d["measextra_excluded"] = extra_excluded;
+    d["measextra_unsupported"] = extra_unsupported;
+    d["measextra_pending"] = extras.size();
     return d;
   }
 };
