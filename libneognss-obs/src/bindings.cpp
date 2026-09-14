@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <algorithm>
 #include <cppgnss/sbf.hpp>
+#include <cppgnss/ubx_names.hpp>
+#include <map>
 #include <mutex>
 #include <neognss_obs/processing.hpp>
 #include <pybind11/pybind11.h>
@@ -109,11 +111,81 @@ struct SbfBatch {
         return out;
     }
 };
+struct RxMessageRatio {
+    bool sbf;
+    cppgnss::StreamDecoder reader;
+    explicit RxMessageRatio(const std::string &protocol)
+        : sbf(protocol == "sbf"),
+          reader(sbf ? cppgnss::Protocol::sbf : cppgnss::Protocol::ubx) {
+        if (protocol != "ubx" && protocol != "sbf")
+            throw std::invalid_argument("Expected ubx or sbf");
+    }
+    struct Counts {
+        uint64_t frames = 0, bytes = 0;
+        std::map<uint8_t, uint64_t> revisions;
+    };
+    std::map<uint16_t, Counts> counts;
+    void feed(std::span<const uint8_t> data) {
+        reader.feed(data, [&](const cppgnss::FrameView &f) {
+            auto &c = counts[f.id];
+            ++c.frames;
+            c.bytes += f.wire.size();
+            if (sbf)
+                ++c.revisions[f.revision];
+        });
+    }
+    Json summary() const {
+        Json rows = Json::array();
+        uint64_t valid_bytes = 0;
+        for (const auto &[id, c] : counts) {
+            std::string name = "Unknown";
+            if (!sbf)
+                name = UBX::ubx_msg_name(id >> 8, id & 255);
+            else
+                for (const auto &schema : cppgnss::SBF::schemas())
+                    if (schema.id == id) {
+                        name = schema.name;
+                        break;
+                    }
+            Json revisions = Json::array();
+            for (const auto &[revision, count] : c.revisions)
+                revisions.push_back(revision);
+            rows.push_back({{"id", id},
+                            {"name", name},
+                            {"frames", c.frames},
+                            {"bytes", c.bytes},
+                            {"revisions", revisions}});
+            valid_bytes += c.bytes;
+        }
+        return {{"messages", rows},
+                {"source_bytes", reader.bytes},
+                {"valid_bytes", valid_bytes},
+                {"invalid_candidates", reader.invalid},
+                {"unclassified_bytes",
+                 reader.bytes - valid_bytes - reader.skipped_protocol_bytes},
+                {"pending_tail_bytes", reader.pending_bytes()},
+                {"foreign_frames", reader.skipped_protocol_frames},
+                {"foreign_bytes", reader.skipped_protocol_bytes}};
+    }
+};
 } // namespace
 PYBIND11_MODULE(_native, m) {
     bind_ppp(m);
     bind_stec(m);
     bind_cnex(m);
+    using Ratio = Guarded<RxMessageRatio>;
+    py::class_<Ratio>(m, "RxMessageRatio")
+        .def(py::init<const std::string &>(), py::arg("protocol") = "ubx")
+        .def("feed",
+             [](Ratio &s, py::buffer data) {
+                 auto info = data.request();
+                 auto bytes = view(info);
+                 py::gil_scoped_release release;
+                 s.run([&](auto &p) { p.feed(bytes); });
+             })
+        .def("summary", [](Ratio &s) {
+            return run(s, [](auto &p) { return p.summary(); });
+        });
     using Scan = Guarded<neognss_obs::DatasetScan>;
     py::class_<Scan>(m, "DatasetScan")
         .def(py::init<std::string, bool, double>(), py::arg("protocol") = "ubx",

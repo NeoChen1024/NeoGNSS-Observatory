@@ -50,6 +50,32 @@ maps as a manifest-ordered HEVC/MP4 preview.
 exports; `ngo-rinex-observation-audit` inventories the resulting observations.
 See the [RINEX conversion guide](docs/rinex-conversion.md) for options and limitations.
 
+`ngo-rx-msgratio recording.ubx` or `ngo-rx-msgratio -p sbf recording.sbf`
+scans a complete expanded recording and lists every checksum-valid message
+ID/name, encountered SBF revisions, count, bytes and
+percentage of the entire file, sorted by descending size. Sizes include headers
+and padding; SBF revisions are combined per block ID, and UBX messages are grouped
+by class/message ID (hexadecimal). Unknown IDs are included without
+payload decoding. Foreign-protocol frames and unclassified/damaged bytes are reported
+separately. This read-only tool helps identify disk-logging storage costs and
+does not require usable timestamps or a navigation fix.
+
+Use `--format json` or `--format csv` for machine-readable stdout; progress and
+warnings stay on stderr. For example:
+
+```sh
+ngo-rx-msgratio -p sbf --format json recording.sbf > message-sizes.json
+ngo-rx-msgratio --format csv recording.ubx > message-sizes.csv
+```
+
+JSON includes message rows and file-level accounting/diagnostics. IDs and byte
+counts are integers; UBX IDs are `(class << 8) | message_id`. `percent_of_file`
+is numeric on a 0-100 scale, using `source_bytes` as denominator (zero for an
+empty file). CSV contains `message`, `foreign` and `unclassified` record types;
+their byte counts sum to the file size without subtotal double-counting. SBF
+revisions are semicolon-separated in CSV and integer arrays in JSON. CSV's
+unclassified row carries invalid-candidate and pending-tail diagnostics.
+
 ```sh
 git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json
 git submodule update --init contrib/RTKLIB
