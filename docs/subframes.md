@@ -29,10 +29,14 @@ with throttled stderr warnings and skipped frame/byte counts. Invalid wire
 frames follow the decoder's corruption/resynchronization policy; incomplete
 tails remain unpublished and can be continued with the import sidecar.
 
-Inputs are explicit expanded files; head probes determine their import order.
-Time reversals abort import without overlap removal. Use reconstructed Era A
+Inputs are expanded files, supplied explicitly or discovered with importer
+`-r/--recursive`; head probes determine their import order.
+Observation and UBX TIMEGPS reversals abort import without overlap removal.
+RawBits SIS time reversals only warn and are counted; original timestamps and
+canonical bits are retained, without guaranteeing chronological row order.
+Use reconstructed Era A
 segments, excluding unassigned data, or nonoverlapping raw UBX/SBF recordings.
-No reconstruction index, QA stamp, recursive discovery or XZ decompression is
+No reconstruction index, QA stamp or XZ decompression is
 required. UBX navigation association uses fresh NAV-TIMEGPS and matching EOE,
 independently of RAWX measurement time. SBF GEORawL1 uses its own TOW/WNc,
 without claiming that an individual raw block completes a navigation epoch.

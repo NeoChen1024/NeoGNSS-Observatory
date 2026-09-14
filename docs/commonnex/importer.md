@@ -111,7 +111,30 @@ ngo-cnex-import run -p sbf --station data/my-setup first.25_ second.25_
 ngo-cnex-import list data/my-setup
 ```
 
-Inputs are explicit expanded files. The importer orders files from bounded head
+Use `-r/--recursive` to supply directories (files and directories may be mixed):
+
+```sh
+ngo-cnex-import run -p sbf -r --station data/my-setup /data/sbf-archive
+ngo-cnex-import run -p ubx -r --station data/another-setup /data/ubx-archive
+```
+
+Recursive discovery selects `*.ubx` for UBX. SBF basenames must match
+`[A-Za-z0-9_]{4}[0-9]{3}[A-Za-z0-9]\.[0-9]{2}_`: four marker characters,
+three DOY digits, one session character, a literal dot, two year digits and
+a final underscore. Examples: `bx4a1600.25_`, `bee_2560.26_`. The session
+character is retained; daily filenames commonly use `0`. RINEX `.25o`/`.25p`,
+XZ copies and unrelated files are not selected. Matching is case-sensitive for
+the `.ubx` suffix. Filenames select candidates, not observation dates or order.
+Explicit file arguments need not match these discovery patterns, so a renamed
+`sample.sbf` remains usable; explicit XZ inputs are rejected.
+
+Directory arguments require `--recursive`. Traversal is deterministic and does
+not follow nested directory symlinks; an explicitly supplied directory symlink
+can identify the root. Unreadable directories and empty overall discovery are
+errors. Overlapping roots or file aliases resolving to the same input path are
+errors, not an observation deduplication policy.
+
+Inputs must be expanded files. The importer orders files from bounded head
 samples, not filenames. Use one continuous recording path per invocation; do
 not mix overlapping logger copies.
 The importer does not acquire FTP data, decompress XZ, or require a QA stamp.
@@ -147,10 +170,15 @@ to be reassembled before importing.
 Formal import starts each sorted file at byte zero and carries framing/epoch
 state across files. Probe state is discarded. Native checks compare observation
 epochs separately from UBX TIMEGPS. SBF RawBits times are checked separately
-per satellite/signal/message family: different families may have different
-receive-time offsets and be interleaved. Never compare these independent time
-sequences against each other. A strict decrease stops import and reports the axis, previous/current
-GPST and source file/byte offset. Equal timestamps are accepted without a
+per satellite/signal/message family. SBF SIS timestamps describe transmission
+time and need not follow output order. RawBits decreases produce throttled
+warnings and a summary count, preserving timestamps and canonical payloads
+unchanged. They are not evidence that restitch is required. RawBits tail
+continuation likewise does not require times to exceed previously published
+maxima; readers must not assume chronological row order.
+Never compare these independent time sequences against each other. A strict
+decrease in observation time or UBX TIMEGPS still stops import and reports the
+axis, previous/current GPST and source file/byte offset. Equal timestamps are accepted without a
 duplicate check. Head samples do not claim overlap detection or global validity.
 Inspect or re-stitch overlapping/disordered inputs rather than expecting the
 importer to trim or merge them. Failed runs do not publish their staged catalogs;
@@ -206,7 +234,7 @@ transaction or full crash recovery is promised. Old revisions are retained.
 ## Remaining work
 
 - [x] Initializer, filename parsing/allocation and latest-revision selection.
-- [x] Head-only file ordering and independent observation/navigation reversal checks.
+- [x] Head-only ordering, strict observation/TIMEGPS checks and nonfatal RawBits reversal warnings.
 - [x] RAWX/MeasEpoch decoding and native decimal Arrow observation batches.
 - [x] Measurement completion events and daily Parquet writing.
 - [x] Local raw-tail continuation with immutable parts and explicit rebuilding.

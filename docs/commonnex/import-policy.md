@@ -91,7 +91,9 @@ do not claim that repeated imports are scientific no-ops. Multiple recording
 paths can describe the same logical station without implying that the importer
 can automatically fuse them. Restitch/QA is not an enforced prerequisite.
 The importer head-probes and stable-sorts selected files, then rejects backwards
-time within each comparable sequence during the normal read. This does not
+observation and receiver TIMEGPS time during the normal read. RawBits SIS time
+reversals only warn and are counted; timestamps and payloads remain unchanged.
+RawBits row order is not guaranteed to be chronological. This does not
 add deduplication, tail probing or automatic overlap repair; see
 [ordering and reversal checks](importer.md#head-only-ordering-and-time-reversal).
 

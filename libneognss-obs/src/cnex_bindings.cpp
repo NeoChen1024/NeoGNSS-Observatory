@@ -456,6 +456,9 @@ struct Reader {
     std::string reversal_axis;
     Tick reversal_previous = 0, reversal_current = 0;
     uint64_t reversal_offset = 0;
+    uint64_t raw_time_reversals = 0, raw_reversal_offset = 0;
+    std::string raw_reversal_axis;
+    Tick raw_reversal_previous = 0, raw_reversal_current = 0;
     void monotonic(Tick now, const std::string &axis, uint64_t offset) {
         auto previous = last_times.find(axis);
         if (previous != last_times.end() && now < previous->second) {
@@ -526,11 +529,21 @@ struct Reader {
                                std::to_string(r.satellite) + "/" + r.family;
             for (const auto &signal : r.signals)
                 axis += "/" + signal;
-            monotonic(Tick(ms) * 1000000000, axis, f.offset);
+            // SIS transmission timestamps need not follow receiver output
+            // order.
+            const Tick now = Tick(ms) * 1000000000;
+            auto previous = last_times.find(axis);
+            if (previous != last_times.end() && now < previous->second) {
+                ++raw_time_reversals;
+                raw_reversal_axis = axis;
+                raw_reversal_previous = previous->second;
+                raw_reversal_current = now;
+                raw_reversal_offset = f.offset;
+            }
+            last_times[axis] = now;
             emit(ms, r);
             // A timestamped navigation block is not a whole navigation epoch
-            // completion boundary. RawBits carries its reception context
-            // itself.
+            // completion boundary. Preserve its source SIS timestamp unchanged.
             return;
         }
         const auto p = f.payload;
@@ -823,6 +836,15 @@ struct Reader {
         d["raw_bits_untimed"] = raw_untimed;
         d["raw_bits_unsupported"] = raw_unsupported;
         d["raw_bits_pending"] = nav_bits.size();
+        d["raw_bits_time_reversals"] = raw_time_reversals;
+        py::dict warning;
+        if (raw_time_reversals) {
+            warning["axis"] = raw_reversal_axis;
+            warning["previous"] = time_parts(raw_reversal_previous);
+            warning["current"] = time_parts(raw_reversal_current);
+            warning["offset"] = raw_reversal_offset;
+        }
+        d["last_raw_bits_time_reversal"] = warning;
         return d;
     }
 };
