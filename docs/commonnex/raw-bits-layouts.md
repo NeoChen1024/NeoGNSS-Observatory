@@ -212,10 +212,6 @@ retention limit. QZSS L1S/L5S are not identified merely by a 250-bit length.
 
 ## Adapter constraints discovered during validation
 
-- Pinned pysbf2 at `e0e044a` omits `RxChannel` in `GALRawCNAV`. The official
-  payload prefix is 12 bytes; NAVBits starts after it. Resolve the schema
-  defect before using generated fields for this mapping. Do not edit generated
-  output or silently compensate by changing the canonical layout.
 - Full-file transport CRC success does not imply navigation CRC success.
   Retain both receiver and independently calculated scoped results.
 - Valid transport and parity also do not guarantee usable time. BDSRaw native
@@ -274,9 +270,6 @@ remain out of scope.
 
 - [x] Implement verified and documentary mappings in CommonNEX adapters, storing navigation
   time directly and publishing applicable Events without epoch-table references.
-- [x] Read GALRawCNAV's official 12-byte prefix in the canonical adapter without
-  using the defective generated fields or editing generated output.
-- [ ] Resolve the upstream generic GALRawCNAV schema defect.
 
 ## References
 

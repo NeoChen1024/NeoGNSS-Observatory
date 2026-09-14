@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include <array>
 #include <cppgnss/stream.hpp>
 #include <stdexcept>
 
 namespace cppgnss {
 uint16_t sbf_crc(std::span<const uint8_t> bytes) {
+    static constexpr auto table = [] {
+        std::array<uint16_t, 256> values{};
+        for (unsigned i = 0; i < values.size(); ++i) {
+            uint16_t c = i << 8;
+            for (int bit = 0; bit < 8; ++bit)
+                c = (c << 1) ^ ((c & 0x8000) ? 0x1021 : 0);
+            values[i] = c;
+        }
+        return values;
+    }();
     uint16_t crc = 0;
-    for (auto b : bytes) {
-        crc ^= uint16_t(b) << 8;
-        for (int i = 0; i < 8; ++i)
-            crc = (crc << 1) ^ ((crc & 0x8000) ? 0x1021 : 0);
-    }
+    for (auto b : bytes)
+        crc = (crc << 8) ^ table[(crc >> 8) ^ b];
     return crc;
 }
 void StreamDecoder::feed(std::span<const uint8_t> data,

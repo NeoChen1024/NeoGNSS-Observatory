@@ -11,6 +11,7 @@
 #include <nanoarrow/nanoarrow.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <string_view>
 #include <tuple>
 
 namespace py = pybind11;
@@ -121,7 +122,7 @@ struct Probe {
         return d;
     }
 };
-void str(ArrowArray *a, const std::string &s) {
+void str(ArrowArray *a, std::string_view s) {
     check(ArrowArrayAppendString(a, {s.data(), int64_t(s.size())}));
 }
 void number(ArrowArray *a, double v) {
@@ -141,6 +142,32 @@ void decimal(ArrowArray *a, Tick v) {
 struct Batch {
     ArrowSchema schema{};
     ArrowArray array{};
+    struct Capacity {
+        int64_t rows = 0, data_bytes = 0;
+        std::vector<Capacity> children;
+    };
+    static Capacity sizes(const ArrowArray &a, const ArrowSchema &s) {
+        Capacity out{a.length};
+        if (std::string_view(s.format) == "u" ||
+            std::string_view(s.format) == "z")
+            out.data_bytes =
+                ArrowArrayBuffer(const_cast<ArrowArray *>(&a), 2)->size_bytes;
+        for (int64_t i = 0; i < a.n_children; ++i)
+            out.children.push_back(sizes(*a.children[i], *s.children[i]));
+        return out;
+    }
+    static void reserve(ArrowArray &a, const Capacity &hint) {
+        // Reserve leaf buffers from the preceding bounded batch, including
+        // string/binary data. This changes capacity only, not length or
+        // validity.
+        if (a.n_children == 0 && hint.rows)
+            check(ArrowArrayReserve(&a, hint.rows));
+        if (hint.data_bytes)
+            check(ArrowBufferReserve(ArrowArrayBuffer(&a, 2), hint.data_bytes));
+        for (int64_t i = 0;
+             i < a.n_children && i < int64_t(hint.children.size()); ++i)
+            reserve(*a.children[i], hint.children[i]);
+    }
     ~Batch() {
         if (array.release)
             array.release(&array);
@@ -264,18 +291,8 @@ std::shared_ptr<Batch> observations() {
     b->init();
     return b;
 }
-void append(Batch &b, const cppgnss::Measurement &m, Tick t,
-            const std::string &setup_id) {
+void append_details(Batch &b, const cppgnss::Measurement &m) {
     auto c = b.array.children;
-    str(c[0], setup_id);
-    decimal(c[1], t);
-    str(c[2], m.system);
-    integer(c[3], m.satellite);
-    str(c[4], m.signal);
-    number(c[5], m.code);
-    number(c[6], m.phase);
-    number(c[7], m.doppler);
-    number(c[8], m.cn0);
     int statuses[] = {m.code_status, m.phase_status, 2};
     float sigmas[] = {m.code_sigma, m.phase_sigma, m.doppler_sigma};
     std::optional<bool> bounds[] = {m.code_sigma_lower_bound,
@@ -329,7 +346,42 @@ void append(Batch &b, const cppgnss::Measurement &m, Tick t,
     } else
         check(ArrowArrayAppendNull(c[14], 1));
     number(c[15], m.doppler_variance_factor);
-    check(ArrowArrayFinishElement(&b.array));
+}
+void append_epoch(Batch &b, std::span<const cppgnss::Measurement *const> rows,
+                  Tick t, std::string_view setup_id) {
+    auto c = b.array.children;
+    // Populate the wide scalar columns consecutively; reuse the same epoch
+    // context and retain per-observable null/quality handling in the details.
+    for (size_t i = 0; i < rows.size(); ++i)
+        str(c[0], setup_id);
+    for (size_t i = 0; i < rows.size(); ++i)
+        decimal(c[1], t);
+    for (auto m : rows)
+        str(c[2], m->system);
+    for (auto m : rows)
+        integer(c[3], m->satellite);
+    for (auto m : rows)
+        str(c[4], m->signal);
+    for (auto m : rows)
+        number(c[5], m->code);
+    for (auto m : rows)
+        number(c[6], m->phase);
+    for (auto m : rows)
+        number(c[7], m->doppler);
+    for (auto m : rows)
+        number(c[8], m->cn0);
+    for (auto m : rows)
+        append_details(b, *m);
+    // Equivalent to FinishElement for N non-null struct rows, with the same
+    // child-length invariant checked once after all columns have been filled.
+    auto length = b.array.length + int64_t(rows.size());
+    for (int64_t i = 0; i < b.array.n_children; ++i)
+        if (c[i]->length != length)
+            throw std::runtime_error("Observation column length mismatch");
+    auto bitmap = ArrowArrayValidityBitmap(&b.array);
+    if (bitmap->buffer.data)
+        check(ArrowBitmapAppend(bitmap, 1, rows.size()));
+    b.array.length = length;
 }
 std::shared_ptr<Batch> events() {
     auto b = std::make_shared<Batch>();
@@ -499,6 +551,9 @@ struct Reader {
     std::vector<cppgnss::RawBits> nav_bits;
     std::map<std::string, uint64_t> raw_families;
     std::map<std::string, uint64_t> raw_checks, raw_skipped;
+    std::string check_key;
+    std::array<Batch::Capacity, 3> capacity_hints;
+    std::vector<const cppgnss::Measurement *> selected_rows;
     bool nav_conflict = false;
     uint64_t nav_skip_before = 0, raw_count = 0, raw_untimed = 0,
              raw_unsupported = 0;
@@ -517,9 +572,18 @@ struct Reader {
             append_bits(out, Tick(ms) * 1000000000, setup_id, bits);
             ++raw_count;
             ++raw_families[bits.family];
-            for (const auto &c : bits.checks)
-                ++raw_checks[bits.family + "/" + c.origin + "/" + c.kind + "/" +
-                             c.scope + "/" + c.result];
+            for (const auto &c : bits.checks) {
+                check_key.clear();
+                for (std::string_view item :
+                     {std::string_view(bits.family), std::string_view(c.origin),
+                      std::string_view(c.kind), std::string_view(c.scope),
+                      std::string_view(c.result)}) {
+                    if (!check_key.empty())
+                        check_key += '/';
+                    check_key += item;
+                }
+                ++raw_checks[check_key];
+            }
         };
         auto decoded = cppgnss::decode_raw_bits(f);
         if (decoded.status == cppgnss::RawBitsStatus::unsupported ||
@@ -640,6 +704,9 @@ struct Reader {
         auto out = observations();
         auto ev = events();
         auto raw = raw_bits();
+        std::array batches{out, ev, raw};
+        for (size_t i = 0; i < batches.size(); ++i)
+            Batch::reserve(batches[i]->array, capacity_hints[i]);
         auto emit = [&](const cppgnss::Measurements &e) {
             Tick t;
             try {
@@ -650,11 +717,13 @@ struct Reader {
             }
             ++epochs;
             complete(*ev, t, setup_id, !e.tow_ms.has_value());
+            selected_rows.clear();
             for (auto &m : e.rows)
                 if (m.antenna == antenna)
-                    append(*out, m, t, setup_id);
+                    selected_rows.push_back(&m);
                 else
                     ++other_antenna;
+            append_epoch(*out, selected_rows, t, setup_id);
         };
         decoder.feed(data, [&](const cppgnss::FrameView &f) {
             navigation(f, *raw, *ev);
@@ -729,6 +798,9 @@ struct Reader {
         out->finish();
         ev->finish();
         raw->finish();
+        for (size_t i = 0; i < batches.size(); ++i)
+            capacity_hints[i] =
+                Batch::sizes(batches[i]->array, batches[i]->schema);
         return {out, ev, raw};
     }
     py::dict checkpoint() {

@@ -9,26 +9,43 @@
 
 namespace cppgnss {
 namespace {
-using Bits = std::vector<uint8_t>;
-Bits unpack(std::span<const uint8_t> bytes, unsigned width = 32) {
-    Bits out;
-    for (size_t i = 0; i + 4 <= bytes.size(); i += 4) {
-        uint32_t w = UBX::read_le<uint32_t>(bytes, i);
-        for (unsigned j = width; j > 0; --j)
-            out.push_back((w >> (j - 1)) & 1);
+// Borrow receiver words; extract only the requested fields. No byte-per-bit
+// expansion or temporary BCH codeword vectors are needed.
+struct Bits {
+    std::span<const uint8_t> bytes;
+    unsigned width = 32;
+    size_t length = 0;
+    bool inav_pair = false;
+    size_t size() const { return length; }
+    void resize(size_t n) {
+        if (n > length)
+            throw std::out_of_range("RawBits view outside receiver body");
+        length = n;
     }
-    return out;
-}
-Bits slice(const Bits &b, size_t begin, size_t end) {
-    if (end > b.size() || begin > end)
-        throw std::out_of_range("RawBits slice outside receiver body");
-    return {b.begin() + begin, b.begin() + end};
+    uint32_t get(size_t begin, size_t end) const {
+        if (begin > end || end > length || end - begin > 32)
+            throw std::out_of_range("RawBits field outside receiver body");
+        uint64_t result = 0;
+        while (begin < end) {
+            size_t physical = begin + (inav_pair && begin >= 114 ? 14 : 0);
+            unsigned offset = physical % width;
+            size_t count = std::min(end - begin, size_t(width - offset));
+            if (inav_pair && begin < 114)
+                count = std::min(count, 114 - begin);
+            auto word = UBX::read_le<uint32_t>(bytes, (physical / width) * 4);
+            uint64_t mask = (uint64_t(1) << count) - 1;
+            result =
+                (result << count) | ((word >> (width - offset - count)) & mask);
+            begin += count;
+        }
+        return uint32_t(result);
+    }
+};
+Bits unpack(std::span<const uint8_t> bytes, unsigned width = 32) {
+    return {bytes, width, bytes.size() / 4 * width};
 }
 uint32_t value(const Bits &b, size_t begin, size_t end) {
-    uint32_t v = 0;
-    for (size_t i = begin; i < end; ++i)
-        v = (v << 1) | b.at(i);
-    return v;
+    return b.get(begin, end);
 }
 void result(RawBits &r, std::string kind, std::string scope, bool pass) {
     r.checks.push_back(
@@ -45,8 +62,21 @@ void receiver(RawBits &r, std::string kind, std::string scope, uint8_t v,
 void crc(RawBits &r, const Bits &b, size_t begin, size_t end,
          std::string scope) {
     uint32_t c = 0;
-    for (size_t i = begin; i < end; ++i) {
-        auto top = (c >> 23) ^ b.at(i);
+    static constexpr auto table = [] {
+        std::array<uint32_t, 256> out{};
+        for (unsigned i = 0; i < out.size(); ++i) {
+            uint32_t v = i << 16;
+            for (int j = 0; j < 8; ++j)
+                v = ((v << 1) & 0xffffff) ^ ((v & 0x800000) ? 0x864cfb : 0);
+            out[i] = v;
+        }
+        return out;
+    }();
+    size_t i = begin;
+    for (; i + 8 <= end; i += 8)
+        c = ((c << 8) & 0xffffff) ^ table[(c >> 16) ^ value(b, i, i + 8)];
+    for (; i < end; ++i) {
+        auto top = (c >> 23) ^ value(b, i, i + 1);
         c = (c << 1) & 0xffffff;
         if (top)
             c ^= 0x864cfb;
@@ -56,8 +86,10 @@ void crc(RawBits &r, const Bits &b, size_t begin, size_t end,
 void pack(RawBits &r, const Bits &b) {
     r.bit_length = b.size();
     r.body.assign((b.size() + 7) / 8, 0);
-    for (size_t i = 0; i < b.size(); ++i)
-        r.body[i / 8] |= b[i] << (7 - i % 8);
+    for (size_t i = 0; i < b.size(); i += 8) {
+        auto end = std::min(i + 8, b.size());
+        r.body[i / 8] = value(b, i, end) << (8 - (end - i));
+    }
 }
 void integrity(RawBits &r, const Bits &b) {
     if (r.format == "LNAV_300_V1") {
@@ -84,22 +116,18 @@ void integrity(RawBits &r, const Bits &b) {
         }
         result(r, "parity", "normalized_word_chain", states != 0);
     } else if (r.format == "D1D2_300_V1") {
-        auto valid = [](Bits word) {
-            uint32_t rem = 0;
-            for (auto bit : word) {
-                rem = (rem << 1) | bit;
-                if (rem & 16)
-                    rem ^= 19;
-            }
-            return rem == 0;
+        auto valid = [](uint32_t word) {
+            for (int bit = 14; bit >= 4; --bit)
+                if (word & (1u << bit))
+                    word ^= 19u << (bit - 4);
+            return word == 0;
         };
-        bool pass = valid(slice(b, 15, 30));
+        bool pass = valid(value(b, 15, 30));
         for (size_t w = 30; w < 300; w += 30)
             for (size_t j = 0; j < 2; ++j) {
-                auto cw = slice(b, w + j * 11, w + j * 11 + 11);
-                auto p = slice(b, w + 22 + j * 4, w + 26 + j * 4);
-                cw.insert(cw.end(), p.begin(), p.end());
-                pass &= valid(cw);
+                auto cw = value(b, w + j * 11, w + j * 11 + 11);
+                auto p = value(b, w + 22 + j * 4, w + 26 + j * 4);
+                pass &= valid((cw << 4) | p);
             }
         result(r, "bch", "normalized_word_chain", pass);
     } else if (r.format == "BCNAV1_1800_V1") {
@@ -368,9 +396,10 @@ RawBitsResult decode(const FrameView &f) {
         length = 228;
         r.unit = "page";
         if (!sbf) {
-            auto second = slice(b, 128, 242);
-            b = slice(b, 0, 114);
-            b.insert(b.end(), second.begin(), second.end());
+            if (b.size() < 242)
+                return {RawBitsStatus::malformed, {}};
+            b.inav_pair = true;
+            b.resize(228);
         }
         // Packing is defined by the receiver, not potentially corrupt page
         // discriminator bits. Preserve the supplied pair even when checks fail.

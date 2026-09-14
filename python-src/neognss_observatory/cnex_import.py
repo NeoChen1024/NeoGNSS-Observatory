@@ -135,6 +135,31 @@ def day_path(day):
     return (ORIGIN + timedelta(days=int(day))).strftime("%Y/%m/%d")
 
 
+def dictionary_columns(schema):
+    """Keep dictionaries for text/bytes, never for numeric physical columns."""
+    columns = []
+
+    def visit(field, path):
+        typ = field.type
+        if pa.types.is_struct(typ):
+            for child in typ:
+                visit(child, f"{path}.{child.name}")
+        elif pa.types.is_list(typ) or pa.types.is_large_list(typ) or pa.types.is_fixed_size_list(typ):
+            visit(typ.value_field, f"{path}.list.element")
+        elif (
+            pa.types.is_string(typ)
+            or pa.types.is_large_string(typ)
+            or pa.types.is_binary(typ)
+            or pa.types.is_large_binary(typ)
+            or pa.types.is_fixed_size_binary(typ)
+        ):
+            columns.append(path)
+
+    for field in schema:
+        visit(field, field.name)
+    return columns
+
+
 def latest_parts(directory, catalog):
     found = []
     for path in directory.glob("*.parquet"):
@@ -390,7 +415,13 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
                         "setup_id": setup["setup_id"],
                     }
                 )
-                writers[key] = (pq.ParquetWriter(temporary, schema, compression="zstd", compression_level=3), temporary, target)
+                writers[key] = (
+                    pq.ParquetWriter(
+                        temporary, schema, compression="zstd", compression_level=3, use_dictionary=dictionary_columns(schema)
+                    ),
+                    temporary,
+                    target,
+                )
                 active[key] = None
             active.move_to_end(key)
             return writers[key][0]

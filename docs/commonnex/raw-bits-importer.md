@@ -80,9 +80,7 @@ symbols, not bit errors. Fields reserved or inapplicable in a block are null.
 Receiver checks use `source_field` evidence; transport CRC never becomes a
 navigation validity assertion.
 
-The GALRawCNAV adapter reads the official 12-byte prefix directly. It does not
-use the pinned pysbf2 definition that omits RxChannel, or edit generated files.
-The generic generated SBF schema issue remains separate from this adapter.
+The GALRawCNAV adapter reads the official 12-byte prefix directly.
 UBX SBAS and QZSS L1S may carry a ninth container word: only the documented
 250-bit body is retained, without assuming that trailing word is always zero.
 

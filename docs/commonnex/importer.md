@@ -23,7 +23,10 @@ as a lossless replacement for raw archives.
   as incomplete and the previous pending group is omitted. File/chunk boundaries
   do not reset framing or the pending group.
 - Python writes GPST-day `observations`, `raw-bits` and `events` catalogs with
-  Zstandard level 3 compression. Events contain reported OBSERVATION/EPOCH and
+  Zstandard level 3 compression. Dictionary encoding is enabled only for
+  string/binary columns, including nested fields; numeric, boolean and decimal
+  columns do not use dictionaries. This is lossless physical encoding, not a
+  change to logical values or types. Events contain reported OBSERVATION/EPOCH and
   NAVIGATION/EPOCH completion, with RECORD_STRUCTURE or PROTOCOL_BOUNDARY basis. Missing other
   events never implies continuity or a known clock-correction state.
 - `list` selects the latest revision independently for each day/catalog and
@@ -161,6 +164,13 @@ thread boundary without serialization. Writer failures propagate to the importer
 each publication barrier drains its writes before updating continuation state. Decoder
 state remains sequential across files. The progress bar measures parsed input;
 the importer waits for the final queued writes before completing.
+
+Native buffers reserve leaf capacity from the previous bounded batch. Observation
+scalar columns are populated per epoch, with child-length and validity invariants
+checked before finishing each group. RawBits reads packed receiver words directly
+and retains the same canonical packing and scoped integrity results without
+byte-per-bit expansion. CRC lookup tables preserve the existing polynomials and
+initial states; transport and navigation checks remain enabled.
 
 For each new input, inspect at most `min(size, max(ceil(size / 100), 1 MiB))`
 bytes from its beginning. No tail read or full indexing pass is performed.
