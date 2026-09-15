@@ -69,8 +69,10 @@ PVTGeodetic (4007), ReceiverTime (5914), or EndOfPVT (5921) in stream order.
 Include at least one of these when recording RawBits. MeasEpoch timestamps do
 not substitute for independent navigation context. RawBits block SIS timestamps
 are neither retained nor used as fallback; complete SIS time need not be
-recoverable from an individual canonical body. Unknown context skips RawBits
-with a count, while invalid navigation anchors clear the current context.
+recoverable from an individual canonical body. Unknown/expired context uses a
+bounded backlog; invalid navigation anchors disable the current context.
+UBX EOE does not reset the RawBits anchor. Both protocols follow the
+[10-period timeout and 4 MiB backlog policy](raw-bits-importer.md#anchor-timeout-and-bounded-backlog).
 
 RTCM3 mapping must resolve the full epoch/date/time-scale context; a partial
 time-of-week alone is not a complete GPST timestamp. The adapter must validate
@@ -80,11 +82,15 @@ Exact message IDs, time anchoring and sequence rules remain mapping review
 items; Core does not invent them.
 
 RINEX epochs use their declared time system and record structure. Decode header
-scale factors, phase shifts, clock application and applicable event metadata.
+scale factors and applicable event metadata. RINEX 4.02's deprecated
+`SYS / PHASE SHIFT` does not instruct a decoder to apply another phase shift.
 Only DBHZ S observables are supported. An explicitly different unit is an
 unsupported-unit error. Interpret an omitted unit header under the applicable
-version's rules, not by guessing from numerical magnitude. Clock corrections
-already present in the source are neither applied again nor undone.
+version's rules, not by guessing from numerical magnitude. Inputs declaring
+applied observation clock-offset correction (`RCV CLOCK OFFS APPL=1`) are
+unsupported, not silently accepted or undone. An omitted header follows the
+supported version's documented default. Optional epoch offset estimates are
+RINEX-specific auxiliary quantities, not instructions to correct observations.
 
 ## Observation quality mapping
 
@@ -161,8 +167,9 @@ quality remains null. Preserve association across physical file boundaries.
 - [x] Separate measurement timestamps from navigation-context time.
 - [x] Select SBF Measurements as the acquisition profile; retain explicit
   historical-input limitations rather than requiring identical message sets.
-- [x] Keep source correction declarations/epoch offsets in Events without
-  changing source observations or substituting navigation telemetry.
+- [x] Exclude applied observation clock-offset correction; preserve source
+  measurement-clock evidence separately without substituting navigation telemetry.
+- [x] Bound RawBits anchor age by 10 nominal periods and backlog by 4 MiB.
 
 ### Source validation still required
 
@@ -172,13 +179,15 @@ quality remains null. Preserve association across physical file boundaries.
 - [ ] Define lock-duration units, quantization intervals and saturation limits.
 - [ ] Finalize companion association and missing-companion completion rules.
 - [ ] Verify phase/Doppler conventions without unwrapping or slip repair.
-- [ ] Define scoped smoothing, phase-convention and DCB/PCV metadata retention.
-- [ ] Verify observation clock-offset signs and application declarations without
+- [x] Retain SBF per-observation smoothing state independently of MeasExtra amounts.
+- [ ] Define remaining phase-convention and DCB/PCV metadata retention.
+- [ ] Verify future RINEX epoch-offset signs and reject applied correction without
   applying corrections or using navigation telemetry as a substitute.
 
 ### Implementation
 
-- [ ] Implement the validated mappings and time-scoped completion/clock Events.
+- [x] Implement UBX/SBF measurement-clock evidence and completion events.
+- [ ] Implement remaining protocol adapters and discontinuity Events.
 
 References: [RINEX 4.02](https://files.igs.org/pub/data/format/rinex_4.02.pdf),
 [u-blox F9 HPG 1.51](https://content.u-blox.com/sites/default/files/documents/u-blox-F9-HPG-1.51_InterfaceDescription_UBXDOC-963802114-13124.pdf),

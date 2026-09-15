@@ -1,6 +1,7 @@
 # CommonNEX auxiliary schemas
 
-Status: v0 design draft; not an implemented format or API.
+Status: v0 design draft; MeasurementClock evidence is implemented by the
+CommonNEX importer. The other families below remain design targets for this importer.
 
 [Overview](overview.md)
 
@@ -18,6 +19,7 @@ Use separate typed families rather than a sparse universal table:
 | Family | Contents |
 | --- | --- |
 | ReceiverClock | Reported bias, frequency offset and accuracy estimates |
+| MeasurementClock | Epoch-reported clock adjustment flag or cumulative modulo counter |
 | PulseTiming | Pulse identity, offset, quantization error and synchronization |
 | ReceiverEnvironment | Temperature and sensor identity |
 | ReceiverStatus | Uptime, boot/status and diagnostic fields |
@@ -27,8 +29,41 @@ Families share the following context; their full field catalogs remain open.
 Do not duplicate low-rate temperature into every clock or observation sample.
 Unlike RawBits epoch-only association, pulse and clock quantities retain the
 time/reference information necessary to interpret their measurements.
-Observation correction declarations/offsets belong in Events; source lock-loss
-evidence stays on Observation. Auxiliary clock series replace neither.
+Applied observation clock-offset correction is out of scope. Source lock-loss
+evidence stays on Observation; measurement-clock evidence is not inferred lock loss.
+
+## Measurement-clock evidence
+
+The implemented `measurement-clock` catalog has one row per completed source
+measurement epoch that reports either quantity, not one row per satellite.
+It is independent of navigation-clock telemetry and uses the measurement time.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `setup_id` | string | Logical station |
+| `gpst` | GpstTimestamp | Measurement epoch in exact GPST decimal seconds |
+| `adjustment_reported` | bool? | UBX RAWX `recStat.clkReset`, including explicit false |
+| `cumulative_adjustment_ms_mod256` | uint8? | SBF MeasEpoch revision 1 `CumClkJumps`, including zero |
+
+RAWX provides no cumulative adjustment amount; that column is null. SBF provides
+the cumulative millisecond counter modulo 256, not an epoch adjustment boolean;
+that boolean is null. MeasEpoch revision 0 has no defined counter and does not
+produce a MeasurementClock row. Do not infer magnitude/direction from RAWX,
+derive the boolean from SBF counter changes, unwrap the counter, or equate either
+quantity with reboot or phase loss of lock. Do not fill them from NAV-CLOCK.
+Contradictory counters within one assembled SBF measurement epoch are errors.
+
+Store daily `r00-measurement-clock-part00.parquet` using the usual revisions,
+tail parts and Zstandard level 3. The native binding returns this fourth batch
+after observations, events and raw-bits. No temperature duplication is required.
+
+RINEX epoch offset estimates, when its adapter is implemented, may use a separate
+source-specific auxiliary record with `setup_id`, `gpst`, and
+`rinex_receiver_clock_offset_s: TimeDelta?`. Preserve estimates without applying,
+interpolating or holding them forward. RINEX observation input declaring applied
+clock-offset correction is rejected; no correction-state Event is needed.
+
+## Other auxiliary design targets
 
 Proposed common context for each telemetry record:
 

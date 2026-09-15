@@ -1,6 +1,6 @@
 # CommonNEX Core
 
-Status: v0 design draft; not an implemented format or API.
+Status: selected v0 design with an implemented UBX/SBF subset; see [importer](importer.md).
 
 [Overview](overview.md)
 
@@ -76,8 +76,8 @@ equal times and payloads. Optional implementation row counters are file-local,
 can be reassigned on reconstruction, and carry no cross-file/revision meaning.
 Setup metadata references remain resolvable shared context.
 
-The [Events family](events.md) carries completion, discontinuities, and scoped
-observation clock-correction declarations/offsets. Consumers load required event
+The [Events family](events.md) carries completion and discontinuities.
+Measurement-clock evidence belongs to [Auxiliary](auxiliary.md). Consumers load required event
 context, possibly from preceding days, without per-row event references.
 Observation quality remains signal-local. Events are not epoch lookup tables.
 
@@ -175,14 +175,17 @@ across a gap, and a change does not uniquely identify a PLL loss of lock.
 | `code_multipath_m` | float64? | m |
 | `code_smoothing_m` | float64? | m |
 | `phase_multipath_cycles` | float64? | cycles |
+| `code_smoothing_applied` | bool? | Source explicitly reports whether pseudorange is smoothed; null means unavailable |
 
-These are signed finite amounts to add to the receiver's exported observable
+The three numerical fields are signed finite amounts to add to the receiver's exported observable
 to undo the corresponding preprocessing correction. Import retains the exported
 code and phase; it does not add these values back or confuse them with clock
 corrections. Null is unavailable; zero is a reported zero, not proof that the
-feature is disabled. Fields use physical-unit float64 values, not source-specific
+feature is disabled. Numerical fields use physical-unit float64 values, not source-specific
 scaled integer encodings. These non-time corrections are an explicit exception
 to the integer-first preference, like the observables they accompany.
+The boolean is independent: false means explicitly unsmoothed; null means no
+declaration. Preserve it even when every correction amount is unavailable.
 
 ### Tracking interpretation
 
@@ -256,14 +259,14 @@ Summarize actual subpicosecond rounding without per-record warning spam.
 This is a deliberate precision boundary: a normalized timestamp does not
 promise exact preservation of every source timestamp bit. Raw archives retain
 the original representation. This rule does not quantize pseudorange, carrier
-phase, clock bias, or other scientific values to picosecond ticks. Decimal
+phase, or other non-time scientific values to picosecond ticks. Clock offsets
+use the `TimeDelta` picosecond resolution. Decimal
 source epochs with at most 12 fractional digits are representable exactly
 after an exact time-scale conversion. Finer inputs require the stated rounding;
 fixed scale 12 does not promise arbitrary future precision.
 
-GPST representation does not imply removal of receiver clock error. Preserve
-whether a clock correction has already been applied to epoch tags and
-observables. Observation time, receiver message time, and navigation epoch
+GPST representation does not imply removal of receiver clock error. Inputs with
+applied observation clock-offset correction are unsupported. Observation time, receiver message time, and navigation epoch
 context are distinct and must not be substituted for one another.
 
 Exact timestamp differences use `TimeDelta` with checked arithmetic.
@@ -333,8 +336,8 @@ Raw observables are an agreed exception to integer-first storage: retain the
 observation `float64` values and uncertainty `float32` fields. Direct
 source binary64 observations and phase/Doppler reconstruction involving
 frequency ratios justify avoiding additional fixed-point quantization here.
-No conversion of these fields to scaled integers is planned for v0. The Events
-epoch-local clock-offset payload uses `TimeDelta`. Continuous non-time physical parameters, including
+No conversion of these fields to scaled integers is planned for v0. A RINEX-specific
+auxiliary epoch-local clock-offset estimate uses `TimeDelta`. Continuous non-time physical parameters, including
 decoded navigation parameters, may use `float64` with defined units; do not
 force them onto a broadcast fixed-point grid solely for integer-first storage.
 Telemetry integer types and scales
@@ -435,20 +438,23 @@ native identifiers. RINEX 2 and its ambiguous legacy codes are out of scope.
 Apply source unit/time conventions and decode RINEX scale factors into physical
 values; downstream consumers never reapply ASCII storage scaling. Preserve
 phase convention and already-applied correction metadata with explicit scope.
-Do not apply or undo receiver clock corrections during import: retain the
-source's consistent epoch/code/phase values and correction state. GPST time-scale
+Do not apply or undo receiver clock corrections during import. Accept only
+inputs without applied observation clock-offset correction and retain the
+source's consistent epoch/code/phase values. GPST time-scale
 normalization is not receiver clock-error removal. NAV-CLOCK and SBF PVT clock
 bias/drift remain telemetry; never use them to fill or correct raw observations.
 
-The Events `CLOCK_CORRECTION_STATE` payload contains `epoch_time`, `code`, and `phase`, each with
-`APPLIED`, `NOT_APPLIED`, or `UNKNOWN`. These describe application of the
-source-declared observation clock correction, not absence of residual clock
-error. Preserve a supplied offset as an epoch-scoped Event without estimating
-a missing one or extending it to subsequent epochs. Neither clock state nor
-offset is a required Observation column. Consumers resolve applicable Events
-before using correction-sensitive values.
-Exact source sign, phase-convention and correction-metadata scope mappings
-remain adapter review items.
+There is no general clock-correction application-state mechanism. RINEX input
+with `RCV CLOCK OFFS APPL=1` is an unsupported-input error; zero is accepted,
+and an absent header follows that supported version's specified default.
+Optional RINEX epoch offset estimates may be retained as
+`rinex_receiver_clock_offset_s: TimeDelta?` in a source-specific auxiliary
+record, never applied, interpolated or held forward. That adapter is not yet
+implemented. Internal receiver clock steering/integer-millisecond adjustments
+are not this RINEX correction workflow: retain their reported measurement-clock
+evidence independently, without inferring reboot, loss of lock or adjustment size.
+SBF smoothing state remains known even without MeasExtra correction amounts;
+UBX has no equivalent declaration here and uses null, not false.
 Import does not smooth, interpolate, repair slips, unwrap clocks or estimate
 missing observations. Inferred arcs and scientific corrections are outputs of
 processing facilities, not mutations of imported records.

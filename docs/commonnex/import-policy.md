@@ -1,6 +1,7 @@
 # CommonNEX import and processing policy
 
-Status: v0 design draft; not an implemented format or API.
+Status: selected v0 contracts; the [UBX/SBF importer](importer.md) implements a
+documented subset. Unimplemented reconciliation and other adapters remain explicit.
 
 [Overview](overview.md)
 
@@ -92,7 +93,8 @@ paths can describe the same logical station without implying that the importer
 can automatically fuse them. Restitch/QA is not an enforced prerequisite.
 The importer head-probes and stable-sorts selected files, then rejects backwards
 observation and receiver navigation time during the normal read. RawBits uses
-the current receiver navigation epoch; source SIS timestamps are not retained
+the last usable receiver navigation epoch or the next usable anchor after
+bounded buffering; source SIS timestamps are not retained
 or used as a fallback. Canonical payloads remain unchanged. This does not
 add deduplication, tail probing or automatic overlap repair; see
 [ordering and reversal checks](importer.md#head-only-ordering-and-time-reversal).
@@ -115,7 +117,7 @@ have been reduced to unique measurements.
 
 ### Epoch interval classification
 
-For a known positive nominal observation period P (`epoch_period_s`), compare
+For the required positive nominal observation period P (`epoch_period_s`), compare
 successive distinct measurement-epoch GPST timestamps within the same station.
 Use exact decimal timestamp differences and P in seconds without rounding
 observations. The standard per-epoch tolerance is +/-20%:
@@ -132,8 +134,8 @@ The endpoints are inclusive: for P = 1000 ms, 800 through 1200 ms is acceptable.
 "20% below the period" means below 80% of P, not below 20% of P. A gap is a
 coverage finding, not proof of receiver failure or an exact missing-epoch count.
 Too-short intervals may reflect a wrong declared period or timestamp problems;
-do not assert a specific cause from this check alone. Unknown/non-periodic
-cadence has no percentage-based classification.
+do not assert a specific cause from this check alone. Setup requires an explicit
+positive nominal period; missing or unknown cadence is not silently defaulted.
 
 Apply this to logical observation epochs, not per-satellite rows, companion
 blocks, RawBits or telemetry arrivals. Reconcile proven logging duplicates before

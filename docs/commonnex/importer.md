@@ -22,13 +22,13 @@ as a lossless replacement for raw archives.
   buffered until matching EndOfMeas; a different epoch before closure is counted
   as incomplete and the previous pending group is omitted. File/chunk boundaries
   do not reset framing or the pending group.
-- Python writes GPST-day `observations`, `raw-bits` and `events` catalogs with
+- Python writes GPST-day `observations`, `raw-bits`, `events` and `measurement-clock` catalogs with
   Zstandard level 3 compression. Dictionary encoding is enabled only for
   string/binary columns, including nested fields; numeric, boolean and decimal
   columns do not use dictionaries. This is lossless physical encoding, not a
   change to logical values or types. Events contain reported OBSERVATION/EPOCH and
   NAVIGATION/EPOCH completion, with RECORD_STRUCTURE or PROTOCOL_BOUNDARY basis. Missing other
-  events never implies continuity or a known clock-correction state.
+  events never implies continuity or absence of internal receiver clock adjustments.
 - `list` selects the latest revision independently for each day/catalog and
   returns all its parts. Eight Parquet writers may remain open at once; returning
   to an evicted partition creates another bounded part without rewriting it.
@@ -56,14 +56,20 @@ RawBits import covers the [implemented UBX/SBF adapters](raw-bits-importer.md),
 including documentary mappings without current samples. Independent and
 receiver checks remain separate. Failed-check bodies are retained; downstream
 acceptance is not stored as a canonical property. RawBits-only input is supported.
-UBX uses fresh NAV-TIMEGPS plus matching NAV-EOE, independently of RAWX time;
-unresolved/conflicting groups are counted and omitted. SBF raw-navigation blocks
-use the currently valid synchronous receiver navigation TOW/WNc, not their SIS
-headers; no whole-epoch completion is inferred from a single raw block.
+UBX uses NAV-TIMEGPS independently of EOE and RAWX time. SBF uses synchronous
+receiver navigation TOW/WNc, not SIS headers. Both use a 10-period anchor timeout
+and 4 MiB FIFO backlog as specified in the
+[association policy](raw-bits-importer.md#anchor-timeout-and-bounded-backlog).
+No whole-epoch completion is inferred from a single raw block.
 No transmission-time or observation-time equivalence is asserted.
 
-Not yet implemented: undefined future RawBits representations, DecodedNav, telemetry,
-cadence/reset/clock-correction events,
+The fourth `measurement-clock` batch/catalog preserves RAWX adjustment flags
+and MeasEpoch revision 1 cumulative clock counters without inference or correction.
+SBF Type1/Type2 smoothing state is retained in `receiver_corrections` independently
+of MeasExtra amounts; UBX uses null for unavailable smoothing state.
+
+Not yet implemented: undefined future RawBits representations, DecodedNav, other telemetry,
+cadence/reset events,
 Meas3 decoding, RINEX/RTCM3 input, and automatic overlap reconciliation.
 Observation values are not corrected using NAV-CLOCK or
 SBF navigation solutions. The CLI reports its restricted catalog coverage.
@@ -192,11 +198,12 @@ to be reassembled before importing.
 Formal import starts each sorted file at byte zero and carries framing/epoch
 state across files. Probe state is discarded. Native checks compare observation
 epochs separately from receiver navigation time. UBX uses TIMEGPS; SBF uses
-PVTCartesian, PVTGeodetic, ReceiverTime and EndOfPVT. RawBits receives the currently
-valid navigation context in stream order, never its source SIS timestamp. Missing
-SBF context is counted as untimed; invalid anchors clear it. The canonical body
+PVTCartesian, PVTGeodetic, ReceiverTime and EndOfPVT. RawBits receives a nonexpired
+navigation context or is buffered until a usable anchor, never its source SIS timestamp.
+Invalid anchors disable the previous context but retain backlog. The canonical body
 is unchanged. Observation time does not substitute for navigation context.
-Never compare these independent time sequences against each other. A strict
+Their shared high-water mark is used only to age navigation anchors; never
+interpret cross-axis differences as observation reversals. A strict
 decrease in observation or receiver navigation time stops import and reports the
 axis, previous/current GPST and source file/byte offset. Equal timestamps are accepted without a
 duplicate check. Head samples do not claim overlap detection or global validity.
@@ -218,8 +225,10 @@ tail replay. No SIS timestamp affects the directory or cursor location.
 The importer rejects the old flat-date directory layout and incompatible
 continuation cursors. Initialize a new station for these experimental products;
 it does not rename or relabel previously generated SIS-timed data.
-It also stores bounded pending UBX navigation context and a replay skip
+It also stores bounded UBX/SBF RawBits backlog, last anchor, timeout high-water
+mark, independent UBX completion context, required period and a replay skip
 offset, so observation-tail replay does not duplicate published RawBits.
+State version 3 rejects older association-policy cursors and period changes.
 It is not a science catalog or general recovery manifest.
 Raw context files must remain available and unchanged; the basic size check does
 not detect every possible same-size alteration. No pending tail means no raw
@@ -283,7 +292,10 @@ transaction or full crash recovery is promised. Old revisions are retained.
 - [x] Measurement completion events and daily Parquet writing.
 - [x] Local raw-tail continuation with immutable parts and explicit rebuilding.
 - [x] MeasExtra uncertainty, C/N0, lock/continuity and preprocessing corrections.
-- [ ] Cadence, clock and navigation epoch Events, with context across invocations.
+- [x] RAWX clock flags, SBF cumulative clock counters and independent smoothing state.
+- [x] Expiring navigation anchors, bounded backlog and continuation across invocations.
+- [x] UBX navigation completion independent of RawBits output.
+- [ ] Cadence and restart Events.
 - [x] Reviewed RawBits layouts and independent navigation-time association;
   distinguish sample-verified and documentary adapters in the coverage table.
 - [ ] Additional input protocols and any explicitly requested reconciliation.

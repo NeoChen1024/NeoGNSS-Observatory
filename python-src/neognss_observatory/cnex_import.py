@@ -305,10 +305,11 @@ def list_parts(station):
 def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_antenna, recursive):
     """Head-probe and time-sort INPUTS, then import one continuous recording path.
 
-    Catalogs: observations (including MeasExtra), raw-bits and
-    observation/navigation completion events. See the RawBits coverage table
-    for documented and sample-verified adapters. Telemetry and cadence/clock
-    events are not yet imported.
+    Catalogs: observations (including MeasExtra/smoothing state), raw-bits,
+    observation/navigation completion events and measurement-clock evidence.
+    RawBits uses a 10-period anchor timeout and 4 MiB backlog. See the coverage
+    table for documented and sample-verified adapters. Other telemetry and
+    cadence/restart events are not yet imported.
     No automatic overlap merging. Rebuild requires the complete replacement input.
     """
     writers = {}
@@ -341,11 +342,12 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
         if resume_from:
             state = json.loads(resume_from.read_text(encoding="utf-8"))
             if (
-                state.get("version") != 2
+                state.get("version") != 3
                 or state["protocol"] != protocol
                 or state["station"] != str(station)
                 or state["source_antenna"] != source_antenna
                 or state["setup_id"] != setup["setup_id"]
+                or state.get("epoch_period_s") != setup["epoch_period_s"]
                 or state.get("continued")
             ):
                 raise ValueError("Incompatible or already consumed continuation state")
@@ -374,10 +376,17 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
         segments.extend(ordered_inputs(new_paths, protocol))
         mode = "rebuild" if rebuild else "tail" if resume_from else "new"
         stage = Path(tempfile.mkdtemp(prefix=".cnex-import-", dir=station))
-        reader = _native.CnexObservationReader(protocol, setup["setup_id"], source_antenna)
+        # validate_setup emits exactly twelve fractional digits; avoid both
+        # binary floats and Decimal context rounding at this native boundary.
+        seconds_text, fraction_text = setup["epoch_period_s"].split(".")
+        period_seconds = int(seconds_text)
+        if period_seconds > 2**63 - 1:
+            raise ValueError("epoch_period_s exceeds native importer range")
+        period_ps = int(fraction_text)
+        reader = _native.CnexObservationReader(protocol, setup["setup_id"], source_antenna, period_seconds, period_ps)
         if state:
             reader.restore(state["navigation_context"])
-        counts = {"observations": 0, "events": 0, "raw-bits": 0}
+        counts = {"observations": 0, "events": 0, "raw-bits": 0, "measurement-clock": 0}
         started = set()
         published = list(state["published_files"]) if state else []
         current_state_path = resume_from
@@ -467,11 +476,12 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
             if snapshot["summary"]["cursor_day"] is None:
                 return
             continuation = {
-                "version": 2,
+                "version": 3,
                 "station": str(station),
                 "protocol": protocol,
                 "setup_id": setup["setup_id"],
                 "source_antenna": source_antenna,
+                "epoch_period_s": setup["epoch_period_s"],
                 "published_files": published.copy(),
                 "tail_inputs": snapshot["tail"],
                 "inputs": snapshot["inputs"],
@@ -512,9 +522,10 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
                 publish(snapshot)
 
         warned_foreign = False
+        warned_backlog = False
         total = sum(size - start for _, start, size in segments)
         click.echo(
-            "Importing observations, canonical RawBits and independent completion events.",
+            "Importing observations, canonical RawBits, completion events and measurement clock evidence.",
             err=True,
         )
         # Bound outstanding work, including the active write, to two input
@@ -547,6 +558,11 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
                             raise RuntimeError(f"{path}: {error}") from error
                         batches = tuple(pa.record_batch(batch) for batch in native_batches)
                         summary = reader.summary()
+                        if summary["raw_bits_dropped"] and not warned_backlog:
+                            click.echo(
+                                "Warning: RawBits backlog exceeded 4 MiB; oldest records discarded (see final counts)", err=True
+                            )
+                            warned_backlog = True
                         processed[str(path)] = {"path": str(path), "size": size, "offset": size - remaining}
                         tail = []
                         offset = summary["resume_offset"]

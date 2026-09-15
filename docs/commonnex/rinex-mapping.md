@@ -44,13 +44,17 @@ Legitimate untimed special events retain their meaning.
 
 ## Common semantics, not RINEX-only fields
 
-Satellite/signal identity, C/N0, observation clock offset/application state,
+Satellite/signal identity, C/N0,
 phase conventions, applied DCB/PCV metadata and station/receiver/antenna metadata
 retain common names. A field does not become RINEX-specific merely because
 RINEX is currently its only implemented source. Retain scientifically necessary
-correction declarations and epoch-local observation offsets in Events with
-explicit scope; never apply or undo receiver clock
-correction on import or fill it from NAV-CLOCK/PVT telemetry.
+DCB/PCV declarations with explicit scope. Observation clock-offset correction
+is excluded: reject `RCV CLOCK OFFS APPL=1`, accept zero, and interpret missing
+headers using the supported version's default. Do not undo corrected input.
+An optional `rinex_receiver_clock_offset_s: TimeDelta?` belongs to a separate
+epoch-local auxiliary record; never apply it or fill it from NAV-CLOCK/PVT.
+RINEX input remains unimplemented, so these are adapter requirements, not a
+claim that the current UBX/SBF CLI parses or validates RINEX headers.
 
 Decode storage scale factors into physical observable values. Do not propagate
 ASCII widths, layout order or duplicate counts into the common observation

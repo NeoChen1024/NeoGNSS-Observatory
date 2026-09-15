@@ -33,6 +33,11 @@ the interchange helpers, not a Parquet encoder. Do not add a DataFrame conversio
 between native batches and the writer. Batch size and row-group size are separate
 tuning choices; neither requires buffering an entire GPST day.
 
+The implemented `measurement-clock` auxiliary catalog uses the same daily
+revision/part naming and Zstandard level 3 as the science catalogs. Its four
+columns and source mappings are defined in [Auxiliary](auxiliary.md#measurement-clock-evidence).
+It preserves measurement-clock evidence independently of navigation telemetry.
+
 ## Storage initialization
 
 A directory initialization operation imports `setup.json` and the optional
@@ -179,9 +184,9 @@ these mappings must eventually be specified rather than left writer-specific.
   Setup metadata is imported at initialization, not replicated for daily input
   or output. Select revisions independently per day/catalog after the importer
   has finished publishing all related outputs; numeric revisions need not match.
-  Clock-sensitive readers load applicable Events, including still-effective
+  Continuity-sensitive readers load applicable Events, including still-effective
   states from earlier days; reading only yesterday is not a guaranteed bound.
-  Epoch-specific offsets are not carried forward. Missing state is UNKNOWN.
+  Epoch-specific evidence is not carried forward. Missing state is UNKNOWN.
 - The recommended compression method for CommonNEX persisted as ParquetNEX is
   **Zstandard (ZSTD), level 3**. Writers should select the level explicitly
   rather than relying on a library's codec default (with PyArrow:
@@ -267,7 +272,7 @@ new days; a rebuilt revision may require transferring a complete new catalog.
 - [x] Implement pilot initialization, bounded writing and revision/part selection.
 - [x] Implement measurement-tail raw replay using a daily import-state sidecar.
 - [ ] Implement remaining catalogs and native Arrow replay consumers.
-- [ ] Validate representative round trips with scoped clock state and offsets.
+- [ ] Validate remaining catalogs and source-specific RINEX offset replay.
 
 ## References
 

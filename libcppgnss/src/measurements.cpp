@@ -105,6 +105,7 @@ std::optional<Measurements> decode_measurements(const FrameView &f) {
                 "Unsupported or malformed RAWX (requires version 1)");
         e.week = u(p, 8, 2);
         e.tow_seconds = std::bit_cast<double>(u(p, 0, 8));
+        e.adjustment_reported = bool(p[12] & 2);
         for (size_t o = 16; o < p.size(); o += 32) {
             Measurement m;
             if (!identify(m, ubx_codes, p[o + 20] * 100 + p[o + 22], p[o + 21],
@@ -141,6 +142,8 @@ std::optional<Measurements> decode_measurements(const FrameView &f) {
     e.week = u(p, 4, 2);
     e.tow_ms = u(p, 0, 4);
     e.tow_seconds = *e.tow_ms * .001;
+    if (f.revision >= 1)
+        e.cumulative_adjustment_ms_mod256 = p[10];
     size_t o = 12;
     auto make = [&](size_t q, int sv, bool type1) {
         Measurement m;
@@ -164,6 +167,7 @@ std::optional<Measurements> decode_measurements(const FrameView &f) {
         if (cn != 255)
             m.cn0 = cn * .25 + ((sig == 1 || sig == 2) ? 0 : 10);
         m.half_ambiguity = u(p, info, 1) & 4;
+        m.code_smoothing_applied = bool(u(p, info, 1) & 1);
         auto lock = u(p, q + (type1 ? 16 : 1), type1 ? 2 : 1);
         if (lock != (type1 ? 65535u : 255u))
             m.lock_ms = lock * 1000;

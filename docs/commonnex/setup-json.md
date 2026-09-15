@@ -55,7 +55,7 @@ remains a separate task; initialization does not read RINEX observations.
 | `antenna` | Required object for the single antenna; type, radome, serial, comment and optional calibration companion |
 | Installation | `antenna.arp_offset_neu_m` and `antenna.azimuth_deg` |
 | Tracking | Declared constellations and signals per constellation; receiver measurement rate where known |
-| `epoch_period_s` | Optional decimal string: strictly positive Duration in seconds |
+| `epoch_period_s` | Required decimal string: strictly positive Duration in seconds |
 | `antenna.feed_line` | Optional object with free-form `type` and finite nonnegative `length_m` |
 | `vendor_config` | Optional filename of a configuration file beside `setup.json` |
 
@@ -217,8 +217,10 @@ Top-level `epoch_period_s` declares the nominal observation cadence expected
 for this Setup, in seconds. Its logical type is Core `Duration`, represented
 in JSON as a decimal string, not a JSON number. Examples are `"1.000000000000"`
 for 1 Hz, `"0.100000000000"` for 10 Hz and `"30.000000000000"` for one observation
-every 30 seconds. Unknown or non-periodic
-cadence is absent/null, not zero. It is not a telemetry/message transmission
+every 30 seconds. This field is required for every Setup, including RawBits-only
+stations: provide the configured nominal receiver epoch period even when no
+observations are exported. Missing/null values are rejected; do not infer a
+default from input timestamps. It is not a telemetry/message transmission
 interval, reference-epoch interval, or a guarantee of gapless observations.
 Recording-source decimation may differ and must not rewrite receiver cadence.
 
@@ -436,8 +438,10 @@ Implementation status and remaining work:
 - [ ] Implement RINEX metadata import and downstream use of the selected companion.
 
 File metadata (producer, dates, comments, DOI/license), actual observation
-inventory/interval/coverage, time interpretation, and applied clock/DCB/PCV,
+inventory/interval/coverage, time interpretation, and applied DCB/PCV,
 scale and phase corrections belong to source/observation mappings, not fixed
 Setup fields. Their import remains to be specified; do not discard them or
-infer them from declared tracking configuration. GLONASS mapping remains
+infer them from declared tracking configuration. Observation clock-offset
+correction declarations are instead used to reject corrected RINEX input;
+they do not establish a supported correction mode. GLONASS mapping remains
 outside v0 scope. This is not a complete lossless RINEX mapping claim.

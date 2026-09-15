@@ -214,6 +214,18 @@ configuring `libcppgnss/` directly.
 - Python calls the native extension directly. Do not resurrect archive-index,
   clock-scan, subframe-export or inspection worker executables as alternate backends.
   Keep the actual `neoubxlogger` application and its CLI.
+- CommonNEX Setup requires a positive decimal-string `epoch_period_s`. RawBits
+  import uses the last valid navigation anchor until its source-time age exceeds
+  ten nominal periods; valid measurement timestamps may advance the timeout
+  high-water mark but never become RawBits timestamps. EOE does not reset this
+  anchor. Missing/expired anchors use a 4 MiB accounted-size FIFO backlog,
+  evicting oldest records first and flushing at the next usable anchor. Preserve
+  this state across files and continuation; do not use host time or SIS time.
+- CommonNEX excludes inputs with applied observation clock-offset correction.
+  Never apply or undo it. Preserve RAWX clock-adjustment flags, SBF cumulative
+  clock counters and smoothing state without inventing missing equivalents,
+  unwrapping counters or inferring reboot/phase loss of lock. Navigation clock
+  estimates remain separate telemetry.
 - Keep file orchestration, Parquet, plotting and external converter invocation
   in Python. Batch data across the binding; do not call Python once per raw frame.
   Release the GIL during native processing. Batch/file/day boundaries must not

@@ -22,6 +22,7 @@ struct Measurement {
     std::optional<uint32_t> lock_ms;
     bool lock_lower_bound = false;
     bool has_extra = false;
+    std::optional<bool> code_smoothing_applied;
     double code_multipath_m = NAN, code_smoothing_m = NAN,
            phase_multipath_cycles = NAN, cn0_increment = 0;
     float doppler_variance_factor = NAN;
@@ -31,6 +32,8 @@ struct Measurements {
     uint16_t week = 0;
     double tow_seconds = 0;
     std::optional<uint32_t> tow_ms;
+    std::optional<bool> adjustment_reported;
+    std::optional<uint8_t> cumulative_adjustment_ms_mod256;
     std::vector<Measurement> rows;
     uint64_t unsupported = 0;
     uint64_t excluded = 0;

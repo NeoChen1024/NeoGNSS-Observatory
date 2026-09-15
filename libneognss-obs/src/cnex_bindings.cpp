@@ -5,6 +5,7 @@
 #include <cppgnss/raw_bits.hpp>
 #include <cppgnss/sbf.hpp>
 #include <cppgnss/ubx_subframe.hpp>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -282,11 +283,12 @@ std::shared_ptr<Batch> observations() {
     field(q->children[2], "rinex_ssi", NANOARROW_TYPE_UINT8);
     field(q->children[3], "stddev_is_lower_bound", NANOARROW_TYPE_BOOL);
     q = c[14];
-    check(ArrowSchemaSetTypeStruct(q, 3));
+    check(ArrowSchemaSetTypeStruct(q, 4));
     check(ArrowSchemaSetName(q, "receiver_corrections"));
     field(q->children[0], "code_multipath_m", NANOARROW_TYPE_DOUBLE);
     field(q->children[1], "code_smoothing_m", NANOARROW_TYPE_DOUBLE);
     field(q->children[2], "phase_multipath_cycles", NANOARROW_TYPE_DOUBLE);
+    field(q->children[3], "code_smoothing_applied", NANOARROW_TYPE_BOOL);
     field(c[15], "doppler_variance_factor", NANOARROW_TYPE_FLOAT);
     b->init();
     return b;
@@ -337,11 +339,15 @@ void append_details(Batch &b, const cppgnss::Measurement &m) {
     }
     check(ArrowArrayFinishElement(q));
     check(ArrowArrayAppendNull(c[13], 1));
-    if (m.has_extra) {
+    if (m.has_extra || m.code_smoothing_applied.has_value()) {
         auto x = c[14];
         number(x->children[0], m.code_multipath_m);
         number(x->children[1], m.code_smoothing_m);
         number(x->children[2], m.phase_multipath_cycles);
+        if (m.code_smoothing_applied.has_value())
+            integer(x->children[3], *m.code_smoothing_applied);
+        else
+            check(ArrowArrayAppendNull(x->children[3], 1));
         check(ArrowArrayFinishElement(x));
     } else
         check(ArrowArrayAppendNull(c[14], 1));
@@ -506,6 +512,35 @@ void append_bits(Batch &b, Tick t, const std::string &setup_id,
     check(ArrowArrayFinishElement(c[15]));
     check(ArrowArrayFinishElement(&b.array));
 }
+std::shared_ptr<Batch> measurement_clock() {
+    auto b = std::make_shared<Batch>();
+    check(ArrowSchemaSetTypeStruct(&b->schema, 4));
+    auto c = b->schema.children;
+    field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
+    decfield(c[1], "gpst");
+    field(c[2], "adjustment_reported", NANOARROW_TYPE_BOOL);
+    field(c[3], "cumulative_adjustment_ms_mod256", NANOARROW_TYPE_UINT8);
+    b->init();
+    return b;
+}
+void append_clock(Batch &b, const cppgnss::Measurements &e, Tick t,
+                  const std::string &id) {
+    if (!e.adjustment_reported.has_value() &&
+        !e.cumulative_adjustment_ms_mod256.has_value())
+        return;
+    auto c = b.array.children;
+    str(c[0], id);
+    decimal(c[1], t);
+    if (e.adjustment_reported.has_value())
+        integer(c[2], *e.adjustment_reported);
+    else
+        check(ArrowArrayAppendNull(c[2], 1));
+    if (e.cumulative_adjustment_ms_mod256.has_value())
+        integer(c[3], *e.cumulative_adjustment_ms_mod256);
+    else
+        check(ArrowArrayAppendNull(c[3], 1));
+    check(ArrowArrayFinishElement(&b.array));
+}
 struct Reader {
     cppgnss::StreamDecoder decoder;
     std::string setup_id;
@@ -548,25 +583,56 @@ struct Reader {
     uint64_t extra_blocks = 0, extra_matched = 0, extra_unmatched = 0,
              extra_ambiguous = 0, extra_excluded = 0, extra_unsupported = 0;
     std::optional<int64_t> nav_ms;
-    std::vector<cppgnss::RawBits> nav_bits;
+    std::deque<cppgnss::RawBits> nav_bits;
+    static constexpr size_t backlog_limit = 4 * 1024 * 1024;
+    size_t backlog_bytes = 0;
+    uint64_t backlog_dropped = 0, backlog_dropped_bytes = 0;
+    Tick timeout_ps;
+    std::optional<Tick> progress_time;
     std::map<std::string, uint64_t> raw_families;
     std::map<std::string, uint64_t> raw_checks, raw_skipped;
     std::string check_key;
-    std::array<Batch::Capacity, 3> capacity_hints;
+    std::array<Batch::Capacity, 4> capacity_hints;
     std::vector<const cppgnss::Measurement *> selected_rows;
     bool nav_conflict = false;
+    std::optional<int64_t> closure_ms;
     uint64_t nav_skip_before = 0, raw_count = 0, raw_untimed = 0,
              raw_unsupported = 0;
-    void navigation(const cppgnss::FrameView &f, Batch &out, Batch &ev) {
+    static size_t retained_bytes(const cppgnss::RawBits &b) {
+        // Stable byte accounting across checkpoint reconstruction (not
+        // allocator capacity).
+        size_t n = sizeof(b) + b.body.size() + b.system.size() +
+                   b.family.size() + b.format.size() + b.unit.size() +
+                   b.content.size();
+        n += b.signals.size() * sizeof(std::string);
+        for (const auto &s : b.signals)
+            n += s.size();
+        n += b.checks.size() * sizeof(cppgnss::RawBitsCheck);
+        for (const auto &c : b.checks)
+            n += c.origin.size() + c.kind.size() + c.scope.size() +
+                 c.result.size() + c.evidence.size() + c.source_field.size();
+        return n;
+    }
+    bool usable_anchor() const {
+        return nav_ms &&
+               (!progress_time ||
+                *progress_time - Tick(*nav_ms) * 1000000000 <= timeout_ps);
+    }
+    void advance(Tick t) {
+        if (!progress_time || t > *progress_time)
+            progress_time = t;
+    }
+    void navigation(const cppgnss::FrameView &f, Batch &out, Batch &ev,
+                    const std::optional<cppgnss::Measurements> &measurements) {
         // Replayed observation tails must not replay already imported RawBits.
         if (f.offset < nav_skip_before)
             return;
-        if (f.protocol == cppgnss::Protocol::sbf &&
-            (f.id == 4006 || f.id == 4007 || f.id == 5914 || f.id == 5921)) {
-            nav_ms = sbf_navigation_time(f);
-            if (nav_ms)
-                monotonic(Tick(*nav_ms) * 1000000000, "navigation/receiver",
-                          f.offset);
+        if (measurements) {
+            try {
+                advance(time_of(*measurements));
+            } catch (const std::runtime_error &) { /* Invalid time is counted by
+                                                      observation import. */
+            }
         }
         auto emit = [&](int64_t ms, const cppgnss::RawBits &bits) {
             append_bits(out, Tick(ms) * 1000000000, setup_id, bits);
@@ -585,6 +651,31 @@ struct Reader {
                 ++raw_checks[check_key];
             }
         };
+        const bool sbf_anchor =
+            f.protocol == cppgnss::Protocol::sbf &&
+            (f.id == 4006 || f.id == 4007 || f.id == 5914 || f.id == 5921);
+        const bool ubx_anchor =
+            f.protocol == cppgnss::Protocol::ubx && f.id == 0x0120;
+        if (sbf_anchor || ubx_anchor) {
+            auto time = sbf_anchor ? sbf_navigation_time(f) : timegps(f);
+            nav_ms =
+                time; // An explicit invalid anchor disables the previous one.
+            if (ubx_anchor) {
+                closure_ms = time;
+                nav_conflict = !time;
+            }
+            if (time) {
+                monotonic(Tick(*time) * 1000000000, "navigation/receiver",
+                          f.offset);
+                advance(Tick(*time) * 1000000000);
+                if (usable_anchor()) {
+                    for (const auto &bits : nav_bits)
+                        emit(*time, bits);
+                    nav_bits.clear();
+                    backlog_bytes = 0;
+                }
+            }
+        }
         auto decoded = cppgnss::decode_raw_bits(f);
         if (decoded.status == cppgnss::RawBitsStatus::unsupported ||
             decoded.status == cppgnss::RawBitsStatus::malformed) {
@@ -594,52 +685,37 @@ struct Reader {
         }
         if (decoded.status == cppgnss::RawBitsStatus::excluded)
             ++raw_skipped["excluded"];
-        if (f.protocol == cppgnss::Protocol::sbf) {
-            if (!decoded.record)
-                return;
-            const auto &r = *decoded.record;
-            if (!nav_ms) {
-                ++raw_untimed;
-                return;
+        if (decoded.record) {
+            if (usable_anchor())
+                emit(*nav_ms, *decoded.record);
+            else {
+                auto bytes = retained_bytes(*decoded.record);
+                while (!nav_bits.empty() &&
+                       backlog_bytes + bytes > backlog_limit) {
+                    auto removed = retained_bytes(nav_bits.front());
+                    backlog_bytes -= removed;
+                    backlog_dropped_bytes += removed;
+                    ++backlog_dropped;
+                    nav_bits.pop_front();
+                }
+                if (bytes > backlog_limit) {
+                    ++backlog_dropped;
+                    backlog_dropped_bytes += bytes;
+                } else {
+                    backlog_bytes += bytes;
+                    nav_bits.push_back(std::move(*decoded.record));
+                }
             }
-            emit(*nav_ms, r);
-            // A timestamped navigation block is not a whole navigation epoch
-            // completion boundary. SIS timestamps do not enter CommonNEX.
-            return;
         }
         const auto p = f.payload;
-        if (f.id == 0x0120 && p.size() == 16) {
-            auto time = timegps(f);
-            if (!time) {
-                nav_conflict = true;
-                return;
-            }
-            int64_t ms = *time;
-            monotonic(Tick(ms) * 1000000000, "navigation/TIMEGPS", f.offset);
-            if (nav_ms && *nav_ms != ms) {
-                raw_untimed += nav_bits.size();
-                nav_bits.clear();
-                nav_conflict = false;
-            }
-            nav_ms = ms;
-        } else if (f.id == 0x0213) {
-            if (!decoded.record)
-                return;
-            if (nav_bits.size() >= 65536)
-                throw std::runtime_error("Unresolved RawBits navigation "
-                                         "context exceeds buffer limit");
-            nav_bits.push_back(std::move(*decoded.record));
-        } else if (f.id == 0x0161 && p.size() == 4) {
-            if (nav_ms && !nav_conflict &&
-                *nav_ms % 604800000 == UBX::read_le<uint32_t>(p, 0)) {
-                for (const auto &bits : nav_bits)
-                    emit(*nav_ms, bits);
-                complete(ev, Tick(*nav_ms) * 1000000000, setup_id, false,
+        if (f.protocol == cppgnss::Protocol::ubx && f.id == 0x0161 &&
+            p.size() == 4) {
+            if (closure_ms && !nav_conflict &&
+                *closure_ms % 604800000 == UBX::read_le<uint32_t>(p, 0)) {
+                complete(ev, Tick(*closure_ms) * 1000000000, setup_id, false,
                          "NAVIGATION");
-            } else
-                raw_untimed += nav_bits.size();
-            nav_bits.clear();
-            nav_ms.reset();
+            }
+            closure_ms.reset();
             nav_conflict = false;
         }
     }
@@ -687,24 +763,31 @@ struct Reader {
         }
         extras.clear();
     }
-    Reader(const std::string &protocol, const std::string &id, unsigned ant)
+    Reader(const std::string &protocol, const std::string &id, unsigned ant,
+           int64_t period_seconds, int64_t period_ps)
         : decoder(protocol == "ubx" ? cppgnss::Protocol::ubx
                                     : cppgnss::Protocol::sbf),
-          setup_id(id), antenna(ant) {
+          setup_id(id), antenna(ant),
+          timeout_ps((Tick(period_seconds) * ps + period_ps) * 10) {
+        if (period_seconds < 0 || period_ps < 0 || period_ps >= ps ||
+            timeout_ps <= 0)
+            throw std::invalid_argument("Expected a positive epoch period in "
+                                        "exact seconds/picoseconds");
         if (protocol != "ubx" && protocol != "sbf")
             throw std::invalid_argument("Expected ubx or sbf");
         if (protocol == "ubx" && ant != 0)
             throw std::invalid_argument(
                 "RAWX importer supports antenna 0 only");
     }
-    std::array<std::shared_ptr<Batch>, 3> feed(std::span<const uint8_t> data) {
+    std::array<std::shared_ptr<Batch>, 4> feed(std::span<const uint8_t> data) {
         std::unique_lock lock(mutex, std::try_to_lock);
         if (!lock.owns_lock())
             throw std::runtime_error("Concurrent importer use");
         auto out = observations();
         auto ev = events();
         auto raw = raw_bits();
-        std::array batches{out, ev, raw};
+        auto clock = measurement_clock();
+        std::array batches{out, ev, raw, clock};
         for (size_t i = 0; i < batches.size(); ++i)
             Batch::reserve(batches[i]->array, capacity_hints[i]);
         auto emit = [&](const cppgnss::Measurements &e) {
@@ -717,6 +800,7 @@ struct Reader {
             }
             ++epochs;
             complete(*ev, t, setup_id, !e.tow_ms.has_value());
+            append_clock(*clock, e, t, setup_id);
             selected_rows.clear();
             for (auto &m : e.rows)
                 if (m.antenna == antenna)
@@ -726,11 +810,11 @@ struct Reader {
             append_epoch(*out, selected_rows, t, setup_id);
         };
         decoder.feed(data, [&](const cppgnss::FrameView &f) {
-            navigation(f, *raw, *ev);
             if (f.protocol == cppgnss::Protocol::sbf && f.id >= 4109 &&
                 f.id <= 4113)
                 ++meas3;
             auto e = cppgnss::decode_measurements(f);
+            navigation(f, *raw, *ev, e);
             auto extra = cppgnss::decode_measurement_extras(f);
             auto adopt = [&](const cppgnss::Measurements &time) {
                 if (!pending || pending->week != time.week ||
@@ -773,6 +857,13 @@ struct Reader {
                 }
                 adopt(*e);
                 has_measurements = true;
+                if (pending->cumulative_adjustment_ms_mod256.has_value() &&
+                    pending->cumulative_adjustment_ms_mod256 !=
+                        e->cumulative_adjustment_ms_mod256)
+                    throw std::runtime_error("Conflicting MeasEpoch clock "
+                                             "counters within one epoch");
+                pending->cumulative_adjustment_ms_mod256 =
+                    e->cumulative_adjustment_ms_mod256;
                 pending->rows.insert(pending->rows.end(), e->rows.begin(),
                                      e->rows.end());
             }
@@ -798,10 +889,11 @@ struct Reader {
         out->finish();
         ev->finish();
         raw->finish();
+        clock->finish();
         for (size_t i = 0; i < batches.size(); ++i)
             capacity_hints[i] =
                 Batch::sizes(batches[i]->array, batches[i]->schema);
-        return {out, ev, raw};
+        return {out, ev, raw, clock};
     }
     py::dict checkpoint() {
         std::unique_lock lock(mutex, std::try_to_lock);
@@ -810,6 +902,9 @@ struct Reader {
         py::dict state;
         state["nav_ms"] = nav_ms;
         state["nav_conflict"] = nav_conflict;
+        state["closure_ms"] = closure_ms;
+        state["progress_time"] =
+            progress_time ? py::object(time_parts(*progress_time)) : py::none();
         py::dict times;
         for (const auto &[axis, time] : last_times)
             times[axis.c_str()] = time_parts(time);
@@ -838,6 +933,13 @@ struct Reader {
             throw std::runtime_error("Restore before feeding input");
         nav_ms = state["nav_ms"].cast<std::optional<int64_t>>();
         nav_conflict = state["nav_conflict"].cast<bool>();
+        closure_ms = state["closure_ms"].cast<std::optional<int64_t>>();
+        if (!state["progress_time"].is_none()) {
+            auto t = state["progress_time"].cast<std::pair<int64_t, int64_t>>();
+            if (t.first < 0 || t.second < 0 || t.second >= ps)
+                throw std::runtime_error("Invalid checkpoint progress time");
+            progress_time = Tick(t.first) * ps + t.second;
+        }
         nav_skip_before = state["skip_bytes"].cast<uint64_t>();
         for (auto item : state["last_times"].cast<py::dict>()) {
             auto value = item.second.cast<py::sequence>();
@@ -865,10 +967,11 @@ struct Reader {
             r.rs_corrected_symbols = b[12].cast<std::optional<uint8_t>>();
             for (auto c : b[9].cast<std::vector<std::array<std::string, 6>>>())
                 r.checks.push_back({c[0], c[1], c[2], c[3], c[4], c[5]});
+            backlog_bytes += retained_bytes(r);
+            if (backlog_bytes > backlog_limit)
+                throw std::runtime_error("Invalid navigation checkpoint size");
             nav_bits.push_back(std::move(r));
         }
-        if (nav_bits.size() > 65536)
-            throw std::runtime_error("Invalid navigation checkpoint size");
     }
     py::dict summary() {
         std::unique_lock lock(mutex, std::try_to_lock);
@@ -917,6 +1020,9 @@ struct Reader {
         d["raw_bits_untimed"] = raw_untimed;
         d["raw_bits_unsupported"] = raw_unsupported;
         d["raw_bits_pending"] = nav_bits.size();
+        d["raw_bits_pending_bytes"] = backlog_bytes;
+        d["raw_bits_dropped"] = backlog_dropped;
+        d["raw_bits_dropped_bytes"] = backlog_dropped_bytes;
         return d;
     }
 };
@@ -938,8 +1044,10 @@ void bind_cnex(py::module_ &m) {
         .def("__arrow_c_array__", &Batch::export_array,
              py::arg("requested_schema") = py::none());
     py::class_<Reader>(m, "CnexObservationReader")
-        .def(py::init<const std::string &, const std::string &, unsigned>(),
-             py::arg("protocol"), py::arg("setup_id"), py::arg("antenna") = 0)
+        .def(py::init<const std::string &, const std::string &, unsigned,
+                      int64_t, int64_t>(),
+             py::arg("protocol"), py::arg("setup_id"), py::arg("antenna"),
+             py::arg("period_seconds"), py::arg("period_ps"))
         .def("feed",
              [](Reader &r, py::bytes bytes) {
                  char *p;

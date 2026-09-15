@@ -5,6 +5,35 @@ derived metadata use GPST. There is no selectable UTC processing mode.
 
 ## Representation
 
+### CommonNEX input boundary
+
+CommonNEX uses `DECIMAL(38,12)` GPST seconds. The implementations below do not
+infer the source time scale from the constellation of each observation:
+
+| Source | Time mapping |
+| --- | --- |
+| UBX RAWX | Measurement week plus receiver-exported GPS-aligned TOW; exact binary64-to-picosecond rounding before adding week |
+| SBF MeasEpoch | GPS-aligned WNc plus integer millisecond TOW, converted exactly |
+| UBX RawBits anchor | Valid NAV-TIMEGPS week/iTOW, deliberately millisecond navigation context; no requirement that SFRBX precede EOE |
+| SBF RawBits anchor | Valid synchronous navigation block WNc/TOW; never RawNavBits SIS timestamp |
+| Future RINEX/RTCM3 adapters | Resolve declared scale, full date/week and any required leap-second context explicitly; not implemented by CommonNEX import yet |
+
+The GPS-only RINEX processing restriction below describes the existing solver
+input paths, not a finished general CommonNEX RINEX time-conversion adapter.
+Satellite identity does not change the receiver observation epoch's scale:
+a BeiDou row in RAWX or MeasEpoch must not receive a second BDT-to-GPST offset.
+No fine broadcast inter-system correction is applied to these observation times.
+Timescale normalization does not remove receiver clock error. CommonNEX excludes
+inputs with applied observation clock-offset correction and never undoes one;
+internal receiver clock jumps remain native evidence, not a reason to reject RAWX.
+
+RawBits uses the [bounded anchor policy](commonnex/raw-bits-importer.md#anchor-timeout-and-bounded-backlog).
+Measurement time can advance its timeout high-water mark but cannot become a
+RawBits timestamp. Arrival ordering, navigation association and measurement time
+are distinct. No live wall clock or offline processing speed changes that policy.
+
+### Existing processing representations
+
 `gpst`, `start_gpst`, `end_gpst` and `hour_gpst` denote continuous seconds since
 1980-01-06 00:00:00 GPST. These are **not Unix timestamps**. Archive indexes use
 integer `gpst_ms` milliseconds. `start_gpst_ms` / `end_gpst_ms` are exact

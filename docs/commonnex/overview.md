@@ -17,7 +17,7 @@ for range, rounding and nullability, and [ParquetNEX](parquetnex.md) for storage
 | Specification | Responsibility |
 | --- | --- |
 | [Core](core.md) | Shared types/context and directly timed wide observation records |
-| [Events](events.md) | Completion, continuity, scoped clock declarations/offsets and daily storage |
+| [Events](events.md) | Completion, continuity and daily storage |
 | [Setup JSON](setup-json.md) | Single-station receiver/antenna metadata, config and ANTEX companions, initialization |
 | [RawBits](raw-bits.md) | First-class core record family for received navigation occurrences; presence is capability-dependent |
 | [RawBits layouts](raw-bits-layouts.md) | Canonical bit layouts, verified receiver mappings, check scopes and pending validation |
@@ -56,7 +56,7 @@ storage branch is required. RawBits-only remains legal with valid navigation
 time stored in `nav_epoch_gpst`. Legitimate untimed RINEX special events retain
 their separate semantics. No independent epoch tables or mandatory row-to-row
 references exist. Timestamps are not unique keys. Setup metadata remains
-shared; correction-sensitive consumers load applicable Events, including
+shared; continuity-sensitive consumers load applicable Events, including
 earlier still-effective state, rather than joining per-row event IDs.
 
 The project excludes GLONASS and NavIC observations/navigation and processing.
@@ -79,7 +79,10 @@ Lossless means preserving information and scientific interpretation, not
 reconstructing the original whitespace, line wrapping or byte layout. A raw
 archive or opaque copy alone is not a substitute for mapping supported scientific
 fields. Numeric precision, source time interpretation, missing values and
-correction state must be accounted for explicitly during normalization.
+supported correction semantics must be accounted for explicitly during normalization.
+Inputs declaring applied observation clock-offset correction are excluded, not
+silently normalized or undone. Measurement-clock adjustment evidence remains
+in Auxiliary; internal clock steering is not this excluded correction workflow.
 
 CommonNEX strings allow Unicode and special characters without RINEX fixed-width
 or ASCII restrictions. Do not silently truncate, transliterate, normalize Unicode
@@ -138,8 +141,8 @@ a reconstruction index, or a Parquet round trip before processing.
 File, batch and GPST-day boundaries do not reset tracking, clocks, RawBits
 assembly or SBAS aging. Daily storage does not imply a daily solution.
 
-[Events](events.md) describe completion, discontinuities and observation clock
-context using shared station identity and explicit time applicability. Their interpretation does not depend on a
+[Events](events.md) describe completion and discontinuities
+using shared station identity and explicit time applicability. Their interpretation does not depend on a
 particular processing execution model.
 
 Ordering, bounded buffering, backpressure, checkpoints, scheduling and replay
@@ -172,8 +175,8 @@ Checked items mean a design decision or stated research validation, not shipped 
 - [x] Select independent direct Observation/RawBits timestamps, with no epoch
   tables or mandatory occurrence IDs; optional counters are file-local.
 - [x] Select wide C/L/D/S rows, nullable quality/lock fields and decimal time types.
-- [x] Preserve source clock corrections without applying/undoing them; store
-  scoped declarations and epoch-local offsets in Events, not science rows.
+- [x] Exclude clock-corrected Observation input; preserve measurement-clock
+  adjustment evidence in Auxiliary without inference or correction.
 - [x] Define Events completion/continuity versus persistent context semantics,
   including earlier-day context lookup and UNKNOWN when declarations are absent.
 - [x] Separate RawBits satellite identity, bitstream_source, semantic family and

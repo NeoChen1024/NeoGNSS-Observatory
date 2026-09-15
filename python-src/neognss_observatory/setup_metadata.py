@@ -70,12 +70,11 @@ def validate_setup(setup):
         if feed["length_m"] < 0:
             raise ValueError("antenna.feed_line.length_m must be nonnegative")
     period = setup.get("epoch_period_s")
-    if period is not None:
-        if not isinstance(period, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]{1,12})?", period):
-            raise ValueError("epoch_period_s requires a decimal seconds string")
-        if not 0 < Decimal(period) < Decimal(10) ** 26:
-            raise ValueError("epoch_period_s outside Duration domain")
-        setup["epoch_period_s"] = f"{Decimal(period):.12f}"
+    if not isinstance(period, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]{1,12})?", period):
+        raise ValueError("epoch_period_s is required and must be a decimal seconds string")
+    if not 0 < Decimal(period) < Decimal(10) ** 26:
+        raise ValueError("epoch_period_s outside Duration domain")
+    setup["epoch_period_s"] = f"{Decimal(period):.12f}"
     validate_tracking(setup.get("tracking"))
     for filename in (setup.get("vendor_config"), antenna.get("calibration_file")):
         if filename is not None:

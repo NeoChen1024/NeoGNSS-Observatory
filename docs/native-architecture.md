@@ -147,7 +147,10 @@ channel fields and TOW/WNc remain available; independent SBAS CRC verification
 is also retained. SBAS satellite identity is normalized separately from the
 raw receiver identifiers. `GEORawL5` is never passed to the L1 parser. The SBF
 adapter feeds `ngo-cnex-import run -p sbf` through native Arrow batches, using
-native TOW/WNc and separate receiver/independent CRC checks. UBX and SBF produce
+receiver navigation TOW/WNc (not SIS timestamps) and separate receiver/independent
+CRC checks. RawBits uses a 10-period source-time timeout and 4 MiB bounded
+backlog; EOE does not clear its anchor. Measurement time only advances the
+timeout high-water mark. UBX and SBF produce
 the same CommonNEX SBAS L1 RawBits layout. Grid reads these records and Events;
 its derived products retain RINEX `satellite_system`, `satellite_number` and
 `signal` fields, displaying SBAS identities as Sxx throughout.
