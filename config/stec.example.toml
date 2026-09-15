@@ -1,7 +1,8 @@
-# Example only: replace with the actual antenna reference-point ECEF position.
 # Paths are relative to this configuration file. Products must already exist.
-station = "BX4ACP"
-position_ecef_m = [-2972418.7226, 5005726.1893, 2597096.1561]
+# Station name and antenna reference-point ECEF position come from setup.json
+# (marker XYZ plus marker-to-ARP NEU offset). Optional explicit overrides:
+# station = "BX4ACP"
+# position_ecef_m = [-2972418.7226, 5005726.1893, 2597096.1561]
 products_root = "../work/products"
 signal1 = "1C"
 signal2 = "2L"

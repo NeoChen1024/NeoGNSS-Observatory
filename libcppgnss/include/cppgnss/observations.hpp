@@ -16,6 +16,8 @@ struct Observation {
          cn0_valid = false;
     bool half_cycle = false, sub_half_cycle = false, lock_valid = false;
     double lock_seconds = 0;
+    bool loss_of_lock = false;
+    std::optional<uint32_t> continuity_counter;
 };
 struct ObservationEpoch {
     int64_t gpst_ns = 0;

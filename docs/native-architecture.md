@@ -20,7 +20,7 @@ The logger depends directly on `libcppgnss`.
 
 Python calls native processing through batch bindings. RTKLIB conversion,
 RxTools and FFmpeg are external tools. `neoubxlogger` is the standalone recording
-application. The raw-observation STEC and PPP paths link RTKLIB as a library;
+application. CommonNEX-input STEC and raw-input PPP link RTKLIB as a library;
 they do not invoke conversion executables or write a RINEX observation intermediate.
 
 ## Batch and state semantics
@@ -58,8 +58,13 @@ The planned Ginan backend uses one context per worker process; see
 [Ginan shim design and progress](ginan-shim.md). This is a selected direction,
 not a change to the currently linked PPP/STEC implementation.
 
-Status: native-to-Python output is wired into the CommonNEX observation pilot;
-native replay input and migration of existing analysis bindings remain pending.
+Status: native-to-Python output is wired into the CommonNEX importer.
+`StecCnexReader` accepts replayed Observation Arrow batches directly, maps the
+selected GPS pair and quality into the numerical engine, and retains a pending
+measurement epoch across batches. Other analysis-binding migrations remain pending.
+STEC checkpoints preserve native arc state between daily invocations; end of an
+invocation is not end of the scientific stream. Python owns product selection,
+daily sample persistence, affected-window DCB refitting and incremental plots.
 `contrib/arrow-nanoarrow` is available as a pinned submodule. CommonNEX remains
 a logical specification independent of Arrow, while this project's native/Python
 implementation uses Arrow-compatible columnar batches in `CnexObservationReader`.
@@ -209,10 +214,10 @@ process because the core contains shared caches. No C++ plotting or
 Parquet dependency is introduced.
 
 `contrib/arrow-nanoarrow` retains its Apache-2.0 license. It is the selected
-interop helper dependency, currently vendored as a submodule but not yet linked
-by the build. Python retains Parquet I/O through PyArrow.
+interop helper dependency, linked by the native extension for CommonNEX import
+and replay. Python retains Parquet I/O through PyArrow.
 
 `contrib/int128` supplies Boost.Int128 under BSL-1.0. It is header-only and
 requires no other Boost libraries. It is the selected native time-arithmetic
-dependency, pinned as a submodule but not yet linked by the build. Preserve its
+dependency, pinned as a submodule and used by CommonNEX import/replay. Preserve its
 upstream license and keep its implementation details behind the time interface.

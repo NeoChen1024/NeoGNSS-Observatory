@@ -73,9 +73,16 @@ loads a new product window without resetting filter state, and `process()`
 returns structured NumPy arrays rather than per-observation Python objects.
 See [PPP settings, models and limits](../docs/ppp.md).
 
-`StecProcessor` consumes the same opaque `ObservationBatch` as PPP and returns
+`StecCnexReader(setup_id, signal1, signal2)` accepts CommonNEX Observation Arrow
+batches through `feed()` and returns the opaque `ObservationBatch` consumed by
+`StecProcessor`. `flush()` emits the pending complete measurement epoch after
+all its rows have arrived. The adapter validates selected signal/quality fields
+and converts decimal GPST to integer nanoseconds without floating-point absolute
+time. `StecProcessor` returns
 structured NumPy sample/arc arrays. `products()` replaces only product data;
-`finish()` finalizes remaining arc offsets. `fit_receiver_dcb()` fits one
+`preview()` estimates open arcs without closing them, and `checkpoint()`/`restore()`
+preserve scientific state across daily invocations. `finish()` is reserved for
+explicit scientific stream termination. `fit_receiver_dcb()` fits one
 receiver/signal-pair window from leveled residual batches, with coverage gates.
 RTKLIB adapters share the same process-wide lock. See [STEC conventions and
 limits](../docs/stec.md); GIM-constrained estimates are not independent calibration.

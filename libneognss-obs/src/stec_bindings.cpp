@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "stec_cnex.hpp"
 #include <mutex>
 #include <neognss_obs/stec.hpp>
 #include <pybind11/numpy.h>
@@ -32,13 +33,46 @@ auto lock(Processor &s) {
 }
 } // namespace
 void bind_stec(py::module_ &m) {
+    py::class_<StecCnexReader>(m, "StecCnexReader")
+        .def(py::init<std::string, std::string, std::string>())
+        .def("feed",
+             [](StecCnexReader &s, const py::object &batch) {
+                 auto capsules =
+                     batch.attr("__arrow_c_array__")().cast<py::tuple>();
+                 auto schema = static_cast<ArrowSchema *>(
+                     PyCapsule_GetPointer(capsules[0].ptr(), "arrow_schema"));
+                 auto array = static_cast<ArrowArray *>(
+                     PyCapsule_GetPointer(capsules[1].ptr(), "arrow_array"));
+                 if (!schema || !array)
+                     throw py::error_already_set();
+                 py::gil_scoped_release release;
+                 std::unique_lock guard(s.mutex, std::try_to_lock);
+                 if (!guard.owns_lock())
+                     throw std::runtime_error(
+                         "Concurrent CommonNEX reader use");
+                 return s.feed(schema, array);
+             })
+        .def("flush",
+             [](StecCnexReader &s) {
+                 auto guard = std::unique_lock(s.mutex, std::try_to_lock);
+                 if (!guard.owns_lock())
+                     throw std::runtime_error(
+                         "Concurrent CommonNEX reader use");
+                 return s.flush();
+             })
+        .def("summary", [](StecCnexReader &s) {
+            auto guard = std::unique_lock(s.mutex, std::try_to_lock);
+            if (!guard.owns_lock())
+                throw std::runtime_error("Concurrent CommonNEX reader use");
+            return result(s.summary());
+        });
     PYBIND11_NUMPY_DTYPE(StecSample, gpst_ns, arc_id, prn, product_issues,
                          phase_gf_m, code_gf_corrected_m, elevation_deg,
                          azimuth_deg, ipp_latitude_deg, ipp_longitude_deg,
                          mapping, gim_stec_tecu, gim_rms_tecu);
     PYBIND11_NUMPY_DTYPE(StecArc, gpst_ns, end_ns, arc_id, samples,
                          leveling_samples, prn, valid, start_reason, end_reason,
-                         level_offset_m, scatter_m);
+                         provisional, level_offset_m, scatter_m);
     PYBIND11_NUMPY_DTYPE(DcbSample, gpst_ns, arc_id, prn, residual_tecu,
                          elevation_deg, azimuth_deg, gim_rms_tecu);
     m.attr("dcb_sample_dtype") = py::dtype::of<DcbSample>();
@@ -75,9 +109,36 @@ void bind_stec(py::module_ &m) {
                  }
                  return array(r);
              })
-        .def("summary", [](Processor &s) {
+        .def("summary",
+             [](Processor &s) {
+                 auto guard = lock(s);
+                 return result(s.value.summary());
+             })
+        .def("preview",
+             [](Processor &s) {
+                 std::vector<StecArc> out;
+                 {
+                     py::gil_scoped_release release;
+                     auto guard = lock(s);
+                     out = s.value.preview();
+                 }
+                 return array(out);
+             })
+        .def("checkpoint",
+             [](Processor &s) {
+                 Json j;
+                 {
+                     py::gil_scoped_release release;
+                     auto guard = lock(s);
+                     j = s.value.checkpoint();
+                 }
+                 return result(j);
+             })
+        .def("restore", [](Processor &s, py::dict state) {
+            auto j = arg(state);
+            py::gil_scoped_release release;
             auto guard = lock(s);
-            return result(s.value.summary());
+            s.value.restore(j);
         });
     m.def(
         "fit_receiver_dcb",

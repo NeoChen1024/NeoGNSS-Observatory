@@ -105,14 +105,17 @@ map semantics.
 
 ### GPS STEC and receiver DCB
 
-`ngo-stec -p ubx|sbf` reads raw GPS L1/L2 observations, applies exact-signal
+`ngo-stec --input-dir /data/commonnex-station` reads CommonNEX GPS L1/L2
+observations, applies exact-signal
 satellite code biases, levels phase to code and estimates receiver DCB against
 local CODE IONEX products. It writes daily samples plus arc and receiver-bias
-Parquet tables. Insufficient calibration windows retain unavailable absolute
+Parquet tables. Daily incremental runs retain cross-day arcs and refit affected
+DCB windows; `--rebuild` handles source revisions or changed settings.
+Insufficient calibration windows retain unavailable absolute
 values, never an assumed zero bias. Missing STEC products produce warnings and
 unavailable dependent fields without aborting other time periods.
 `ngo-stec-plot` renders hourly absolute-STEC
-IPP trajectories in parallel, using a local coastline ZIP and optional pale
+IPP trajectories incrementally and in parallel, using a local coastline ZIP and optional pale
 SBAS VTEC backgrounds. See [the STEC guide](docs/stec.md) and
 [example configuration](config/stec.example.toml).
 

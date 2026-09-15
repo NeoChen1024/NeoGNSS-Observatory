@@ -182,21 +182,34 @@ struct StecProcessor::State {
             return intra - reference;
         return NAN;
     }
-    void close(int prn, int reason, std::vector<StecArc> &out) {
-        auto found = tracks.find(prn);
-        if (found == tracks.end())
-            return;
-        auto &a = found->second;
+    StecArc estimate(int prn, const Track &a, int reason,
+                     bool provisional) const {
         auto fit = robust(a.offsets, a.weights, 0.1);
         bool valid = a.offsets.size() >=
                          settings.at("min_level_samples").get<size_t>() &&
                      double(a.last_level - a.first_level) / second >=
                          settings.at("min_arc_seconds").get<double>();
-        out.push_back({a.start, a.last, a.id, a.samples,
-                       int64_t(a.offsets.size()), prn, int(valid), a.reason,
-                       reason, valid ? fit.value : NAN, fit.scatter});
+        return {a.start,
+                a.last,
+                a.id,
+                a.samples,
+                int64_t(a.offsets.size()),
+                prn,
+                int(valid),
+                a.reason,
+                reason,
+                int(provisional),
+                valid ? fit.value : NAN,
+                fit.scatter};
+    }
+    void close(int prn, int reason, std::vector<StecArc> &out) {
+        auto found = tracks.find(prn);
+        if (found == tracks.end())
+            return;
+        auto value = estimate(prn, found->second, reason, false);
+        out.push_back(value);
         ++arcs;
-        valid_arcs += valid;
+        valid_arcs += value.valid;
         tracks.erase(found);
     }
     bool geometry(int prn, int64_t ns, double &az, double &el, double &lat,
@@ -403,6 +416,15 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
             throw std::runtime_error("Non-increasing STEC observation time");
         s.previous = epoch.gpst_ns;
         ++s.epochs;
+        std::set<int> timed_out;
+        // Missing satellites must not retain an indefinitely open track.
+        for (auto it = s.tracks.begin(); it != s.tracks.end();) {
+            auto current = it++;
+            if (epoch.gpst_ns - current->second.last > s.gap) {
+                timed_out.insert(current->first);
+                s.close(current->first, 1, out.arcs);
+            }
+        }
         std::map<int, std::pair<const cppgnss::Observation *,
                                 const cppgnss::Observation *>>
             pairs;
@@ -425,18 +447,24 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
             }
             double gf = CLIGHT / a->frequency_hz * a->phase_cycles -
                         CLIGHT / b->frequency_hz * b->phase_cycles;
-            int reason = 0;
+            int reason = timed_out.contains(prn) ? 1 : 0;
             auto old = s.tracks.find(prn);
             if (old != s.tracks.end()) {
                 auto &t = old->second;
                 double dt = double(epoch.gpst_ns - t.last) / second;
                 if (epoch.gpst_ns - t.last > s.gap)
                     reason = 1;
-                else if ((a->lock_valid && t.a.lock_valid &&
+                else if (a->loss_of_lock || b->loss_of_lock ||
+                         (a->lock_valid && t.a.lock_valid &&
                           a->lock_seconds < t.a.lock_seconds) ||
                          (b->lock_valid && t.b.lock_valid &&
                           b->lock_seconds < t.b.lock_seconds))
                     reason = 2;
+                else if ((a->continuity_counter && t.a.continuity_counter &&
+                          a->continuity_counter != t.a.continuity_counter) ||
+                         (b->continuity_counter && t.b.continuity_counter &&
+                          b->continuity_counter != t.b.continuity_counter))
+                    reason = 6;
                 else if (a->sub_half_cycle != t.a.sub_half_cycle ||
                          b->sub_half_cycle != t.b.sub_half_cycle)
                     reason = 3;
@@ -532,7 +560,100 @@ Json StecProcessor::summary() const {
               {"2", "lock_decrease"},
               {"3", "half_cycle_change"},
               {"4", "geometry_free_jump_candidate"},
-              {"5", "stream_end"}}}};
+              {"5", "stream_end"},
+              {"6", "continuity_counter_change"},
+              {"7", "open_incremental_tail"}}}};
+}
+
+std::vector<StecArc> StecProcessor::preview() const {
+    std::vector<StecArc> out;
+    for (const auto &[prn, track] : state_->tracks)
+        out.push_back(state_->estimate(prn, track, 7, true));
+    return out;
+}
+Json StecProcessor::checkpoint() const {
+    const auto &s = *state_;
+    Json tracks = Json::array();
+    auto tracking = [](const cppgnss::Observation &m) {
+        return Json{{"lock_seconds", m.lock_seconds},
+                    {"lock_valid", m.lock_valid},
+                    {"sub_half_cycle", m.sub_half_cycle},
+                    {"counter", m.continuity_counter
+                                    ? Json(*m.continuity_counter)
+                                    : Json(nullptr)}};
+    };
+    for (const auto &[prn, t] : s.tracks)
+        tracks.push_back({{"prn", prn},
+                          {"id", t.id},
+                          {"start", t.start},
+                          {"last", t.last},
+                          {"emitted", t.emitted},
+                          {"samples", t.samples},
+                          {"reason", t.reason},
+                          {"gf", t.gf},
+                          {"a", tracking(t.a)},
+                          {"b", tracking(t.b)},
+                          {"offsets", t.offsets},
+                          {"weights", t.weights},
+                          {"first_level", t.first_level},
+                          {"last_level", t.last_level}});
+    return {{"version", 1},
+            {"settings", s.settings},
+            {"previous", s.previous},
+            {"next_arc", s.next_arc},
+            {"epochs", s.epochs},
+            {"samples", s.sample_count},
+            {"arcs", s.arcs},
+            {"valid_arcs", s.valid_arcs},
+            {"unhealthy", s.unhealthy},
+            {"missing_gim", s.missing_gim},
+            {"product_gaps", s.product_gaps},
+            {"tracks", tracks}};
+}
+void StecProcessor::restore(const Json &j) {
+    auto &s = *state_;
+    if (j.at("version") != 1 || j.at("settings") != s.settings ||
+        s.previous != -1)
+        throw std::runtime_error("Incompatible STEC continuation state");
+    s.previous = j.at("previous");
+    s.next_arc = j.at("next_arc");
+    s.epochs = j.at("epochs");
+    s.sample_count = j.at("samples");
+    s.arcs = j.at("arcs");
+    s.valid_arcs = j.at("valid_arcs");
+    s.unhealthy = j.at("unhealthy");
+    s.missing_gim = j.at("missing_gim");
+    s.product_gaps = j.at("product_gaps").get<std::map<int, uint64_t>>();
+    auto tracking = [](const Json &v) {
+        cppgnss::Observation m;
+        m.lock_seconds = v.at("lock_seconds");
+        m.lock_valid = v.at("lock_valid");
+        m.sub_half_cycle = v.at("sub_half_cycle");
+        if (!v.at("counter").is_null())
+            m.continuity_counter = v.at("counter").get<uint32_t>();
+        return m;
+    };
+    for (const auto &v : j.at("tracks")) {
+        State::Track t;
+        t.id = v.at("id");
+        t.start = v.at("start");
+        t.last = v.at("last");
+        t.emitted = v.at("emitted");
+        t.samples = v.at("samples");
+        t.reason = v.at("reason");
+        t.gf = v.at("gf");
+        t.a = tracking(v.at("a"));
+        t.b = tracking(v.at("b"));
+        t.offsets = v.at("offsets").get<std::vector<double>>();
+        t.weights = v.at("weights").get<std::vector<double>>();
+        t.first_level = v.at("first_level");
+        t.last_level = v.at("last_level");
+        if (t.offsets.size() != t.weights.size() || t.start > t.last ||
+            t.last > s.previous || !std::isfinite(t.gf) || t.id < 0 ||
+            t.id >= s.next_arc)
+            throw std::runtime_error("Invalid STEC track checkpoint");
+        s.tracks.emplace(v.at("prn").get<int>(), std::move(t));
+    }
 }
 
 Json fit_receiver_dcb(std::span<const DcbSample> rows, const Json &settings) {

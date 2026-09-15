@@ -23,7 +23,8 @@ only when they affect present interpretation or processing.
 
 - [CommonNEX importer pilot](commonnex/importer.md): native RAWX/MeasEpoch to daily
   Observation and completion-event Parquet, tail parts and revisions.
-- [GPS STEC and receiver DCB](stec.md): phase leveling and GIM-constrained absolute estimates from raw observations.
+- [GPS STEC and receiver DCB](stec.md): CommonNEX input, incremental phase leveling,
+  GIM-constrained absolute estimates and hourly plots.
 - [Offline PPP Float](ppp.md): raw GPS observations, local precise products and numerical/plot outputs.
 - [Dataset QA and reconstruction](dataset-qa.md): optional scan and explicit restitch.
 - [SBAS frames, grids and maps](subframes.md): source-independent Parquet pipeline.

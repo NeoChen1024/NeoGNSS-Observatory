@@ -12,7 +12,7 @@ struct StecSample {
 };
 struct StecArc {
     int64_t gpst_ns, end_ns, arc_id, samples, leveling_samples;
-    int32_t prn, valid, start_reason, end_reason;
+    int32_t prn, valid, start_reason, end_reason, provisional;
     double level_offset_m, scatter_m;
 };
 struct StecResult {
@@ -26,6 +26,9 @@ class StecProcessor {
     void products(const Json &products);
     StecResult process(const ObservationBatch &batch);
     std::vector<StecArc> finish();
+    std::vector<StecArc> preview() const;
+    Json checkpoint() const;
+    void restore(const Json &state);
     Json summary() const;
 
   private:

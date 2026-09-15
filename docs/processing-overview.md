@@ -35,7 +35,7 @@ extraction state. See [dataset QA](dataset-qa.md) and [dataset notes](dataset-no
 | SBF | `ngo-sbf-rinex` with installed RxTools | Native-rate RINEX and applicable auxiliary outputs |
 | CDDIS listings/products | `ngo-cddis-download` | Explicit product plans and integrity-checked downloads |
 | UBX/SBF GPS L1/L2 and local precise products | `ngo-ppp` → `ngo-ppp-plot` | Static forward Float solutions, residual Parquet and whole-solution reports |
-| UBX/SBF GPS L1/L2, precise products and CODE IONEX | `ngo-stec` → `ngo-stec-plot` | Daily GF samples, arc/DCB Parquet and hourly absolute-STEC trajectory PNGs |
+| CommonNEX GPS L1/L2, precise products and CODE IONEX | `ngo-stec` → `ngo-stec-plot` | Incremental daily GF samples, cross-day arc/DCB Parquet and hourly absolute-STEC trajectory PNGs |
 
 RINEX conversion is not lossless preservation of raw protocols and does not
 automatically prove cross-file continuity. Follow the [conversion guide](rinex-conversion.md).

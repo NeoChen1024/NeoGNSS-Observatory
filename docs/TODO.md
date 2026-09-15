@@ -20,6 +20,8 @@ its use as a bias constraint must remain explicit in absolute STEC results.
 - [x] Reject insufficient receiver-bias coverage without substituting zero.
 - [x] Add an absolute-STEC plot consumer for finalized Parquet estimates, with
   parallel hourly PNG export and optional separate SBAS VTEC backgrounds.
+- [x] Read CommonNEX Observation Arrow batches natively; support daily incremental
+  extraction, cross-day arc checkpoints, affected-window DCB refits and plots.
 - [ ] Validate independent-reference accuracy and sensitivity to mapping height,
   elevation mask, leveling scatter, estimation-window boundaries and temperature.
 - [ ] Add phase wind-up and appropriate antenna corrections to the STEC path.

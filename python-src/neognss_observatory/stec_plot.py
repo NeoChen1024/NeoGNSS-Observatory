@@ -17,12 +17,12 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from .gpst import calendar, label
-from .research_output import staged_output, write_json
 from .sbas_grid_parquet import SCHEMA as SBAS_SCHEMA
 from .sbas_grid_plot import hourly_rows
 from .sbas_grid_render import coastline_parts, parse_hour
 from .sbas_streams import sbas_satellite as validate_sbas_satellite
 from .stec import read_stec
+from .stec_incremental import publication, replace_json
 
 HOUR_NS = 3_600_000_000_000
 FIELDS = (
@@ -33,6 +33,7 @@ FIELDS = (
     "ipp_latitude_deg",
     "ipp_longitude_deg",
     "stec_absolute_tecu",
+    "provisional",
 )
 _worker = None
 
@@ -53,7 +54,7 @@ def wrap(longitude, center):
     return center + (np.asarray(longitude) - center + 180) % 360 - 180
 
 
-def prepare_hours(root, scratch, start, end, center):
+def prepare_hours(root, scratch, start, end, center, selected_days=None):
     """Spool at most one GPST hour in memory, preserving unavailable rows."""
     records, pending = [], []
     current = previous = None
@@ -66,7 +67,19 @@ def prepare_hours(root, scratch, start, end, center):
         records.append((current // 10**9, path))
         pending.clear()
 
-    for table in tqdm(read_stec(root, start, end), desc="Read finalized STEC", unit="batch"):
+    def tables():
+        if selected_days is None:
+            yield from read_stec(root, start, end)
+        else:
+            from datetime import date
+
+            from .stec_incremental import DAY_NS, EPOCH
+
+            for day in sorted(selected_days):
+                first = (date.fromisoformat(day) - EPOCH).days * DAY_NS
+                yield from read_stec(root, max(first, start or 0), min(first + DAY_NS, end or 2**63 - 1))
+
+    for table in tqdm(tables(), desc="Read calibrated STEC", unit="batch"):
         points = {k: table[k].to_numpy() for k in FIELDS}
         times = points["gpst_ns"]
         if np.any(np.diff(times) < 0) or (previous is not None and times[0] < previous):
@@ -249,6 +262,8 @@ def render_hour(job):
         ax.scatter(*opts["station"], marker="*", s=130, c="black", edgecolors="white", linewidths=0.7, zorder=8)
         heading = calendar(hour).strftime("%Y-%m-%d %H:00 GPST")
         subtitle = f"GIM-constrained absolute STEC | {opts['signal_pair']} | {valid.sum():,}/{len(tec):,} usable samples"
+        if np.any(data["provisional"]):
+            subtitle += " | provisional calibration"
         ax.set(
             title=f"{opts['station_name']} — GPS ionospheric pierce-point tracks\n{heading}\n{subtitle}",
             xlim=opts["extent"][:2],
@@ -352,8 +367,7 @@ def render_hour(job):
 @click.option("--extent", nargs=4, type=float, help="Fixed WEST EAST SOUTH NORTH; default shared bounds across selected hours.")
 @click.option("--workers", type=click.IntRange(1, 32), default=min(4, os.cpu_count() or 1), show_default=True)
 @click.option("--png-compression", type=click.IntRange(0, 9), default=3, show_default=True)
-@click.option("--overwrite", is_flag=True)
-@staged_output
+@click.option("--rebuild", is_flag=True, help="Regenerate all selected images; preserve previous output.")
 def cli(
     input_dir,
     output,
@@ -370,8 +384,9 @@ def cli(
     extent,
     workers,
     png_compression,
+    rebuild,
 ):
-    """Render hourly absolute STEC trajectories using only finalized Parquet."""
+    """Incrementally render hourly absolute STEC from published STEC Parquet."""
     try:
         if start is not None and end is not None and end <= start:
             raise ValueError("--end must exceed --start")
@@ -381,88 +396,142 @@ def cli(
         if not paths:
             raise ValueError("No STEC samples")
         metadata = json.loads(pq.ParquetFile(paths[0]).schema_arrow.metadata[b"ngo"])
-        if metadata.get("time_scale") != "GPST" or metadata.get("schema_version") != 1 or metadata.get("constellation") != "GPS":
+        if metadata.get("time_scale") != "GPST" or metadata.get("schema_version") != 2 or metadata.get("constellation") != "GPS":
             raise ValueError("Expected current GPS STEC Parquet")
         station = station_position(metadata["settings"]["position_ecef_m"])
-        with tempfile.TemporaryDirectory(prefix="ngo-stec-plot-") as temporary:
-            hours, bounds = prepare_hours(
-                input_dir,
-                Path(temporary),
-                None if start is None else start * 10**9,
-                None if end is None else end * 10**9,
-                station[0],
-            )
-            if extent is None:
-                bounds = [
-                    min(bounds[0], station[0]),
-                    max(bounds[1], station[0]),
-                    min(bounds[2], station[1]),
-                    max(bounds[3], station[1]),
-                ]
-                extent = (
-                    max(station[0] - 180, math.floor((bounds[0] - 3) / 5) * 5),
-                    min(station[0] + 180, math.ceil((bounds[1] + 3) / 5) * 5),
-                    max(-90, math.floor((bounds[2] - 3) / 5) * 5),
-                    min(90, math.ceil((bounds[3] + 3) / 5) * 5),
+        source_summary = json.loads((input_dir / "summary.json").read_text())
+        generations = source_summary["day_generations"]
+        background_stamp = (
+            [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in sorted(sbas_grid.rglob("*.parquet"))] if sbas_grid else []
+        )
+        contract = json.loads(
+            json.dumps(
+                dict(
+                    input_dir=str(input_dir.resolve()),
+                    lineage=source_summary["lineage"],
+                    coastline=[str(coastline.resolve()), coastline.stat().st_size, coastline.stat().st_mtime_ns],
+                    start=start,
+                    end=end,
+                    sbas_grid=str(sbas_grid.resolve()) if sbas_grid else None,
+                    sbas_satellite=sbas_satellite,
+                    min_coverage=min_coverage,
+                    background_alpha=background_alpha,
+                    sbas_vmax=sbas_vmax,
+                    vmin=vmin,
+                    vmax=vmax,
+                    extent=extent,
+                    png_compression=png_compression,
+                    background=background_stamp,
                 )
-            if not np.isfinite(extent).all() or not (0 < extent[1] - extent[0] <= 360 and -90 <= extent[2] < extent[3] <= 90):
-                raise ValueError("Invalid map extent")
-            background = Background(sbas_grid, [h for h, _ in hours], sbas_satellite, min_coverage)
-            output.mkdir()
-            (output / "png").mkdir()
-            options = dict(
-                output=str(output),
-                extent=extent,
-                station=station,
-                station_name=metadata["station"],
-                signal_pair=f"C{metadata['signal1']}/C{metadata['signal2']}",
-                vmin=vmin,
-                vmax=vmax,
-                sbas_vmax=sbas_vmax,
-                sbas_satellite=sbas_satellite,
-                sbas_requested=sbas_grid is not None,
-                background_alpha=background_alpha,
-                png_compression=png_compression,
-                join_gap_ns=round(max(metadata["settings"]["gap_timeout"], 1.5 * metadata["settings"]["interval"]) * 10**9),
             )
-            images = []
-            jobs = iter(hours)
-            with ProcessPoolExecutor(
-                max_workers=min(workers, len(hours)),
-                mp_context=multiprocessing.get_context("spawn"),
-                initializer=initialize,
-                initargs=(coastline, options),
-            ) as pool:
-                pending = set()
-                with tqdm(total=len(hours), desc="Render absolute STEC", unit="image") as progress:
-                    while True:
-                        while len(pending) < 2 * workers:
-                            entry = next(jobs, None)
-                            if entry is None:
+        )
+        previous_images = None
+        selected_days = None
+        if output.exists() and not rebuild:
+            state = json.loads((output / "plot-state.json").read_text())
+            if state["contract"] != contract:
+                raise ValueError("Plot settings/source/background changed; use --rebuild")
+            selected_days = [day for day, generation in generations.items() if state["days"].get(day) != generation]
+            if start is not None or end is not None:
+                selected_days = [
+                    day
+                    for day in selected_days
+                    if (end is None or day <= calendar(end - 1).date().isoformat())
+                    and (start is None or day >= calendar(start).date().isoformat())
+                ]
+            if not selected_days:
+                click.echo(json.dumps(dict(status="up-to-date")))
+                return
+            previous_images = json.loads((output / "images.json").read_text())["images"]
+            if extent is None:
+                extent = state["extent"]
+        for source in [input_dir, coastline, *([sbas_grid] if sbas_grid else [])]:
+            if output.resolve().is_relative_to(source.resolve()) or source.resolve().is_relative_to(output.resolve()):
+                raise ValueError("Plot input and output must not contain each other")
+        with publication(output, rebuild) as stage:
+            output = stage
+            with tempfile.TemporaryDirectory(prefix="ngo-stec-plot-") as temporary:
+                hours, bounds = prepare_hours(
+                    input_dir,
+                    Path(temporary),
+                    None if start is None else start * 10**9,
+                    None if end is None else end * 10**9,
+                    station[0],
+                    selected_days,
+                )
+                if extent is None:
+                    bounds = [
+                        min(bounds[0], station[0]),
+                        max(bounds[1], station[0]),
+                        min(bounds[2], station[1]),
+                        max(bounds[3], station[1]),
+                    ]
+                    extent = (
+                        max(station[0] - 180, math.floor((bounds[0] - 3) / 5) * 5),
+                        min(station[0] + 180, math.ceil((bounds[1] + 3) / 5) * 5),
+                        max(-90, math.floor((bounds[2] - 3) / 5) * 5),
+                        min(90, math.ceil((bounds[3] + 3) / 5) * 5),
+                    )
+                if not np.isfinite(extent).all() or not (0 < extent[1] - extent[0] <= 360 and -90 <= extent[2] < extent[3] <= 90):
+                    raise ValueError("Invalid map extent")
+                background = Background(sbas_grid, [h for h, _ in hours], sbas_satellite, min_coverage)
+                (output / "png").mkdir(exist_ok=True)
+                options = dict(
+                    output=str(output),
+                    extent=extent,
+                    station=station,
+                    station_name=metadata["station"],
+                    signal_pair=f"C{metadata['signal1']}/C{metadata['signal2']}",
+                    vmin=vmin,
+                    vmax=vmax,
+                    sbas_vmax=sbas_vmax,
+                    sbas_satellite=sbas_satellite,
+                    sbas_requested=sbas_grid is not None,
+                    background_alpha=background_alpha,
+                    png_compression=png_compression,
+                    join_gap_ns=round(max(metadata["settings"]["gap_timeout"], 1.5 * metadata["settings"]["interval"]) * 10**9),
+                )
+                images = [r for r in (previous_images or []) if r["hour_gpst"] not in {h for h, _ in hours}]
+                for hour, _ in hours:
+                    (output / "png" / f"{label(hour)}.png").unlink(missing_ok=True)
+                jobs = iter(hours)
+                with ProcessPoolExecutor(
+                    max_workers=min(workers, len(hours)),
+                    mp_context=multiprocessing.get_context("spawn"),
+                    initializer=initialize,
+                    initargs=(coastline, options),
+                ) as pool:
+                    pending = set()
+                    with tqdm(total=len(hours), desc="Render absolute STEC", unit="image") as progress:
+                        while True:
+                            while len(pending) < 2 * workers:
+                                entry = next(jobs, None)
+                                if entry is None:
+                                    break
+                                hour, path = entry
+                                pending.add(pool.submit(render_hour, (hour, path, background.get(hour))))
+                            if not pending:
                                 break
-                            hour, path = entry
-                            pending.add(pool.submit(render_hour, (hour, path, background.get(hour))))
-                        if not pending:
-                            break
-                        done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                        for future in done:
-                            images.append(future.result())
-                            progress.update(1)
-            images.sort(key=lambda r: r["hour_gpst"])
-            policy = {k: v for k, v in options.items() if k != "output"}
-            policy.update(
-                time_scale="GPST",
-                min_sbas_coverage=min_coverage,
-                colour_quantity="absolute STEC, not VTEC",
-                calibration="GIM-constrained",
-                workers=workers,
-            )
-            write_json(output / "images.json", dict(time_scale="GPST", images=images, settings=policy))
-            if sbas_grid is not None and not any(r["sbas_cells"] for r in images):
-                click.echo("No matching SBAS cells; rendered without background.", err=True)
-            click.echo(
-                json.dumps(dict(status="complete", images=len(images), valid_samples=sum(r["valid_samples"] for r in images)))
-            )
+                            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                            for future in done:
+                                images.append(future.result())
+                                progress.update(1)
+                images.sort(key=lambda r: r["hour_gpst"])
+                policy = {k: v for k, v in options.items() if k != "output"}
+                policy.update(
+                    time_scale="GPST",
+                    min_sbas_coverage=min_coverage,
+                    colour_quantity="absolute STEC, not VTEC",
+                    calibration="GIM-constrained",
+                    workers=workers,
+                )
+                replace_json(output / "images.json", dict(time_scale="GPST", images=images, settings=policy))
+                replace_json(output / "plot-state.json", dict(contract=contract, days=generations, extent=extent))
+                if sbas_grid is not None and not any(r["sbas_cells"] for r in images):
+                    click.echo("No matching SBAS cells; rendered without background.", err=True)
+                click.echo(
+                    json.dumps(dict(status="complete", images=len(images), valid_samples=sum(r["valid_samples"] for r in images)))
+                )
     except (ValueError, KeyError, OSError, RuntimeError, zipfile.BadZipFile) as error:
         raise click.ClickException(str(error)) from error
 

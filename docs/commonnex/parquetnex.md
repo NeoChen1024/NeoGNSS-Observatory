@@ -23,7 +23,8 @@ storage. They are complementary, not interchangeable byte layouts. Parquet
 encoding/decoding and compression still perform work even when the native/Python
 boundary can share buffers. The [interop design](../native-architecture.md#selected-commonnex-interop-design)
 defines the selected nanoarrow/PyCapsule integration; native output is implemented
-in the observation pilot, while native replay consumers remain pending.
+in the observation importer. STEC also consumes replayed Observation Arrow
+batches natively; other analysis consumers are migrated separately.
 
 Use `pyarrow.parquet.ParquetWriter` for bounded writes, `ParquetFile.iter_batches()`
 for replay, and `pyarrow.dataset` for multi-file selection. PyArrow invokes native
@@ -271,7 +272,8 @@ new days; a rebuilt revision may require transferring a complete new catalog.
   and equal-time conflict applicability with Events.
 - [x] Implement pilot initialization, bounded writing and revision/part selection.
 - [x] Implement measurement-tail raw replay using a daily import-state sidecar.
-- [ ] Implement remaining catalogs and native Arrow replay consumers.
+- [x] Implement a native Arrow Observation replay consumer for GPS STEC.
+- [ ] Implement remaining catalogs and migrate other native replay consumers.
 - [ ] Validate remaining catalogs and source-specific RINEX offset replay.
 
 ## References

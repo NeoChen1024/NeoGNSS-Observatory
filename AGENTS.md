@@ -1,275 +1,101 @@
-# AGENTS.md
+# NeoGNSS Observatory — Agent guide
 
-## Project language
+A pre-Alpha GNSS research project with native protocol/processing libraries and
+Python orchestration, storage and visualization.
 
-- Write project files in English, including documentation, source code,
-  comments, identifiers, configuration keys, and test names.
-- Preserve standardized GNSS terminology, protocol field names, receiver
-  message names, filenames, and externally defined identifiers exactly as
-  specified by their source standards.
-- Existing non-English text should be translated when the surrounding file is
-  modified, unless it is quoted source material or test data whose exact bytes
-  are significant.
-- This language policy applies only to files in the repository. It does not
-  constrain communication with users; use the language appropriate for the
-  current conversation.
+## Sources of truth
 
-## Development stage and scope
+- [Documentation index](docs/README.md): routes scientific and tool questions.
+- [Processing overview](docs/processing-overview.md): supported workflows and scope.
+- [Native architecture](docs/native-architecture.md): library ownership and interop.
+- [GPST policy](docs/time-policy.md): time interpretation and normalization.
+- [CommonNEX](docs/commonnex/overview.md): logical records and ParquetNEX;
+  [importer](docs/commonnex/importer.md) describes the implemented subset.
+- [Dataset notes](docs/dataset-notes.md): acquisition and interpretation caveats.
+- Tool documentation and executable `--help` own usage and implemented options.
 
-- This is a pre-Alpha research project. Algorithms, CLIs, intermediate schemas,
-  and output layouts are experimental and may change freely.
-- Prioritize clear scientific computation and fast iteration over compatibility,
-  generalized infrastructure, and production-grade artifact management.
-- Do not add or expand automated tests unless explicitly requested by the user.
-  A feature or bug fix does not implicitly authorize new regression tests.
-- Validate changes proportionately using builds, small representative inputs,
-  and direct inspection of results. Report what was actually checked. Do not
-  turn one-off validation into a new permanent test framework.
-- Do not preserve obsolete interfaces or output formats solely to satisfy tests.
-- Do not introduce provenance bundles, source/binary snapshots, dependency
-  inventories, or chains of artifact hashes unless explicitly requested.
-- Retain metadata needed to interpret or process data correctly: time scales,
-  units, signal identities, validity flags, calculation parameters, and necessary
-  source offset mappings. Keep reconstruction overlap proofs and downloader
-  recovery/integrity checks that serve an actual processing purpose.
-- Preserve raw archives and basic protection against accidental data loss.
-- Experimental analysis outputs should be directly readable without provenance
-  sidecars. Publish finished files or directories by rename; allow explicit
-  overwrite without silently deleting unrelated files. Do not build a generic
-  resume system; retain useful existing reuse paths.
+Keep this guide about project-wide engineering workflow, conventions and safety.
+Update the owning document when behavior changes; link to it instead of copying
+schemas, per-tool defaults, CLI options, state machines or dataset runbooks here.
+Keep current documentation distinct from design targets. Remove obsolete
+workflows and run histories; Git history is the archive. README files are
+public-facing, not local environment notebooks.
 
-## Constellation scope
+## Scope and scientific integrity
 
-- GLONASS and NavIC are out of scope for this project, including CommonNEX,
-  ParquetNEX, importers, navigation decoding and scientific processing.
-  Do not design fields, special handling, calculations or future compatibility
-  solely to support either constellation unless the user explicitly changes
-  this scope. Their exclusion is intentional, not an implementation backlog.
-- Mixed recordings may contain these constellations. Preserve raw archives,
-  frame inputs safely and report excluded records without requiring scientific
-  decoding of their contents. Their absence from normalized outputs is not a
-  failure of in-scope constellation support.
-- Leave upstream definitions and standardized identifiers intact; this scope
-  does not require deleting generated protocol definitions or modifying vendored
-  dependencies. RINEX interoperability claims apply only to in-scope content.
+- Prioritize clear computation and fast iteration over compatibility and
+  speculative infrastructure. Do not preserve obsolete interfaces for tests.
+- GLONASS and NavIC scientific processing are intentionally out of scope;
+  leave upstream protocol definitions intact and frame mixed input safely.
+- Project-owned scientific time axes use GPST; follow the time policy rather
+  than inventing local conversions or relabeling old products.
+- Preserve units, signal identities, validity, missing values and necessary
+  interpretation metadata. Do not fabricate missing observations or infer
+  coverage/time scale solely from filenames.
+- Do not add provenance bundles, dependency inventories, execution snapshots or
+  generic recovery frameworks without an explicit request. Preserve functional
+  integrity/recovery mechanisms that serve the requested workflow.
 
-## Documentation audience
+## Data safety
 
-- Keep `docs/` focused on the current implementation. Remove superseded
-  workflows, migration logs, obsolete pilot paths and run statistics instead
-  of preserving them as historical sections. Git history is the archive.
-  Retain concise dataset/converter constraints only when they materially affect
-  present behavior or scientific interpretation, and distinguish implemented
-  features from research extension points.
+- Raw archives and expanded source datasets are read-only, including those under
+  `/hdd` and `~/net/DATA_SSD/datasets/GNSS`. Write only to designated derived
+  output locations; a destination beside source data is not permission to alter it.
+- Keep generated and large scientific products out of Git. Preserve unrelated
+  files and never silently overwrite or delete source data.
+- Publish completed outputs by rename where appropriate. Do not rewrite existing
+  datasets solely to adopt new defaults.
+- Use Zstandard level 3 explicitly for project-owned Parquet writers:
+  `compression="zstd", compression_level=3`.
 
-- README files are public-facing documentation. Keep them focused on purpose,
-  requirements, installation, building, APIs, usage, and limitations.
-- Keep local development-environment instructions here, not in README files.
-  This includes this workspace's uv-managed environment, machine-specific
-  dataset paths, and references to sibling repositories.
+## Language and style
 
-## Data handling
+- Write project files in English, including documentation and code comments.
+  Preserve standardized GNSS names, external identifiers, quoted material and
+  significant fixture bytes. Translate surrounding non-English project text
+  when editing it. User communication need not be English.
+- Python targets 3.11+. Use Black (132 columns, Python 3.11 target) and isort
+  (Black profile), following the repository configuration.
+- Use Click for Python CLIs, a `cli` entry point and the installed `ngo-` prefix.
+  Directly executable Python scripts use `#!/usr/bin/env python`.
+- Use Rich/`rich.progress` for moderately changing presentation-oriented status;
+  use tqdm for throughput-sensitive processing. Keep updates out of inner loops.
+  When stdout carries machine-readable data, diagnostics/progress go to stderr.
+- Project-owned C/C++ uses C++20, CMake, root `.clang-format` and `.clang-tidy`.
+  Exclude vendored and generated code from formatting/tidy edits. Review
+  behavior-changing tidy suggestions before applying them.
 
-- Treat GNSS archives under `/hdd` as read-only preservation masters.
-- The user-authorized reconstruction outputs are
-  `~/net/DATA_SSD/datasets/GNSS/era-a` and `era-b` beside it.
-  The expanded source directories remain read-only.
-- For downstream Era A analysis, use the reconstructed GPST segments in
-  `era-a/` and exclude `era-a/unassigned/`. Leave excluded files and their
-  provenance intact; do not invent missing GPST assignments.
-- Read Era A-C processing inputs from `~/net/DATA_SSD/datasets/GNSS`:
-  Era A uses `archive/ubx24h`, Era B uses `archive/ubx`, and Era C uses
-  `gnss/mosaic-x5/BX4ACP`. Treat this expanded dataset as read-only too.
-- Process the already expanded `.ubx`, `.25_`, `.25o`, and `.25p` files directly;
-  do not decompress XZ during processing or silently fall back to `/hdd`.
-  Ignore retained `.xz` copies and report missing expanded inputs explicitly.
-- Keep generated and large observation products out of Git.
-- Use Zstandard level 3 (`compression="zstd", compression_level=3`) by default
-  for all project-owned Parquet writers, including intermediate and derived
-  products. Specify both options explicitly. Do not rewrite existing datasets
-  solely to change compression unless requested.
-- Experimental artifacts need sufficient scientific metadata for interpretation,
-  not a complete execution-environment snapshot.
-- Never infer observation coverage or time scale solely from filenames; inspect
-  payload timestamps and preserve original GNSS fields as provenance.
+## Code ownership and dependencies
 
-## Single GPST policy
+- Python lives in `python-src/neognss_observatory/`. Keep runtime dependencies
+  in `requirements.txt`, consumed by setuptools/`pyproject.toml`, using minimum
+  versions (`>=`) without introducing a lockfile.
+- Reusable protocol mechanisms belong in `libcppgnss/`; Observatory processing
+  and bindings belong in `libneognss-obs/`, which depends on it, never the reverse.
+  Python owns file orchestration, Parquet and plots; consult the architecture
+  document for detailed boundaries.
+- Search existing shared APIs before adding another parser or helper. Share
+  mechanisms with identical semantics while keeping caller policy separate.
+- Batch native/Python exchange and release the GIL during native work; do not
+  introduce per-frame Python callbacks or executable-worker backends.
+- Generate protocol definitions into the build directory from pinned submodules.
+  Do not edit generated files or modify vendored code as an incidental cleanup.
+- Original code and documentation use GPL-3.0-only. Preserve third-party licenses
+  and imported notices. Submodule updates must be intentional.
 
-- All project observation time axes, day/hour partitions, processing windows,
-  map labels and derived artifact metadata use GPST. No optional UTC mode or
-  compatibility reading of old UTC-derived products is maintained.
-- Scalar `gpst`, `start_gpst`, `end_gpst` and `hour_gpst` values are continuous
-  seconds since 1980-01-06 00:00:00 GPST, not Unix timestamps. Archive indexes
-  use integer `gpst_ms`; receiver-clock samples use `gpst_ns`. Raw fractional
-  time remains intact. Do not snap navigation epochs to whole seconds.
-- Name assigned UBX outputs `GPST-%Y-%m-%d--%H-%M-%S-mmm.ubx`, where `mmm`
-  is exactly three millisecond digits (including `000`). Never use a UTC `Z`
-  or `+0000` suffix for GPST. Keep native protocol fields and external product
-  formats unchanged; decode their specified scales at the input boundary.
-- Logger epochs are buffered until EOE. Every EOE requires a fresh valid
-  NAV-TIMEGPS with matching iTOW; otherwise fail. Rotate before writing the
-  complete first epoch of the new GPST day, including its EOE.
-- Re-stitch splits at GPST midnight or a NAV-to-NAV interval greater than the
-  configured timeout (default 50 seconds). A segment does not imply gapless
-  sampling. Preserve subsecond epochs and do not fabricate missing observations.
-- Old UTC analysis/reconstruction outputs were explicitly cleared. Preserve
-  archives, downloaded products, downloader plans/configuration and map assets.
-  Rebuild derived outputs with GPST tools; do not relabel old timestamps.
+## Local toolchain and verification
 
-## TEC visualization
-
-- Use 200 TECU as the default upper colour-scale limit for TEC plots,
-  including absolute STEC, SBAS VTEC maps and SBAS background overlays.
-  The default lower limit is 0 TECU. Explicit user-selected limits may override
-  these defaults; do not change or truncate scientific values to fit the scale.
-- Keep STEC and VTEC clearly distinguished even when their default colour-scale
-  limits are the same. Keep CLI help and usage documentation aligned.
-
-## Toolchain
-
-- This workspace has Septentrio RxTools under `~/.local/RxTools`; its SBF to
-  RINEX converter is `bin/sbf2rin`. Read the installed tool's help and record
-  its version when investigating converter behavior. Do not vendor the installation.
-- References to RTKLIB mean the RTKLIB-EX `main` branch from
-  `rtklibexplorer/RTKLIB`, not upstream `tomojitakasu/RTKLIB`.
-- Pin exact tool revisions or container digests when production processing is
-  explicitly requested, not for every exploratory run.
-- Preserve original observation codes and receiver message provenance during
-  normalization.
-
-## Python scripts
-
-The library's build-time generator lives in `libcppgnss/scripts/`; Python
-regression tests may live beside the C++ library. The generator uses Click;
-tests are run through unittest discovery rather than custom Python CLIs.
-Use the repository-root `./.venv`, managed by uv, for code generation and
-all Python tests. Install dependencies with `uv pip install --python
-.venv/bin/python ...`; do not create per-component environments or fall
-back to system Python.
-
-Local setup commands (create `.venv` only if it does not already exist):
-
-```sh
-uv venv .venv
-uv pip install --python .venv/bin/python -r libcppgnss/requirements-codegen.txt
-uv pip install --python .venv/bin/python -e .
-uv pip install --python .venv/bin/python pre-commit
-.venv/bin/pre-commit install
-.venv/bin/pre-commit run --all-files
-```
-
-The current CMake configuration selects the repository-root
-`./.venv/bin/python` for code generation and Python tests, including when
-configuring `libcppgnss/` directly.
-
-- Keep Python code under `python-src/neognss_observatory/`. Use setuptools with
-  `pyproject.toml`; maintain runtime dependencies in `requirements.txt` as the
-  single source consumed by the package metadata.
-- Target Python 3.11 or newer. Format with Black (line length 132, Python 3.11
-  target) and isort (Black profile), using the pinned pre-commit hooks.
-- Use Click for CLI parsing in every Python script. CLI modules should expose
-  a `cli` callable and use an `if __name__ == "__main__": cli()` entry point.
-  Use `#!/usr/bin/env python` for directly executable scripts.
-- For tasks where presentation matters and status changes at a moderate rate
-  (such as downloads), prefer Rich throughout for user-facing messages and
-  `rich.progress` for progress reporting.
-- For processing or computation scripts where throughput matters, prefer
-  direct use of `tqdm` for progress reporting. Keep terminal updates out of
-  performance-critical inner loops or let `tqdm` throttle their refresh rate.
-- Keep machine-readable output separate from status messages; send progress
-  and diagnostics to stderr when stdout carries data.
-- Declare Python dependencies with minimum versions (`>=`) in
-  `requirements.txt`, allowing upgrades without a lockfile. Do not automatically
-  inventory installed versions for experimental runs.
-
-## Native library boundaries
-
-- Format project-owned C/C++ with the root `.clang-format` and analyze it with
-  `.clang-tidy`, adapted from the sibling NeoTape project. Use the CMake compile
-  database in `build/`. Exclude vendored submodules and generated build files
-  from formatting and tidy targets. Review behavior-changing tidy fixes before
-  applying them; diagnostics alone do not authorize broad semantic rewrites.
-
-- `ngo-dataset-qa` defaults to optional, read-only `scan`; `--profile restitch`
-  explicitly enables overlap indexes/proofs and reconstruction. QA is not a
-  prerequisite enforced by extraction. Do not require QA stamps, manifests,
-  or reconstruction indexes in downstream readers, and do not rerun complete QA
-  there. Share epoch/field interpretation in native code; retain necessary
-  parser bounds, usable time and scientific validity checks.
-- All installed project Python CLI names use the `ngo-` prefix. Keep examples
-  aligned with the registered entry points; do not install unprefixed aliases.
-
-- Raw processing CLIs expose `--protocol/-p ubx|sbf` (default `ubx`). Validate
-  complete foreign-protocol frames before skipping them atomically; report
-  throttled warnings on stderr and retain skipped frame/byte counts. Never
-  parse an embedded sync sequence inside a valid foreign frame. Unsupported
-  analysis/protocol combinations must fail explicitly before producing outputs.
-
-- `libcppgnss/` contains reusable UBX/SBF framing, generated protocol decoders,
-  signal routing, SBAS L1 decoding, and standard IGP coordinate/ordinal rules.
-  Keep transport, recording policy and automatic terminal output out of the library.
-- `libneognss-obs/` contains Observatory-specific epoch association, archive
-  segmentation, receiver-clock state, SBAS mask/aging policy, and batch bindings.
-  It depends on `libcppgnss`, never the reverse.
-- Python calls the native extension directly. Do not resurrect archive-index,
-  clock-scan, subframe-export or inspection worker executables as alternate backends.
-  Keep the actual `neoubxlogger` application and its CLI.
-- CommonNEX Setup requires a positive decimal-string `epoch_period_s`. RawBits
-  import uses the last valid navigation anchor until its source-time age exceeds
-  ten nominal periods; valid measurement timestamps may advance the timeout
-  high-water mark but never become RawBits timestamps. EOE does not reset this
-  anchor. Missing/expired anchors use a 4 MiB accounted-size FIFO backlog,
-  evicting oldest records first and flushing at the next usable anchor. Preserve
-  this state across files and continuation; do not use host time or SIS time.
-- CommonNEX excludes inputs with applied observation clock-offset correction.
-  Never apply or undo it. Preserve RAWX clock-adjustment flags, SBF cumulative
-  clock counters and smoothing state without inventing missing equivalents,
-  unwrapping counters or inferring reboot/phase loss of lock. Navigation clock
-  estimates remain separate telemetry.
-- Keep file orchestration, Parquet, plotting and external converter invocation
-  in Python. Batch data across the binding; do not call Python once per raw frame.
-  Release the GIL during native processing. Batch/file/day boundaries must not
-  reset state; use explicit timeout/restart/continuous-group policies instead.
-- Generate every available pinned pysbf2 block schema. Keep unknown or empty
-  definitions explicit and preserve raw bytes; schema coverage is not proof of
-  receiver-firmware/revision or scientific validation.
-- Keep JSON serialization primarily in Python; `contrib/json` is available to
-  native processing without introducing C++ Parquet or plotting dependencies.
-- Grid processing consumes protocol-neutral timed SBAS records, not UBX wire
-  identifiers. Use RINEX `satellite_system`, `satellite_number`, and `signal` in derived grid and
-  hourly products. Persist only SBAS's 250-bit body, normalized GPST and signal
-  identity and scoped validity checks in CommonNEX RawBits Parquet, with
-  navigation context in Events. Do not introduce a separate SBAS frame format.
-  Keep RINEX Sxx identifiers through SBAS grid, map labels and CLI selection;
-  do not convert them back to broadcast PRNs in downstream tools.
-  Do not persist UBX/SBF envelopes, field dictionaries or source offsets in
-  SBAS intermediate products; raw archives preserve those. Resolve protocol
-  timestamps at extraction, never by reopening raw data in grid processing.
-  Preserve the distinction between navigation epoch context and receiver message time. Do not
-  reset signal state solely at a physical file or GPST day boundary.
-- Bump the native archive-policy identifier when changing index interpretation
-  or epoch grouping, so functional inventory caches cannot silently reuse old results.
-
-## Dependencies and licensing
-
-- Maintain the C++ UBX/SBF parser in `libcppgnss/` using CMake and C++20.
-  Expose reusable functionality through `cppgnss::cppgnss`; keep transport,
-  recording policy, and automatic terminal output in applications.
-- `libcppgnss/examples/ubxlogger.cpp` is the maintained logger application.
-  Preserve its CLI flags; recording follows the single GPST policy above.
-- Generate parsers into the build directory from the pinned
-  `contrib/pyubx2` and `contrib/pysbf2` submodules. Python schemas are build-time dependencies, not
-  a runtime dependency of the C++ library. Do not edit generated files.
-- The historical `rpi-gnss-server` repository is no longer the maintenance
-  location for these components. Preserve imported BSD-3-Clause notices;
-  new project-owned code follows the project GPL-3.0-only policy.
-
-- License original project code and documentation under GNU GPL version 3 only
-  (`GPL-3.0-only`); keep the full license text in `LICENSE`.
-- Keep RTKLIB-EX as the `contrib/RTKLIB` Git submodule, sourced from
-  `https://github.com/rtklibexplorer/RTKLIB.git` with `main` as its update branch.
-  The recorded submodule commit is the reproducible revision; do not replace
-  it with a floating branch checkout during production processing.
-- Preserve third-party copyright and license notices. The RTKLIB submodule
-  retains its upstream license; project formatting and language policies
-  apply to project-owned files, not vendored submodule contents.
+- Use the repository-root `./.venv`, managed by uv, for Python execution,
+  code generation and any explicitly requested tests. Do not create component
+  environments or fall back to system Python.
+- Install with `uv pip install --python .venv/bin/python ...`; create `.venv`
+  with `uv venv .venv` only if absent.
+- Use the configured CMake build and compilation database in `build/`.
+  Follow the component build documentation; pinned pre-commit hooks own Python
+  formatting checks.
+- Do not add or expand automated tests unless the user explicitly requests them.
+  Validate proportionately with builds, representative inputs and direct output
+  inspection; keep one-off experiments out of the permanent test suite.
+- Check the actual scientific/output contract, including failure and resource
+  bounds when relevant. Do not rely solely on a round trip through the same
+  implementation as independent evidence. Report what was actually checked.

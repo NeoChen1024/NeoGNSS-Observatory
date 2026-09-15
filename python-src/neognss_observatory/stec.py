@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""GPS phase leveling and GIM-constrained receiver DCB from raw UBX/SBF."""
+"""GPS phase leveling and incremental GIM-constrained DCB from CommonNEX."""
 
 import json
 import sys
 import tempfile
 import tomllib
+import uuid
 from pathlib import Path
 
 import click
@@ -14,10 +15,18 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
-from .dataset_inputs import recordings
-from .ppp import DailyTables, time_ns
-from .protocol import ProtocolWarnings, protocol_option
-from .research_output import staged_output, write_json
+from .stec_incremental import (
+    DAY_NS,
+    EPOCH,
+    DailySamples,
+    observation_batches,
+    publication,
+    replace_json,
+    replace_table,
+    selection,
+    signature,
+    validate_events,
+)
 from .stec_products import StecProducts
 
 K = 40.3e16 * (1227.60e6**-2 - 1575.42e6**-2)
@@ -44,24 +53,6 @@ DCB_DEFAULTS = dict(
     gim_rms_floor_tecu=2.0,
     max_scatter_tecu=15.0,
 )
-
-
-class ArcTable:
-    def __init__(self, path, metadata):
-        self.path, self.metadata, self.writer = path, metadata, None
-
-    def append(self, rows):
-        if not len(rows):
-            return
-        table = pa.table({name: rows[name] for name in rows.dtype.names})
-        table = table.replace_schema_metadata({b"ngo": json.dumps(self.metadata).encode()})
-        if self.writer is None:
-            self.writer = pq.ParquetWriter(self.path, table.schema, compression="zstd", compression_level=3)
-        self.writer.write_table(table)
-
-    def close(self):
-        if self.writer:
-            self.writer.close()
 
 
 class BufferedTables:
@@ -125,15 +116,19 @@ def sample_batches(root, start_ns=None, end_ns=None):
         yield from parquet.iter_batches(batch_size=65536, row_groups=groups)
 
 
-def calibrate(root, settings, metadata):
+def calibrate(root, settings, metadata, from_ns=None, origin_ns=None, previous=None):
     """One bounded in-memory window; native robust fit, not per-row Python."""
     ids, offsets = arc_levels(root)
     window_ns = round(settings["window_hours"] * 3600e9)
     if window_ns < 1:
         raise ValueError("Invalid receiver-bias window")
-    rows, pieces, origin, current, last_time = [], [], None, 0, None
+    rows = [r for r in (previous or []) if from_ns is not None and r["end_gpst_ns"] <= from_ns]
+    pieces, origin, current, last_time = [], origin_ns, None, None
+    arc_table = pq.read_table(root / "arcs.parquet", columns=["gpst_ns", "end_ns", "provisional"])
+    open_start = arc_table["gpst_ns"].to_numpy()[arc_table["provisional"].to_numpy().astype(bool)]
+    open_end = arc_table["end_ns"].to_numpy()[arc_table["provisional"].to_numpy().astype(bool)]
 
-    def flush():
+    def flush(window_complete=False):
         if not pieces:
             return
         data = np.concatenate(pieces)
@@ -144,12 +139,20 @@ def calibrate(root, settings, metadata):
             end_gpst_ns=min(origin + (current + 1) * window_ns, last_time + 1),
             method="gim_constrained",
             signal_pair=f"C{metadata['signal1']}-C{metadata['signal2']}",
+            provisional=bool(
+                (not window_complete and last_time + 1 < origin + (current + 1) * window_ns)
+                or np.any((open_start < origin + (current + 1) * window_ns) & (open_end >= origin + current * window_ns))
+            ),
         )
         rows.append(fit)
         pieces.clear()
 
-    for batch in tqdm(sample_batches(root), desc="Receiver DCB", unit="batch"):
+    for batch in tqdm(sample_batches(root, from_ns), desc="Receiver DCB", unit="batch"):
         table = pa.Table.from_batches([batch])
+        if from_ns is not None:
+            table = table.filter(pa.compute.greater_equal(table["gpst_ns"], from_ns))
+        if not len(table):
+            continue
         times = table["gpst_ns"].to_numpy()
         if origin is None:
             origin = int(times[0])
@@ -163,7 +166,7 @@ def calibrate(root, settings, metadata):
         windows = (times - origin) // window_ns
         for window in np.unique(windows):
             if int(window) != current:
-                flush()
+                flush(window_complete=True)
                 current = int(window)
             selected = data[windows == window]
             pieces.append(selected)
@@ -175,7 +178,7 @@ def calibrate(root, settings, metadata):
     floats = {"receiver_bias_tecu", "receiver_dcb_ns", "candidate_bias_tecu", "residual_scatter_tecu"}
     table = pa.table({key: pa.array([r[key] for r in rows], type=pa.float64() if key in floats else None) for key in rows[0]})
     table = table.replace_schema_metadata({b"ngo": json.dumps(metadata | dict(dcb=settings)).encode()})
-    pq.write_table(table, root / "receiver_bias.parquet", compression="zstd", compression_level=3)
+    replace_table(root / "receiver_bias.parquet", table)
     return rows
 
 
@@ -190,6 +193,10 @@ def read_stec(root, start_ns=None, end_ns=None):
     biases = pq.read_table(root / "receiver_bias.parquet")
     starts, ends, values = (biases[k].to_numpy() for k in ("start_gpst_ns", "end_gpst_ns", "receiver_bias_tecu"))
     window_ids = biases["window_id"].to_numpy()
+    bias_provisional = biases["provisional"].to_numpy()
+    arc_table = pq.read_table(root / "arcs.parquet", columns=["arc_id", "provisional"])
+    order = np.argsort(arc_table["arc_id"].to_numpy())
+    arc_provisional = arc_table["provisional"].to_numpy()[order].astype(bool)
     for batch in sample_batches(root, start_ns, end_ns):
         table = pa.Table.from_batches([batch])
         times = table["gpst_ns"].to_numpy()
@@ -207,6 +214,10 @@ def read_stec(root, start_ns=None, end_ns=None):
         bias = np.where(covered, values[np.maximum(0, indices)], np.nan)
         table = table.append_column("receiver_window_id", pa.array(window_ids[np.maximum(0, indices)], mask=~covered))
         level = leveled(table, ids, offsets)
+        arc_indices = np.searchsorted(ids, table["arc_id"].to_numpy())
+        table = table.append_column(
+            "provisional", pa.array(arc_provisional[arc_indices] | bias_provisional[np.maximum(0, indices)])
+        )
         for name, data in (
             ("stec_leveled_tecu", level),
             ("receiver_bias_tecu", bias),
@@ -216,27 +227,61 @@ def read_stec(root, start_ns=None, end_ns=None):
         yield table
 
 
+def antenna_position(setup):
+    """Marker ECEF plus local north/east/up ARP offset; no hidden zero offset."""
+    marker = setup.get("marker") or {}
+    antenna = setup["antenna"]
+    xyz, neu = marker.get("position_xyz_m"), antenna.get("arp_offset_neu_m")
+    if xyz is None or neu is None:
+        raise ValueError("Provide Setup marker XYZ and ARP NEU, or explicit position_ecef_m in STEC config")
+    xyz = np.array([xyz[k] for k in ("x", "y", "z")], dtype=float)
+    lon = np.arctan2(xyz[1], xyz[0])
+    lat = np.arctan2(xyz[2], np.hypot(*xyz[:2]) * (1 - 6.6943799901413165e-3))
+    for _ in range(10):
+        radius = 6378137 / np.sqrt(1 - 6.6943799901413165e-3 * np.sin(lat) ** 2)
+        lat = np.arctan2(xyz[2] + 6.6943799901413165e-3 * radius * np.sin(lat), np.hypot(*xyz[:2]))
+    north = np.array([-np.sin(lat) * np.cos(lon), -np.sin(lat) * np.sin(lon), np.cos(lat)])
+    east = np.array([-np.sin(lon), np.cos(lon), 0])
+    up = np.array([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
+    return (xyz + neu["north"] * north + neu["east"] * east + neu["up"] * up).tolist()
+
+
 @click.command()
-@protocol_option
-@click.option("--input-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
+@click.option(
+    "--input-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+    help="Initialized CommonNEX station with daily Observation Parquet.",
+)
 @click.option("--config", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
 @click.option("--output", type=click.Path(path_type=Path), required=True)
-@click.option("--start", help="Inclusive GPST calendar time.")
-@click.option("--end", help="Exclusive GPST calendar time.")
-@click.option("--overwrite", is_flag=True)
-@staged_output
-def cli(protocol, input_dir, config, output, start, end):
-    """Extract GPS phase-leveled STEC and estimate GIM-constrained receiver DCB."""
+@click.option("--start", help="Inclusive GPST date YYYY-MM-DD; keep unchanged on continuation.")
+@click.option("--end", help="Exclusive GPST date YYYY-MM-DD; may extend on later invocations.")
+@click.option("--rebuild", is_flag=True, help="Recompute the complete selection; preserve previous output as backup.")
+def cli(input_dir, config, output, start, end, rebuild):
+    """Incrementally process CommonNEX GPS observations; no raw protocol input."""
+    from datetime import date
+
     try:
+        if start is not None:
+            start = date.fromisoformat(start).isoformat()
+        if end is not None:
+            end = date.fromisoformat(end).isoformat()
+        if start and end and end <= start:
+            raise ValueError("End must follow start")
+        input_dir = input_dir.resolve()
+        setup, days = selection(input_dir, start, end)
         settings = tomllib.loads(config.read_text())
-        required = {"station", "position_ecef_m", "products_root"}
+        required = {"products_root"}
         if required - settings.keys():
             raise ValueError(f"Missing STEC settings: {sorted(required-settings.keys())}")
-        allowed = required | NATIVE_DEFAULTS.keys() | {"dcb", "margin_hours"}
+        allowed = required | NATIVE_DEFAULTS.keys() | {"station", "position_ecef_m", "dcb", "margin_hours"}
         if settings.keys() - allowed:
             raise ValueError(f"Unknown STEC settings: {sorted(settings.keys()-allowed)}")
         native = NATIVE_DEFAULTS | {k: v for k, v in settings.items() if k in NATIVE_DEFAULTS}
-        native["position_ecef_m"] = settings["position_ecef_m"]
+        native["position_ecef_m"] = settings.get("position_ecef_m")
+        if native["position_ecef_m"] is None:
+            native["position_ecef_m"] = antenna_position(setup)
         dcb = DCB_DEFAULTS | settings.get("dcb", {})
         if dcb.keys() - DCB_DEFAULTS.keys() or not all(np.isfinite(v) and v > 0 for v in dcb.values()):
             raise ValueError("Invalid receiver DCB settings")
@@ -248,21 +293,54 @@ def cli(protocol, input_dir, config, output, start, end):
         products_root = products_root.resolve()
         if not products_root.is_dir():
             raise ValueError("Missing local CDDIS product root")
-        if output.resolve().is_relative_to(products_root) or products_root.is_relative_to(output.resolve()):
-            raise ValueError("STEC output and product input must not contain each other")
-        paths = recordings(input_dir.resolve(), protocol, True)
-        start_ns, end_ns = time_ns(start), time_ns(end)
-        start_ns = 0 if start_ns is None else start_ns
-        end_ns = 2**63 - 1 if end_ns is None else end_ns
-        if end_ns <= start_ns:
-            raise ValueError("End must follow start")
-        reader = _native.ObservationReader(protocol)
+        for source in (input_dir, products_root, config.resolve()):
+            if output.resolve().is_relative_to(source) or source.is_relative_to(output.resolve()):
+                raise ValueError("STEC output must not contain or be inside an input")
+        contract = dict(
+            input_dir=str(input_dir),
+            setup=setup,
+            native=native,
+            dcb=dcb,
+            products_root=str(products_root),
+            margin_hours=settings.get("margin_hours", 6),
+            station=settings.get("station", setup["setup_id"]),
+            start=start,
+        )
+        old = None
+        if output.exists() and not rebuild:
+            state_path = output / "state.json"
+            if not state_path.is_file():
+                raise ValueError("Existing output has no CommonNEX STEC state; use --rebuild")
+            old = json.loads(state_path.read_text())
+            if old.get("version") != 1 or not old.get("lineage") or old["contract"] != contract:
+                raise ValueError("STEC configuration/Setup changed; use --rebuild with the complete selection")
+        selected = {str(p.relative_to(input_dir)): signature(p, input_dir) for _, obs, ev in days for p in [*obs, *ev]}
+        if old:
+            for name, entry in old["inputs"].items():
+                if selected.get(name) != entry:
+                    raise ValueError(f"Previously consumed CommonNEX part changed/revised/removed: {name}; use --rebuild")
+            if old["inputs"] == selected:
+                click.echo(json.dumps(dict(status="up-to-date")))
+                return
+        consumed = old["inputs"] if old else {}
+        todo = [
+            (
+                label,
+                [p for p in obs if str(p.relative_to(input_dir)) not in consumed],
+                [p for p in ev if str(p.relative_to(input_dir)) not in consumed],
+            )
+            for label, obs, ev in days
+        ]
+        for _, _, events in todo:
+            validate_events(events, setup["setup_id"])
         processor = _native.StecProcessor(native)
+        if old:
+            processor.restore(old["processor"])
         metadata = dict(
-            schema_version=1,
+            schema_version=2,
             time_scale="GPST",
             time_epoch="1980-01-06",
-            station=settings["station"],
+            station=settings.get("station", setup["setup_id"]),
             constellation="GPS",
             signal1=native["signal1"],
             signal2=native["signal2"],
@@ -293,86 +371,122 @@ def cli(protocol, input_dir, config, output, start, end):
                 "constant effective receiver bias per estimation window; no temperature model",
             ],
         )
-        output.mkdir()
-        samples = BufferedTables(DailyTables(output, "samples", metadata))
-        arcs = BufferedTables(ArcTable(output / "arcs.parquet", metadata))
-        try:
-            with tempfile.TemporaryDirectory(prefix="ngo-stec-products-") as scratch:
-                products = StecProducts(
-                    products_root, scratch, native["signal1"], native["signal2"], settings.get("margin_hours", 6)
-                )
-                done = False
-                warned_files, warned_issues = set(), 0
-                with tqdm(
-                    total=sum(p.stat().st_size for p in paths), desc="GPS STEC", unit="B", unit_scale=True, mininterval=1
-                ) as progress:
-                    for path in paths:
-                        warnings = ProtocolWarnings(path, protocol, reader.summary())
-                        with path.open("rb") as stream:
-                            while data := stream.read(1024 * 1024):
-                                batch = reader.feed(data)
-                                progress.update(len(data))
-                                warnings.update(reader.summary())
-                                reached_end = batch.size and batch.end_ns >= end_ns
-                                batch = batch.window(start_ns, end_ns)
-                                if batch.size:
-                                    selected = products.prepare(batch.start_ns, batch.end_ns)
-                                    if selected:
-                                        for name in sorted(products.missing - warned_files):
-                                            progress.write(
-                                                f"Warning: missing product {name}; affected fields will be unavailable.",
-                                                file=sys.stderr,
-                                            )
-                                        warned_files.update(products.missing)
-                                        processor.products(selected)
-                                    points, levels = processor.process(batch)
-                                    if len(points):
-                                        issues = int(np.bitwise_or.reduce(points["product_issues"]))
-                                        for bit, description in metadata["product_issues"].items():
-                                            if issues & int(bit) and not warned_issues & int(bit):
-                                                progress.write(
-                                                    f"Warning: {description} for some observations; preserving phase and continuing.",
-                                                    file=sys.stderr,
-                                                )
-                                        warned_issues |= issues
-                                    samples.append(points)
-                                    arcs.append(levels)
-                                if reached_end:
-                                    done = True
-                                    break
-                        warnings.update(reader.summary(), final=True)
-                        if done:
-                            break
-                if not done:
-                    reader.finish()
-                arcs.append(processor.finish())
-        finally:
-            samples.close()
-            arcs.close()
-        summary = processor.summary()
-        if not summary["samples"]:
-            raise ValueError("No usable GPS STEC samples")
-        fits = calibrate(output, dcb, metadata)
-        estimated = sum(r["status"] == "estimated" for r in fits)
-        summary.update(
-            status=(
-                ("partial_products" if any(summary["product_gaps"].values()) else "complete")
-                if estimated == len(fits)
-                else "partial_calibration"
-            ),
-            missing_product_files=sorted(products.missing),
-            reader=reader.summary(),
-            calibrated_windows=estimated,
-            windows=len(fits),
-            metadata=metadata,
-        )
-        write_json(output / "summary.json", summary)
-        if estimated != len(fits):
-            click.echo("Some windows lack a reliable receiver DCB; absolute STEC is unavailable there.", err=True)
+
+        metadata["input_format"] = "CommonNEX"
+        metadata["timestamp_conversion"] = "decimal GPST to integer ns, round-half-to-even; collisions rejected"
+        with publication(output, rebuild) as stage:
+            existing_arcs = pq.read_table(stage / "arcs.parquet") if old else None
+            closed = [existing_arcs.filter(pa.compute.equal(existing_arcs["provisional"], 0))] if old else []
+            # Only windows touched by new samples or previously open arcs need refitting.
+            dirty = min((t["start"] for t in old["processor"]["tracks"]), default=None) if old else None
+            samples = BufferedTables(DailySamples(stage, metadata))
+            reader = _native.StecCnexReader(setup["setup_id"], native["signal1"], native["signal2"])
+            new_sample_start = None
+            source_bytes = sum(p.stat().st_size for _, obs, _ in todo for p in obs)
+            missing = set(old.get("missing_products", [])) if old else set()
+            try:
+                with tempfile.TemporaryDirectory(prefix="ngo-stec-products-") as scratch:
+                    products = StecProducts(
+                        products_root, scratch, native["signal1"], native["signal2"], settings.get("margin_hours", 6)
+                    )
+                    with tqdm(total=source_bytes, desc="CommonNEX STEC", unit="B", unit_scale=True, mininterval=1) as progress:
+
+                        def process(batch):
+                            nonlocal new_sample_start
+                            if not batch.size:
+                                return
+                            selected_products = products.prepare(batch.start_ns, batch.end_ns)
+                            if selected_products is not None:
+                                for name in sorted(products.missing - missing):
+                                    progress.write(
+                                        f"Warning: missing product {name}; affected fields unavailable.", file=sys.stderr
+                                    )
+                                missing.update(products.missing)
+                                processor.products(selected_products)
+                            points, levels = processor.process(batch)
+                            if len(points):
+                                new_sample_start = int(points["gpst_ns"][0]) if new_sample_start is None else new_sample_start
+                                samples.append(points)
+                            if len(levels):
+                                closed.append(pa.table({n: levels[n] for n in levels.dtype.names}))
+
+                        for _, paths, _ in todo:
+                            for path in paths:
+                                for batch in observation_batches([path], setup["setup_id"]):
+                                    process(reader.feed(batch))
+                                progress.update(path.stat().st_size)
+                            # CommonNEX publishes complete measurement epochs; physical parts may split rows.
+                            process(reader.flush())
+            finally:
+                samples.close()
+            checkpoint = processor.checkpoint()
+            summary = processor.summary()
+            reader_stats = reader.summary()
+            for key in reader_stats:
+                reader_stats[key] += old.get("reader", {}).get(key, 0) if old else 0
+            if not summary["samples"]:
+                raise ValueError("No usable selected GPS dual-frequency STEC samples")
+            preview = processor.preview()
+            closed.append(pa.table({n: preview[n] for n in preview.dtype.names}))
+            arcs = pa.concat_tables([t.replace_schema_metadata(None) for t in closed]).sort_by("arc_id")
+            arcs = arcs.replace_schema_metadata({b"ngo": json.dumps(metadata).encode()})
+            replace_table(stage / "arcs.parquet", arcs)
+            origin = old["origin_ns"] if old else new_sample_start
+            candidates = [t for t in (dirty, new_sample_start) if t is not None]
+            from_ns = None
+            if old and candidates:
+                width = round(dcb["window_hours"] * 3600e9)
+                from_ns = origin + max(0, (min(candidates) - origin) // width) * width
+            previous_fits = pq.read_table(stage / "receiver_bias.parquet").to_pylist() if old else None
+            fits = calibrate(stage, dcb, metadata, from_ns, origin, previous_fits) if candidates or not old else previous_fits
+            generation = old["generation"] + 1 if old else 1
+            lineage = old["lineage"] if old else uuid.uuid4().hex
+            changed_from = from_ns if old else origin
+            day_generations = old.get("day_generations", {}).copy() if old else {}
+            for path in sorted((stage / "samples").glob("*.parquet")):
+                label = path.stem.removeprefix("GPST-")
+                if not old or (candidates and (date.fromisoformat(label) - EPOCH).days * DAY_NS + DAY_NS > changed_from):
+                    day_generations[label] = generation
+            estimated = sum(r["status"] == "estimated" for r in fits)
+            summary.update(
+                status=(
+                    "partial_calibration"
+                    if estimated != len(fits)
+                    else "partial_products" if any(summary["product_gaps"].values()) else "complete"
+                ),
+                calibrated_windows=estimated,
+                windows=len(fits),
+                metadata=metadata,
+                missing_product_files=sorted(missing),
+                reader=reader_stats,
+                generation=generation,
+                lineage=lineage,
+                day_generations=day_generations,
+                provisional_arcs=len(preview),
+                input_format="CommonNEX",
+            )
+            replace_json(stage / "summary.json", summary)
+            replace_json(
+                stage / "state.json",
+                dict(
+                    version=1,
+                    contract=contract,
+                    inputs=selected,
+                    processor=checkpoint,
+                    reader=reader_stats,
+                    origin_ns=origin,
+                    generation=generation,
+                    lineage=lineage,
+                    day_generations=day_generations,
+                    missing_products=sorted(missing),
+                ),
+            )
+            if any(signature(input_dir / name, input_dir) != entry for name, entry in selected.items()):
+                raise ValueError("CommonNEX inputs changed during processing; published output was not replaced")
         click.echo(
-            json.dumps({k: summary[k] for k in ("status", "samples", "arcs", "valid_arcs", "calibrated_windows", "windows")})
+            json.dumps({k: summary[k] for k in ("status", "samples", "arcs", "provisional_arcs", "calibrated_windows", "windows")})
         )
-    except (ValueError, RuntimeError, OSError, KeyError, TypeError) as error:
+    except (ValueError, RuntimeError, OSError, KeyError, TypeError, pa.ArrowException) as error:
         raise click.ClickException(str(error)) from error
 
 
