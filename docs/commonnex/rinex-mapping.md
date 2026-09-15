@@ -44,6 +44,29 @@ Legitimate untimed special events retain their meaning.
 
 ## Common semantics, not RINEX-only fields
 
+### Unsupported phase-shift declaration
+
+`SYS / PHASE SHIFT` is not supported as CommonNEX metadata or as an import
+correction mechanism. RINEX 4.02 section 5.2.12 and Table A2 mark this header
+strongly deprecated and instruct decoders/encoders to ignore it.
+
+For the project's RINEX 3.x/4.x import scope:
+
+- Ignore this header record and its continuation lines, including in header
+  updates. Do not create a `rinex_phase_shift` field, Event or correction state.
+- Preserve the exported carrier-phase observations; do not apply or undo a
+  phase shift based on this declaration.
+- Do not reject a file solely because the header is present or contains a
+  nonzero value. It describes shifts used when generating the observations,
+  not an instruction to shift them again. Its omission from CommonNEX is an
+  explicit limit of metadata preservation; the raw archive retains it.
+
+This exclusion does not remove carrier-phase signal conventions or the
+independent half-cycle/LLI fields. It is also separate from the rejection of
+applied receiver clock-offset correction below.
+
+### Supported interpretation
+
 Satellite/signal identity, C/N0,
 phase conventions, applied DCB/PCV metadata and station/receiver/antenna metadata
 retain common names. A field does not become RINEX-specific merely because

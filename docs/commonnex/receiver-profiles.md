@@ -82,8 +82,10 @@ Exact message IDs, time anchoring and sequence rules remain mapping review
 items; Core does not invent them.
 
 RINEX epochs use their declared time system and record structure. Decode header
-scale factors and applicable event metadata. RINEX 4.02's deprecated
-`SYS / PHASE SHIFT` does not instruct a decoder to apply another phase shift.
+scale factors and applicable event metadata. `SYS / PHASE SHIFT` is explicitly
+unsupported and ignored, not mapped to CommonNEX or applied/undone. Its presence
+alone does not reject a file; see the
+[phase-shift exclusion](rinex-mapping.md#unsupported-phase-shift-declaration).
 Only DBHZ S observables are supported. An explicitly different unit is an
 unsupported-unit error. Interpret an omitted unit header under the applicable
 version's rules, not by guessing from numerical magnitude. Inputs declaring
