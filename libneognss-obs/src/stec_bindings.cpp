@@ -6,7 +6,9 @@
 #include <pybind11/stl.h>
 namespace py = pybind11;
 using namespace neognss_obs;
-namespace {
+// pybind11/libc++ compares RTTI names: bound helpers need component-qualified
+// identities, not same-named anonymous-namespace types in separate TUs.
+namespace neognss_obs::python_bindings::stec {
 Json arg(py::handle x) {
     return Json::parse(
         py::module_::import("json").attr("dumps")(x).cast<std::string>());
@@ -31,8 +33,9 @@ auto lock(Processor &s) {
         throw std::runtime_error("Concurrent use of STEC state");
     return guard;
 }
-} // namespace
+} // namespace neognss_obs::python_bindings::stec
 void bind_stec(py::module_ &m) {
+    using namespace neognss_obs::python_bindings::stec;
     py::class_<StecCnexReader>(m, "StecCnexReader")
         .def(py::init<std::string, std::string, std::string>())
         .def("feed",

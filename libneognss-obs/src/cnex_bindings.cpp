@@ -17,7 +17,9 @@
 #include <vector>
 
 namespace py = pybind11;
-namespace {
+// pybind11/libc++ compares RTTI names: bound helpers need component-qualified
+// identities, not same-named anonymous-namespace types in separate TUs.
+namespace neognss_obs::python_bindings::cnex {
 using Tick = boost::int128::int128;
 constexpr int64_t ps = 1000000000000LL;
 void check(int result) {
@@ -1096,8 +1098,8 @@ struct Reader {
         auto raw = raw_bits();
         auto clock = measurement_clock();
         auto monitor = receiver_status();
-        auto estimates = ::estimates(false);
-        auto pulses = ::estimates(true);
+        auto estimates = neognss_obs::python_bindings::cnex::estimates(false);
+        auto pulses = neognss_obs::python_bindings::cnex::estimates(true);
         std::array batches{out, ev, raw, clock, monitor, estimates, pulses};
         for (size_t i = 0; i < batches.size(); ++i)
             Batch::reserve(batches[i]->array, capacity_hints[i]);
@@ -1329,8 +1331,9 @@ struct Reader {
         return d;
     }
 };
-} // namespace
+} // namespace neognss_obs::python_bindings::cnex
 void bind_cnex(py::module_ &m) {
+    using namespace neognss_obs::python_bindings::cnex;
     py::class_<Probe>(m, "CnexTimeProbe")
         .def(py::init<const std::string &>(), py::arg("protocol"))
         .def("feed",

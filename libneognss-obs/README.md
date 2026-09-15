@@ -33,6 +33,22 @@ No `--worker` or `--indexer` executable paths are used. The old internal
 executables are removed; the independent `neoubxlogger` application remains.
 For a C++-only root build, use `-DNEOGNSS_BUILD_BINDINGS=OFF`.
 
+Clang with an installed libc++/libc++abi can be verified in a separate build
+directory, from the repository root:
+
+```sh
+cmake -S . -B build/clang-libcxx \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_CXX_FLAGS=-stdlib=libc++ -DCMAKE_BUILD_TYPE=Release
+cmake --build build/clang-libcxx --parallel
+ctest --test-dir build/clang-libcxx --output-on-failure
+PYTHONPATH=build/clang-libcxx/libneognss-obs python -c 'import _native'
+```
+
+Use the Python environment selected at configuration time for the import check.
+The final import is necessary: a successfully linked extension can still fail
+while registering its C++ types. See [portability rules](../docs/native-architecture.md#c-toolchain-portability).
+
 ## Batch interface
 
 The experimental extension is `neognss_observatory._native`:

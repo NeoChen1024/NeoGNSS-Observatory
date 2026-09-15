@@ -96,7 +96,8 @@ void EpochAssembler::accept(
     const std::function<void()> &on_frame) {
     const auto p = frame.payload;
     const uint8_t cls = frame.id >> 8, id = frame.id & 255;
-    const auto pos = frame.offset, length = frame.wire.size();
+    const auto pos = frame.offset;
+    const auto length = frame.wire.size();
     const int64_t raw_nav_tow = cls == 1 ? nav_tow(id, p) : -1;
     const int64_t tow =
         raw_nav_tow >= 0 && raw_nav_tow <= week_ms ? raw_nav_tow % week_ms : -1;

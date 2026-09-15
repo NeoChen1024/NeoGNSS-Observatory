@@ -26,6 +26,30 @@ they do not invoke conversion executables or write a RINEX observation intermedi
 
 ## Batch and state semantics
 
+### C++ toolchain portability
+
+Binding helper types live in component-qualified namespaces under
+`neognss_obs::python_bindings` (core, cnex, ppp and stec). Do not replace these
+with same-named anonymous-namespace classes across translation units. Those
+are distinct C++ types, but pybind11's libc++ registration path compares RTTI
+names, which can collide for such helpers. Changing only the Python class name
+does not fix this. Public Python names remain independent of helper C++ names.
+
+Do not assume fixed-width integers share a typedef with `size_t` or `long`.
+Separate `auto` declarations when initializers have independently defined
+types; equal width does not imply identical C++ types on another platform.
+
+Verification must include loading the extension and exercising the Arrow C
+interface, not only linking it. Keep alternate standard-library builds and
+extension outputs separate. The existing codegen compilation check inherits
+CMake's C++ and executable-linker flags so its probe uses the same standard
+library as the generated parser archive.
+
+`#pragma once` is intentionally retained for the supported GCC/Clang toolchains;
+its non-ISO status alone is not a reason for a repository-wide header rewrite.
+
+### Processing state
+
 Python reads bounded chunks and writes output products. Native code performs
 framing, decoding and per-message state updates without calling Python for each
 raw frame. pybind11 releases the GIL during native processing and converts final

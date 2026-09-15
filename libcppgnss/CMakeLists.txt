@@ -93,6 +93,8 @@ if(BUILD_TESTING)
     add_test(NAME cppgnss.codegen COMMAND "${CMAKE_COMMAND}" -E env
         PYTHONDONTWRITEBYTECODE=1
         "CPPGNSS_CXX=${CMAKE_CXX_COMPILER}"
+        "CPPGNSS_CXX_FLAGS=${CMAKE_CXX_FLAGS}"
+        "CPPGNSS_LINK_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
         "CPPGNSS_GENERATED_INCLUDE=${generated_include}"
         "CPPGNSS_LIBRARY=$<TARGET_FILE:cppgnss>"
         "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_codegen.py)

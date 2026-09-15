@@ -2,6 +2,7 @@
 """Regression tests for the pyubx2 schema consumed by the C++ generator."""
 
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -139,6 +140,7 @@ int main() {
             subprocess.run(
                 [
                     os.environ["CPPGNSS_CXX"],
+                    *shlex.split(os.environ.get("CPPGNSS_CXX_FLAGS", "")),
                     "-std=c++20",
                     "-Wall",
                     "-Wextra",
@@ -149,6 +151,7 @@ int main() {
                     os.environ["CPPGNSS_GENERATED_INCLUDE"],
                     str(source),
                     os.environ["CPPGNSS_LIBRARY"],
+                    *shlex.split(os.environ.get("CPPGNSS_LINK_FLAGS", "")),
                     "-Wl,-rpath," + str(Path(os.environ["CPPGNSS_LIBRARY"]).parent),
                     "-o",
                     str(binary),

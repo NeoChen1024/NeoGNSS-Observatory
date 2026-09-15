@@ -5,7 +5,9 @@
 #include <pybind11/stl.h>
 namespace py = pybind11;
 using namespace neognss_obs;
-namespace {
+// pybind11/libc++ compares RTTI names: bound helpers need component-qualified
+// identities, not same-named anonymous-namespace types in separate TUs.
+namespace neognss_obs::python_bindings::ppp {
 Json json_arg(py::handle value) {
     return Json::parse(
         py::module_::import("json").attr("dumps")(value).cast<std::string>());
@@ -35,8 +37,9 @@ template <class T> auto lock(T &s) {
         throw std::runtime_error("Concurrent use of PPP processing state");
     return guard;
 }
-} // namespace
+} // namespace neognss_obs::python_bindings::ppp
 void bind_ppp(py::module_ &m) {
+    using namespace neognss_obs::python_bindings::ppp;
     PYBIND11_NUMPY_DTYPE(PppEpoch, gpst_ns, status, satellites, x, y, z, qxx,
                          qyy, qzz, qxy, qyz, qzx, east, north, up, sigma_e,
                          sigma_n, sigma_u, clock_ns, clock_sigma_ns, ztd_m,

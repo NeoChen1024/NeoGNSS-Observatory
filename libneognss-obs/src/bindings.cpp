@@ -13,7 +13,9 @@ void bind_ppp(py::module_ &);
 void bind_stec(py::module_ &);
 void bind_cnex(py::module_ &);
 using neognss_obs::Json;
-namespace {
+// pybind11/libc++ compares RTTI names: bound helpers need component-qualified
+// identities, not same-named anonymous-namespace types in separate TUs.
+namespace neognss_obs::python_bindings::core {
 py::object to_python(const Json &value) {
     if (value.is_null())
         return py::none();
@@ -168,8 +170,9 @@ struct RxMessageRatio {
                 {"foreign_bytes", reader.skipped_protocol_bytes}};
     }
 };
-} // namespace
+} // namespace neognss_obs::python_bindings::core
 PYBIND11_MODULE(_native, m) {
+    using namespace neognss_obs::python_bindings::core;
     bind_ppp(m);
     bind_stec(m);
     bind_cnex(m);
