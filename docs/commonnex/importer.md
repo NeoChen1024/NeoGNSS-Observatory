@@ -22,7 +22,8 @@ as a lossless replacement for raw archives.
   buffered until matching EndOfMeas; a different epoch before closure is counted
   as incomplete and the previous pending group is omitted. File/chunk boundaries
   do not reset framing or the pending group.
-- Python writes GPST-day `observations`, `raw-bits`, `events` and `measurement-clock` catalogs with
+- Python writes `observations`, `raw-bits`, `events`, `measurement-clock`,
+  `receiver-status`, `receiver-clock` and `pulse-timing` catalogs with
   Zstandard level 3 compression. Dictionary encoding is enabled only for
   string/binary columns, including nested fields; numeric, boolean and decimal
   columns do not use dictionaries. This is lossless physical encoding, not a
@@ -58,19 +59,32 @@ receiver checks remain separate. Failed-check bodies are retained; downstream
 acceptance is not stored as a canonical property. RawBits-only input is supported.
 UBX uses NAV-TIMEGPS independently of EOE and RAWX time. SBF uses synchronous
 receiver navigation TOW/WNc, not SIS headers. Both use a 10-period anchor timeout
-and 4 MiB FIFO backlog as specified in the
-[association policy](raw-bits-importer.md#anchor-timeout-and-bounded-backlog).
+with nullable GPST and uptime association as specified in the
+[association policy](telemetry-time.md). No time-waiting backlog is retained.
 No whole-epoch completion is inferred from a single raw block.
 No transmission-time or observation-time equivalence is asserted.
+
+Status import retains float32 Celsius, receiver uptime and fine-time state.
+Clock and pulse estimates use the [auxiliary field mappings](auxiliary.md).
+Receiver restart Events retain uptime-decrease or fresh-pair offset-jump
+inference; nullable GPST never suppresses these records. The native batch order
+is observations, events, raw-bits, measurement-clock, receiver-status,
+receiver-clock, pulse-timing. `_archive_day` is Python routing only and is
+removed before storage. TIM-TP target-time conversion currently covers locked
+GPST-based pulses; other references retain flags and error with null target time.
 
 The fourth `measurement-clock` batch/catalog preserves RAWX adjustment flags
 and MeasEpoch revision 1 cumulative clock counters without inference or correction.
 SBF Type1/Type2 smoothing state is retained in `receiver_corrections` independently
 of MeasExtra amounts; UBX uses null for unavailable smoothing state.
 
-Not yet implemented: undefined future RawBits representations, DecodedNav, other telemetry,
-cadence/reset events,
+Not yet implemented: undefined future RawBits representations, DecodedNav,
+cadence events,
 Meas3 decoding, RINEX/RTCM3 input, and automatic overlap reconciliation.
+
+STEC's current Events validator still rejects receiver-restart events until an
+explicit arc-boundary mapping is implemented; do not silently remove these
+events to bypass that scientific limitation. SBAS grid skips null-time RawBits.
 Observation values are not corrected using NAV-CLOCK or
 SBF navigation solutions. The CLI reports its restricted catalog coverage.
 
@@ -191,16 +205,16 @@ integer seconds/picoseconds, with the same native conversion as import.
 
 Stable-sort by that timestamp, preserving caller order for ties. Print the
 resulting order and anchor kind on stderr. If a file has no usable anchor in
-the window, fail before staging any output; never guess from its filename or
-silently expand the probe into a full scan. A tiny fragment-only file may need
-to be reassembled before importing.
+the window, warn and preserve supplied input order for the entire import.
+Do not guess from filenames or expand the probe into a full scan. The caller
+must supply continuous, nonoverlapping input order when it cannot be inferred.
 
 Formal import starts each sorted file at byte zero and carries framing/epoch
 state across files. Probe state is discarded. Native checks compare observation
 epochs separately from receiver navigation time. UBX uses TIMEGPS; SBF uses
 PVTCartesian, PVTGeodetic, ReceiverTime and EndOfPVT. RawBits receives a nonexpired
-navigation context or is buffered until a usable anchor, never its source SIS timestamp.
-Invalid anchors disable the previous context but retain backlog. The canonical body
+navigation context or null, never its source SIS timestamp.
+Invalid anchors disable the previous context; untimed RawBits is still emitted. The canonical body
 is unchanged. Observation time does not substitute for navigation context.
 Their shared high-water mark is used only to age navigation anchors; never
 interpret cross-axis differences as observation reversals. A strict
@@ -225,10 +239,11 @@ tail replay. No SIS timestamp affects the directory or cursor location.
 The importer rejects the old flat-date directory layout and incompatible
 continuation cursors. Initialize a new station for these experimental products;
 it does not rename or relabel previously generated SIS-timed data.
-It also stores bounded UBX/SBF RawBits backlog, last anchor, timeout high-water
-mark, independent UBX completion context, required period and a replay skip
-offset, so observation-tail replay does not duplicate published RawBits.
-State version 3 rejects older association-policy cursors and period changes.
+It also stores the last anchor, receiver uptime, fresh paired offset, archive
+day, timeout high-water mark, independent UBX completion context, required
+period and replay skip offset. Replay does not duplicate RawBits or telemetry.
+State version 3 additionally requires receiver-time policy 2; older association
+cursors and period changes are rejected. Rebuild old experimental imports.
 It is not a science catalog or general recovery manifest.
 Raw context files must remain available and unchanged; the basic size check does
 not detect every possible same-size alteration. No pending tail means no raw
@@ -293,7 +308,10 @@ transaction or full crash recovery is promised. Old revisions are retained.
 - [x] Local raw-tail continuation with immutable parts and explicit rebuilding.
 - [x] MeasExtra uncertainty, C/N0, lock/continuity and preprocessing corrections.
 - [x] RAWX clock flags, SBF cumulative clock counters and independent smoothing state.
-- [x] Expiring navigation anchors, bounded backlog and continuation across invocations.
+- [x] Expiring navigation anchors, nullable RawBits time and receiver-time continuation.
+- [x] ReceiverStatus, ReceiverClock and PulseTiming Arrow/Parquet catalogs.
+- [x] Uptime and fresh GPST/uptime restart evidence in Events.
+- [x] Convert the receiver-clock analysis CLI to consume these CommonNEX catalogs.
 - [x] UBX navigation completion independent of RawBits output.
 - [ ] Cadence and restart Events.
 - [x] Reviewed RawBits layouts and independent navigation-time association;

@@ -65,7 +65,8 @@ this metadata at directory initialization, not with each daily recording.
 
 Measurement epochs and navigation epochs are distinct time contexts, not
 required record tables. Observation stores its own `gpst`; RawBits stores
-`nav_epoch_gpst`. Both are non-null `GpstTimestamp` values backed by
+`nav_epoch_gpst`. Observation time is non-null; RawBits time is nullable.
+Both use `GpstTimestamp` backed by
 `DECIMAL(38,12)` seconds. RAWX/Measurements measurement time must not be
 overwritten with navigation context. No one-to-one or equal-time relationship
 is required between the two.
@@ -81,8 +82,10 @@ Measurement-clock evidence belongs to [Auxiliary](auxiliary.md). Consumers load 
 context, possibly from preceding days, without per-row event references.
 Observation quality remains signal-local. Events are not epoch lookup tables.
 
-After bounded association attempts, skip untimeable Observation/RawBits and
-report counts; preserve raw archives. RawBits-only sources need no observations.
+Skip untimeable Observation and report counts; preserve raw archives.
+RawBits with unknown time is retained with null GPST under the
+[receiver time association policy](telemetry-time.md).
+RawBits-only sources need no observations.
 Legitimate untimed RINEX special events retain separate mapping semantics.
 Completion closes the relevant producer epoch, not a promise of every signal
 being received. Navigation completion does not close measurements or future
@@ -292,20 +295,19 @@ without `?` has `nullable: false`. Enum wire encodings remain unspecified.
 For example, this is an illustrative schema declaration, not a wire format:
 
 ```yaml
-name: receiver_temperature_mdeg_c
-data_type: int32
+name: receiver_temperature_c
+data_type: float32
 nullable: true
 semantics: receiver_temperature
 unit: degC
 scale:
   numerator: 1
-  denominator: 1000
+  denominator: 1
 constraints:
   minimum: -273.15
 ```
 
-The minimum in this example is expressed in physical degrees Celsius, not
-integer milli-degrees.
+The minimum in this example is expressed in degrees Celsius.
 
 ### Integer-first numerical representation
 

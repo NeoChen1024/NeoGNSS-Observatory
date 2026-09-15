@@ -27,7 +27,9 @@ Timescale normalization does not remove receiver clock error. CommonNEX excludes
 inputs with applied observation clock-offset correction and never undoes one;
 internal receiver clock jumps remain native evidence, not a reason to reject RAWX.
 
-RawBits uses the [bounded anchor policy](commonnex/raw-bits-importer.md#anchor-timeout-and-bounded-backlog).
+RawBits and telemetry use the [receiver-time policy](commonnex/telemetry-time.md).
+Unknown GPST remains null. Untimed rows retain the last known archive day, or
+1980/01/06 before any known date; directory placement is not an assigned timestamp.
 Measurement time can advance its timeout high-water mark but cannot become a
 RawBits timestamp. Arrival ordering, navigation association and measurement time
 are distinct. No live wall clock or offline processing speed changes that policy.

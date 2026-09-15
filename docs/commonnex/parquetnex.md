@@ -11,6 +11,15 @@ adapter path. See the [pipeline and modes](overview.md#processing-pipeline).
 
 ## Observatory implementation mapping
 
+RawBits and receiver telemetry permit null GPST. Untimed rows remain in arrival
+order in the last known GPST day, or `1980/01/06/` before any date is known;
+that placement does not assert an actual timestamp. No retrospective move or
+time backfill is required. See [receiver-time association](telemetry-time.md).
+Native batches carry an internal `_archive_day` routing column so a later
+anchor in the same batch cannot misdate earlier untimed rows. Python removes
+this implementation column before Parquet storage. Append via new parts, not
+by modifying a closed Parquet file.
+
 Use PyArrow RecordBatches backed by the native Arrow-compatible buffers for
 writing, and pass batches read from Parquet back through the same native import
 interface. Do not route bulk values through JSON, lists of dictionaries or
@@ -78,10 +87,10 @@ The [Events family](events.md) uses daily part files when
 present, not a global file. Interval events are assigned to the next available
 epoch's GPST day and carry previous timestamps directly. Event absence is
 interpreted with import capability/coverage, not as unconditional continuity.
-RawBits-only revisions omit observation files entirely; they retain required
-navigation times directly on RawBits and applicable Events. Do not create empty observation tables as a
-conformance prerequisite. Only validly timed Observation/RawBits is persisted;
-there is no unassociated scope or unknown-time reader branch.
+RawBits-only revisions omit observation files entirely; they retain nullable
+navigation times directly on RawBits and applicable Events. Do not create empty
+observation tables as a conformance prerequisite. Observation requires valid
+measurement time; RawBits/telemetry with null GPST remains readable in arrival order.
 One directory represents one logical station with one receiver/antenna. There
 is no additional Stream subdirectory or Stream metadata file. Records and Parquet metadata
 carry the parent `setup_id`; native source-antenna selection is an import option

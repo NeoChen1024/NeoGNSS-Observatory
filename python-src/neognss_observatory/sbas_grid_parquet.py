@@ -166,7 +166,7 @@ def build_grid(input_dir, output, gap_timeout=50):
                     for row in batch.to_pylist():
                         if row["setup_id"] != metadata["setup_id"]:
                             raise ValueError(f"Mixed Setup identity: {path}")
-                        if not start <= row[time_field] < start + 86400:
+                        if row[time_field] is not None and not start <= row[time_field] < start + 86400:
                             raise ValueError(f"Record outside its GPST day: {path}")
                         yield row
 
@@ -184,6 +184,8 @@ def build_grid(input_dir, output, gap_timeout=50):
         times = iter(sorted(set(times)))
         context = next(times, None)
         for row in rows(day, "raw-bits"):
+            if row["nav_epoch_gpst"] is None:
+                continue
             time = int(row["nav_epoch_gpst"] * Decimal(1000))
             if previous_raw is not None and time < previous_raw:
                 raise ValueError("Reversed SBAS occurrence time; select non-overlapping inputs")

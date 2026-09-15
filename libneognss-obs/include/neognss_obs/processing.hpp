@@ -37,22 +37,6 @@ class SubframeProcessor {
     std::map<std::string, uint64_t> statuses_, types_;
     uint64_t malformed_ = 0;
 };
-class ClockProcessor {
-  public:
-    ClockProcessor(double max_gap = 50, double tolerance = 50000,
-                   double temperature_max_age = 5,
-                   const std::string &protocol = "ubx");
-    ~ClockProcessor();
-    Json feed(std::span<const uint8_t>, const std::string &source);
-    // Only close framing at a file boundary. Buffered epoch/state survive.
-    Json end_file();
-    Json finish();
-    Json summary() const;
-
-  private:
-    struct State;
-    std::unique_ptr<State> state_;
-};
 class GridProcessor {
   public:
     GridProcessor(double correction_age = 600, double mask_age = 1200,

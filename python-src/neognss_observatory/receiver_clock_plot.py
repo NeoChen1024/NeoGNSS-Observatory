@@ -125,7 +125,7 @@ def prepare(source, output, max_gap):
         for batch in parquet.iter_batches(batch_size=131072, columns=COLUMNS):
             values = {name: batch.column(name).to_numpy(zero_copy_only=False) for name in COLUMNS if name != "gpst_ns"}
             timestamps = batch.column("gpst_ns").fill_null(-1).to_numpy(zero_copy_only=False)
-            good = timestamps >= 0
+            good = (timestamps >= 0) & np.isfinite(values["clock_arc_id"]) & np.isfinite(values["clock_bias_unwrapped_ns"])
             skipped += int(np.count_nonzero(~good))
             t = timestamps[good]
             values = {k: v[good] for k, v in values.items()}

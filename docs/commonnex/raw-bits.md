@@ -96,7 +96,9 @@ as unmodified transmitted data bits.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `setup_id` | `string` | Acquisition stream |
-| `nav_epoch_gpst` | `GpstTimestamp` | Required associated navigation-context time, directly stored as DECIMAL(38,12) GPST seconds |
+| `nav_epoch_gpst` | `GpstTimestamp?` | Associated navigation-context time in DECIMAL(38,12) GPST seconds; null without a usable anchor |
+| `receiver_uptime_s` | `Duration?` | Available freshly associated receiver uptime |
+| `uptime_basis` | enum? | ASSOCIATED, or null without uptime |
 | `satellite_system`, `satellite_number` | `string`, `uint16` | Required normalized identity of the broadcasting satellite |
 | `bitstream_source` | `list<string>` | Common signal identifiers for known contributing broadcast signals; empty if unknown |
 | `signal_composition` | enum | `single`, `combined`, or `unknown`; does not imply an ordering of contributing signals |
@@ -224,9 +226,9 @@ combination flags, rather than masking it down to a nominal signal index.
 Keep `CRCSF2` and `CRCSF3` as separate scoped results. Preserve applicable
 `ViterbiCnt` in the `sbf` diagnostics namespace; not-applicable fields become
 absent, not measurements of zero errors. Resolve the containing navigation epoch using an explicit adapter rule.
-Use the last valid nonexpired receiver navigation epoch, or the next usable
-anchor after bounded backlog buffering, according to the
-[importer association policy](raw-bits-importer.md#anchor-timeout-and-bounded-backlog).
+Use the last valid nonexpired receiver navigation epoch, otherwise null,
+according to the [receiver time association policy](telemetry-time.md).
+Untimed records remain in arrival order and are not backfilled on recovery.
 Do not use native SIS timestamps as anchors or fallbacks, and do not persist them
 as a second RawBits time axis. Reconstructing complete SIS time from one canonical
 body is not guaranteed. Observation timestamps remain independent; they may

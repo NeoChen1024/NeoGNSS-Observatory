@@ -28,15 +28,14 @@ Absence of Observation is valid for RawBits-only import and is not a QA failure.
 
 ## One-pass extraction contract
 
-Formal Observation/RawBits output requires valid GPST epoch association. Allow
-bounded buffering for later anchors; once the limit is reached or input is
-finalized, skip and count records still lacking usable time. Retain the original
-archive, not an unassociated Parquet dataset or an automatic repair queue.
-Report time-association exclusions separately from malformed frames and missing
-observables. Usable records continue through import. Do not fabricate dates,
-snap timestamps or reuse stale anchors merely to avoid an exclusion.
+Observation requires valid measurement GPST; omit and count observations with
+unusable time. Complete RawBits and receiver telemetry remain available with
+null GPST and any available receiver uptime, without time-waiting buffering or
+automatic repair. Follow the [receiver-time policy](telemetry-time.md) for
+freshness, restart boundaries and archive placement. No timestamp is fabricated
+from the directory date, and missing time does not alter canonical bits.
 
-This rule concerns scientific observation/navigation records. RINEX special
+This rule distinguishes measurement records from receiver-associated records. RINEX special
 events whose epoch is not meaningful may legitimately omit time; preserve their
 event semantics and source ordering in the event/source mapping. They are not
 unknown-time observations. Cross-source occurrence ambiguity between already

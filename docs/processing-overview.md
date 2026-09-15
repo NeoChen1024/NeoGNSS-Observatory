@@ -29,7 +29,7 @@ extraction state. See [dataset QA](dataset-qa.md) and [dataset notes](dataset-no
 | Input | Processing | Products |
 | --- | --- | --- |
 | UBX or SBF | `ngo-cnex-import` → `ngo-sbas-grid-parquet` → `ngo-sbas-grid-plot` | ParquetNEX SBAS RawBits/Events and daily IGP intervals; hourly VTEC maps |
-| UBX NAV-CLOCK/MON-SYS/TIM-TP or SBF PVTGeodetic/ReceiverStatus/MeasEpoch/xPPSOffset | `ngo-receiver-clock` → `ngo-receiver-clock-plot` | Clock and PPS Parquet, events, telemetry and plots |
+| CommonNEX receiver-clock, measurement-clock, receiver-status, pulse-timing and restart Events | `ngo-receiver-clock` → `ngo-receiver-clock-plot` | Derived clock/status/PPS Parquet and plots |
 | Existing clock Parquet | `ngo-receiver-clock-reunwrap` | Recomputed clock arcs and bias corrections |
 | UBX | RTKLIB-EX `neognss_convbin` | RINEX OBS/NAV supported by the pinned converter |
 | SBF | `ngo-sbf-rinex` with installed RxTools | Native-rate RINEX and applicable auxiliary outputs |

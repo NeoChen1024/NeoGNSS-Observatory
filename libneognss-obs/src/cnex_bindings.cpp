@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "receiver_time.hpp"
 #include <bit>
 #include <boost/int128/int128.hpp>
 #include <cppgnss/measurements.hpp>
 #include <cppgnss/raw_bits.hpp>
 #include <cppgnss/sbf.hpp>
 #include <cppgnss/ubx_subframe.hpp>
-#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -14,6 +14,7 @@
 #include <pybind11/stl.h>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 namespace py = pybind11;
 namespace {
@@ -99,7 +100,9 @@ struct Probe {
                     observation = time_of(*e);
                 if (!navigation) {
                     if (auto ms = timegps(f))
-                        navigation = Tick(*ms) * 1000000000;
+                        navigation =
+                            Tick(*ms) * 1000000000 +
+                            Tick(UBX::read_le<int32_t>(f.payload, 4)) * 1000;
                     else if (f.protocol == cppgnss::Protocol::sbf) {
                         if (auto ms = sbf_navigation_time(f))
                             navigation = Tick(*ms) * 1000000000;
@@ -391,22 +394,25 @@ void append_epoch(Batch &b, std::span<const cppgnss::Measurement *const> rows,
 }
 std::shared_ptr<Batch> events() {
     auto b = std::make_shared<Batch>();
-    check(ArrowSchemaSetTypeStruct(&b->schema, 8));
+    check(ArrowSchemaSetTypeStruct(&b->schema, 10));
     auto c = b->schema.children;
     field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
     field(c[1], "kind", NANOARROW_TYPE_STRING, false);
     field(c[2], "scope", NANOARROW_TYPE_STRING, false);
-    decfield(c[3], "gpst");
+    decfield(c[3], "gpst", true);
     field(c[4], "applicability", NANOARROW_TYPE_STRING, false);
     decfield(c[5], "end_gpst", true);
     field(c[6], "evidence", NANOARROW_TYPE_STRING, false);
-    check(ArrowSchemaSetTypeStruct(c[7], 1));
+    check(ArrowSchemaSetTypeStruct(c[7], 2));
     check(ArrowSchemaSetName(c[7], "payload"));
     auto q = c[7]->children[0];
     check(ArrowSchemaSetTypeStruct(q, 2));
     check(ArrowSchemaSetName(q, "epoch_completion"));
     field(q->children[0], "completion", NANOARROW_TYPE_STRING, false);
     field(q->children[1], "completion_basis", NANOARROW_TYPE_STRING, false);
+    field(c[7]->children[1], "restart_reason", NANOARROW_TYPE_STRING);
+    decfield(c[8], "receiver_uptime_s", true);
+    field(c[9], "_archive_day", NANOARROW_TYPE_INT64, false);
     b->init();
     return b;
 }
@@ -424,15 +430,18 @@ void complete(Batch &b, Tick t, const std::string &id, bool rawx,
     str(q->children[0], "COMPLETE");
     str(q->children[1], rawx ? "RECORD_STRUCTURE" : "PROTOCOL_BOUNDARY");
     check(ArrowArrayFinishElement(q));
+    check(ArrowArrayAppendNull(c[7]->children[1], 1));
     check(ArrowArrayFinishElement(c[7]));
+    check(ArrowArrayAppendNull(c[8], 1));
+    integer(c[9], int64_t(t / ps / 86400));
     check(ArrowArrayFinishElement(&b.array));
 }
 std::shared_ptr<Batch> raw_bits() {
     auto b = std::make_shared<Batch>();
-    check(ArrowSchemaSetTypeStruct(&b->schema, 16));
+    check(ArrowSchemaSetTypeStruct(&b->schema, 19));
     auto c = b->schema.children;
     field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
-    decfield(c[1], "nav_epoch_gpst");
+    decfield(c[1], "nav_epoch_gpst", true);
     field(c[2], "satellite_system", NANOARROW_TYPE_STRING, false);
     field(c[3], "satellite_number", NANOARROW_TYPE_UINT16, false);
     field(c[4], "bitstream_source", NANOARROW_TYPE_LIST, false);
@@ -460,14 +469,21 @@ std::shared_ptr<Batch> raw_bits() {
     check(ArrowSchemaSetName(c[15], "source_diagnostics"));
     field(c[15]->children[0], "sbf_viterbi_count", NANOARROW_TYPE_UINT8);
     field(c[15]->children[1], "sbf_rs_corrected_symbols", NANOARROW_TYPE_UINT8);
+    decfield(c[16], "receiver_uptime_s", true);
+    field(c[17], "uptime_basis", NANOARROW_TYPE_STRING);
+    field(c[18], "_archive_day", NANOARROW_TYPE_INT64, false);
     b->init();
     return b;
 }
-void append_bits(Batch &b, Tick t, const std::string &setup_id,
-                 const cppgnss::RawBits &bits) {
+void append_bits(Batch &b, std::optional<Tick> t, const std::string &setup_id,
+                 const cppgnss::RawBits &bits,
+                 const neognss_obs::ReceiverTime &timeline) {
     auto c = b.array.children;
     str(c[0], setup_id);
-    decimal(c[1], t);
+    if (t)
+        decimal(c[1], *t);
+    else
+        check(ArrowArrayAppendNull(c[1], 1));
     str(c[2], bits.system);
     integer(c[3], bits.satellite);
     for (const auto &signal : bits.signals)
@@ -510,6 +526,14 @@ void append_bits(Batch &b, Tick t, const std::string &setup_id,
     optional_integer(c[15]->children[0], bits.viterbi_count);
     optional_integer(c[15]->children[1], bits.rs_corrected_symbols);
     check(ArrowArrayFinishElement(c[15]));
+    if (auto uptime = timeline.associated_uptime()) {
+        decimal(c[16], *uptime);
+        str(c[17], "ASSOCIATED");
+    } else {
+        check(ArrowArrayAppendNull(c[16], 1));
+        check(ArrowArrayAppendNull(c[17], 1));
+    }
+    integer(c[18], t ? int64_t(*t / ps / 86400) : timeline.archive_day);
     check(ArrowArrayFinishElement(&b.array));
 }
 std::shared_ptr<Batch> measurement_clock() {
@@ -519,7 +543,7 @@ std::shared_ptr<Batch> measurement_clock() {
     field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
     decfield(c[1], "gpst");
     field(c[2], "adjustment_reported", NANOARROW_TYPE_BOOL);
-    field(c[3], "cumulative_adjustment_ms_mod256", NANOARROW_TYPE_UINT8);
+    field(c[3], "cumulative_adjustment_ms", NANOARROW_TYPE_UINT64);
     b->init();
     return b;
 }
@@ -540,6 +564,83 @@ void append_clock(Batch &b, const cppgnss::Measurements &e, Tick t,
     else
         check(ArrowArrayAppendNull(c[3], 1));
     check(ArrowArrayFinishElement(&b.array));
+}
+std::shared_ptr<Batch> receiver_status() {
+    auto b = std::make_shared<Batch>();
+    check(ArrowSchemaSetTypeStruct(&b->schema, 9));
+    auto c = b->schema.children;
+    field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
+    decfield(c[1], "gpst", true);
+    decfield(c[2], "receiver_uptime_s", true);
+    field(c[3], "time_basis", NANOARROW_TYPE_STRING, false);
+    field(c[4], "uptime_basis", NANOARROW_TYPE_STRING);
+    field(c[5], "source_message", NANOARROW_TYPE_STRING, false);
+    field(c[6], "receiver_temperature_c", NANOARROW_TYPE_FLOAT);
+    field(c[7], "fine_time", NANOARROW_TYPE_BOOL);
+    field(c[8], "_archive_day", NANOARROW_TYPE_INT64, false);
+    b->init();
+    return b;
+}
+std::optional<Tick> scaled(double value, int64_t scale) {
+    if (!std::isfinite(value) || value == -2e10)
+        return {};
+    auto bits = std::bit_cast<uint64_t>(value);
+    bool negative = bits >> 63;
+    int exponent = int((bits >> 52) & 2047);
+    uint64_t mantissa = bits & ((uint64_t(1) << 52) - 1);
+    if (exponent)
+        mantissa |= uint64_t(1) << 52;
+    int shift = (exponent ? exponent - 1023 : -1022) - 52;
+    Tick n = Tick(mantissa) * scale, result = 0;
+    if (shift >= 0) {
+        if (shift >= 63 || n > (Tick(1) << (126 - shift)))
+            throw std::runtime_error("Telemetry numeric range exceeded");
+        result = n << shift;
+    } else if (-shift < 127) {
+        int k = -shift;
+        result = n >> k;
+        Tick remainder = n - (result << k), half = Tick(1) << (k - 1);
+        if (remainder > half || (remainder == half && (result & 1) != 0))
+            ++result;
+    }
+    return negative ? -result : result;
+}
+void optional_decimal(ArrowArray *a, std::optional<Tick> t) {
+    if (t)
+        decimal(a, *t);
+    else
+        check(ArrowArrayAppendNull(a, 1));
+}
+std::shared_ptr<Batch> estimates(bool pulse) {
+    auto b = std::make_shared<Batch>();
+    check(ArrowSchemaSetTypeStruct(&b->schema, pulse ? 16 : 12));
+    auto c = b->schema.children;
+    field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
+    decfield(c[1], "gpst", true);
+    decfield(c[2], "receiver_uptime_s", true);
+    field(c[3], "time_basis", NANOARROW_TYPE_STRING, false);
+    field(c[4], "uptime_basis", NANOARROW_TYPE_STRING);
+    field(c[5], "source_message", NANOARROW_TYPE_STRING, false);
+    field(c[6], "reference_time_scale", NANOARROW_TYPE_STRING, false);
+    if (pulse) {
+        decfield(c[7], "pulse_quantization_error_s", true);
+        field(c[8], "quantization_error_valid", NANOARROW_TYPE_BOOL);
+        field(c[9], "locked", NANOARROW_TYPE_BOOL);
+        field(c[10], "raim_status", NANOARROW_TYPE_STRING);
+        field(c[11], "utc_standard", NANOARROW_TYPE_UINT8);
+        decfield(c[12], "sync_age_s", true);
+        field(c[13], "sync_age_saturated", NANOARROW_TYPE_BOOL);
+        field(c[14], "_archive_day", NANOARROW_TYPE_INT64, false);
+        field(c[15], "utc_available", NANOARROW_TYPE_BOOL);
+    } else {
+        decfield(c[7], "clock_bias_s", true);
+        field(c[8], "clock_frequency_offset", NANOARROW_TYPE_INT64);
+        decfield(c[9], "time_accuracy_s", true);
+        field(c[10], "frequency_accuracy", NANOARROW_TYPE_UINT64);
+        field(c[11], "_archive_day", NANOARROW_TYPE_INT64, false);
+    }
+    b->init();
+    return b;
 }
 struct Reader {
     cppgnss::StreamDecoder decoder;
@@ -583,44 +684,270 @@ struct Reader {
     uint64_t extra_blocks = 0, extra_matched = 0, extra_unmatched = 0,
              extra_ambiguous = 0, extra_excluded = 0, extra_unsupported = 0;
     std::optional<int64_t> nav_ms;
-    std::deque<cppgnss::RawBits> nav_bits;
-    static constexpr size_t backlog_limit = 4 * 1024 * 1024;
-    size_t backlog_bytes = 0;
-    uint64_t backlog_dropped = 0, backlog_dropped_bytes = 0;
-    Tick timeout_ps;
-    std::optional<Tick> progress_time;
+    neognss_obs::ReceiverTime timeline;
+    uint64_t restarts = 0;
+    bool new_navigation = false;
     std::map<std::string, uint64_t> raw_families;
     std::map<std::string, uint64_t> raw_checks, raw_skipped;
     std::string check_key;
-    std::array<Batch::Capacity, 4> capacity_hints;
+    std::array<Batch::Capacity, 7> capacity_hints;
     std::vector<const cppgnss::Measurement *> selected_rows;
     bool nav_conflict = false;
     std::optional<int64_t> closure_ms;
     uint64_t nav_skip_before = 0, raw_count = 0, raw_untimed = 0,
              raw_unsupported = 0;
-    static size_t retained_bytes(const cppgnss::RawBits &b) {
-        // Stable byte accounting across checkpoint reconstruction (not
-        // allocator capacity).
-        size_t n = sizeof(b) + b.body.size() + b.system.size() +
-                   b.family.size() + b.format.size() + b.unit.size() +
-                   b.content.size();
-        n += b.signals.size() * sizeof(std::string);
-        for (const auto &s : b.signals)
-            n += s.size();
-        n += b.checks.size() * sizeof(cppgnss::RawBitsCheck);
-        for (const auto &c : b.checks)
-            n += c.origin.size() + c.kind.size() + c.scope.size() +
-                 c.result.size() + c.evidence.size() + c.source_field.size();
-        return n;
+    void estimates_frame(const cppgnss::FrameView &f, Batch &clocks,
+                         Batch &pulses) {
+        if (f.offset < nav_skip_before)
+            return;
+        const bool ubx = f.protocol == cppgnss::Protocol::ubx;
+        const bool pulse = ubx ? f.id == 0x0d01 : f.id == 5911;
+        const bool clock =
+            ubx ? f.id == 0x0122 : (f.id == 4006 || f.id == 4007);
+        if (!pulse && !clock)
+            return;
+        const auto p = f.payload;
+        if (ubx && p.size() != (pulse ? 16 : 20))
+            return;
+        cppgnss::SBF::Block block;
+        if (!ubx) {
+            block = cppgnss::SBF::decode(f.id, f.revision, p);
+            if (block.status != cppgnss::SBF::Status::decoded)
+                return;
+        }
+        auto value = [&](const char *name) {
+            return std::visit(
+                [](const auto &v) -> double {
+                    if constexpr (std::is_arithmetic_v<
+                                      std::decay_t<decltype(v)>>)
+                        return double(v);
+                    throw std::runtime_error("Non-numeric clock quantity");
+                },
+                block.fields.at(name));
+        };
+        std::optional<Tick> t;
+        std::string reference = "UNKNOWN";
+        if (!ubx) {
+            auto tow = UBX::read_le<uint32_t>(p, 0);
+            auto week = UBX::read_le<uint16_t>(p, 4);
+            if (tow < 604800000 && week != 65535)
+                t = (Tick(week) * 604800000 + tow) * 1000000000;
+            int system = int(value(pulse ? "TimeScale" : "TimeSystem"));
+            if (pulse)
+                reference = system == 1     ? "GPST"
+                            : system == 2   ? "UTC"
+                            : system == 3   ? "RECEIVER"
+                            : system == 5   ? "GST"
+                            : system == 6   ? "BDT"
+                            : system == 100 ? "FUGRO_ATOMICHRON"
+                                            : "UNKNOWN";
+            else
+                reference = system == 0   ? "GPST"
+                            : system == 1 ? "GST"
+                            : system == 4 ? "BDT"
+                                          : "UNKNOWN";
+        } else if (pulse) {
+            const unsigned flags = p[14], ref = p[15];
+            reference = flags & 1         ? "UTC"
+                        : (ref & 15) == 0 ? "GPST"
+                        : (ref & 15) == 2 ? "BDT"
+                        : (ref & 15) == 3 ? "GST"
+                                          : "UNKNOWN";
+            auto tow = UBX::read_le<uint32_t>(p, 0);
+            // Other time bases require an explicit conversion; never relabel
+            // them as GPST or replace a target pulse with message-arrival time.
+            if (!(flags & 32) && reference == "GPST" && tow < 604800000) {
+                auto sub = UBX::read_le<uint32_t>(p, 4);
+                Tick numerator = Tick(sub) * 1000000000;
+                Tick fraction = numerator >> 32,
+                     remainder = numerator - (fraction << 32);
+                if (remainder > (Tick(1) << 31) ||
+                    (remainder == (Tick(1) << 31) && (fraction & 1) != 0))
+                    ++fraction;
+                t = (Tick(UBX::read_le<uint16_t>(p, 12)) * 604800000 + tow) *
+                        1000000000 +
+                    fraction;
+            }
+        } else {
+            reference = "GPST";
+            auto anchor = timeline.anchor();
+            auto tow = UBX::read_le<uint32_t>(p, 0);
+            if (anchor && tow < 604800000) {
+                Tick week = *anchor / ps / 604800;
+                Tick candidate = (week * 604800000 + tow) * 1000000000;
+                Tick delta = candidate - *anchor;
+                if (delta > Tick(302400) * ps)
+                    candidate -= Tick(604800) * ps;
+                if (delta < -Tick(302400) * ps)
+                    candidate += Tick(604800) * ps;
+                if (candidate - *anchor <= timeline.timeout &&
+                    *anchor - candidate <= timeline.timeout)
+                    t = candidate;
+            }
+        }
+        auto &b = pulse ? pulses : clocks;
+        auto c = b.array.children;
+        str(c[0], setup_id);
+        optional_decimal(c[1], t);
+        auto uptime = timeline.associated_uptime();
+        optional_decimal(c[2], uptime);
+        str(c[3], t ? (ubx && clock ? "NAVIGATION" : "SOURCE") : "UNKNOWN");
+        if (uptime)
+            str(c[4], "ASSOCIATED");
+        else
+            check(ArrowArrayAppendNull(c[4], 1));
+        str(c[5], ubx            ? (pulse ? "UBX-TIM-TP" : "UBX-NAV-CLOCK")
+                  : pulse        ? "SBF-xPPSOffset"
+                  : f.id == 4006 ? "SBF-PVTCartesian"
+                                 : "SBF-PVTGeodetic");
+        str(c[6], reference);
+        if (pulse) {
+            bool valid =
+                ubx ? !(p[14] & 16) : scaled(value("Offset"), 1000).has_value();
+            optional_decimal(
+                c[7], valid ? (ubx ? std::optional<Tick>(
+                                         -Tick(UBX::read_le<int32_t>(p, 8)))
+                                   : scaled(value("Offset"), 1000))
+                            : std::nullopt);
+            integer(c[8], valid);
+            if (ubx) {
+                integer(c[9], !(p[14] & 32));
+                str(c[10], std::array{"UNAVAILABLE", "NOT_ACTIVE", "ACTIVE",
+                                      "UNKNOWN"}[(p[14] >> 2) & 3]);
+                if (p[14] & 1)
+                    integer(c[11], p[15] >> 4);
+                else
+                    check(ArrowArrayAppendNull(c[11], 1));
+                check(ArrowArrayAppendNull(c[12], 1));
+                check(ArrowArrayAppendNull(c[13], 1));
+                integer(c[15], bool(p[14] & 2));
+            } else {
+                for (int i = 9; i <= 11; ++i)
+                    check(ArrowArrayAppendNull(c[i], 1));
+                decimal(c[12], Tick(uint64_t(value("SyncAge"))) * ps);
+                integer(c[13], value("SyncAge") == 255);
+                check(ArrowArrayAppendNull(c[15], 1));
+            }
+            integer(c[14], t ? int64_t(*t / ps / 86400) : timeline.archive_day);
+        } else if (ubx) {
+            decimal(c[7], Tick(UBX::read_le<int32_t>(p, 4)) * 1000);
+            integer(c[8], int64_t(UBX::read_le<int32_t>(p, 8)) * 1000000);
+            decimal(c[9], Tick(UBX::read_le<uint32_t>(p, 12)) * 1000);
+            integer(c[10], int64_t(UBX::read_le<uint32_t>(p, 16)) * 1000);
+            integer(c[11], t ? int64_t(*t / ps / 86400) : timeline.archive_day);
+        } else {
+            bool valid = value("Error") == 0;
+            optional_decimal(c[7], valid
+                                       ? scaled(value("RxClkBias"), 1000000000)
+                                       : std::nullopt);
+            auto drift =
+                valid ? scaled(value("RxClkDrift"), 1000000000) : std::nullopt;
+            if (drift) {
+                if (*drift < std::numeric_limits<int64_t>::min() ||
+                    *drift > std::numeric_limits<int64_t>::max())
+                    throw std::runtime_error(
+                        "Clock frequency outside int64 range");
+                integer(c[8], int64_t(*drift));
+            } else
+                check(ArrowArrayAppendNull(c[8], 1));
+            check(ArrowArrayAppendNull(c[9], 1));
+            check(ArrowArrayAppendNull(c[10], 1));
+            integer(c[11], t ? int64_t(*t / ps / 86400) : timeline.archive_day);
+        }
+        check(ArrowArrayFinishElement(&b.array));
     }
-    bool usable_anchor() const {
-        return nav_ms &&
-               (!progress_time ||
-                *progress_time - Tick(*nav_ms) * 1000000000 <= timeout_ps);
-    }
-    void advance(Tick t) {
-        if (!progress_time || t > *progress_time)
-            progress_time = t;
+    void status(const cppgnss::FrameView &f, Batch &out, Batch &ev) {
+        if (f.offset < nav_skip_before)
+            return;
+        const bool ubx = f.protocol == cppgnss::Protocol::ubx;
+        if ((ubx && f.id != 0x0a39) || (!ubx && f.id != 4014))
+            return;
+        Tick uptime;
+        double temperature;
+        std::optional<bool> fine;
+        std::optional<Tick> sample;
+        if (ubx) {
+            if (f.payload.size() != 24 || f.payload[0] != 1)
+                return;
+            uptime = Tick(UBX::read_le<uint32_t>(f.payload, 8)) * ps;
+            temperature = UBX::read_le<int8_t>(f.payload, 18);
+            sample = timeline.anchor();
+        } else {
+            auto block = cppgnss::SBF::decode(f.id, f.revision, f.payload);
+            if (block.status != cppgnss::SBF::Status::decoded)
+                return;
+            auto value = [&](const char *name) {
+                return std::visit(
+                    [](const auto &v) -> double {
+                        if constexpr (std::is_arithmetic_v<
+                                          std::decay_t<decltype(v)>>)
+                            return double(v);
+                        throw std::runtime_error("Non-numeric receiver status");
+                    },
+                    block.fields.at(name));
+            };
+            uptime = Tick(uint64_t(value("UpTime"))) * ps;
+            auto temp = value("Temperature");
+            temperature =
+                temp ? temp - 100 : std::numeric_limits<double>::quiet_NaN();
+            fine = bool(value("FineTime"));
+            auto tow = UBX::read_le<uint32_t>(f.payload, 0);
+            auto week = UBX::read_le<uint16_t>(f.payload, 4);
+            if (*fine && tow < 604800000 && week != 65535) {
+                sample = (Tick(week) * 604800000 + tow) * 1000000000;
+                timeline.advance(*sample);
+            }
+        }
+        auto paired = (!ubx || new_navigation) ? sample : std::nullopt;
+        auto reason = timeline.report_uptime(uptime, paired);
+        new_navigation = false;
+        if (ubx)
+            sample = timeline.anchor();
+        if (reason != neognss_obs::ReceiverTime::Restart::none) {
+            ++restarts;
+            nav_ms.reset();
+            closure_ms.reset();
+            if (ubx)
+                sample.reset();
+            auto c = ev.array.children;
+            str(c[0], setup_id);
+            str(c[1], "RECEIVER_RESTART");
+            str(c[2], "RECEIVER");
+            if (sample)
+                decimal(c[3], *sample);
+            else
+                check(ArrowArrayAppendNull(c[3], 1));
+            str(c[4], "POINT");
+            check(ArrowArrayAppendNull(c[5], 1));
+            str(c[6], "INFERRED");
+            check(ArrowArrayAppendNull(c[7]->children[0], 1));
+            str(c[7]->children[1],
+                reason == neognss_obs::ReceiverTime::Restart::uptime_decrease
+                    ? "UPTIME_DECREASE"
+                    : "GPST_UPTIME_OFFSET_JUMP");
+            check(ArrowArrayFinishElement(c[7]));
+            decimal(c[8], uptime);
+            integer(c[9], timeline.archive_day);
+            check(ArrowArrayFinishElement(&ev.array));
+        }
+        auto c = out.array.children;
+        str(c[0], setup_id);
+        if (sample)
+            decimal(c[1], *sample);
+        else
+            check(ArrowArrayAppendNull(c[1], 1));
+        decimal(c[2], uptime);
+        str(c[3], sample ? (ubx ? "NAVIGATION" : "SOURCE") : "UNKNOWN");
+        str(c[4], "REPORTED");
+        str(c[5], ubx ? "UBX-MON-SYS" : "SBF-ReceiverStatus");
+        number(c[6], temperature);
+        if (fine)
+            integer(c[7], *fine);
+        else
+            check(ArrowArrayAppendNull(c[7], 1));
+        integer(c[8],
+                sample ? int64_t(*sample / ps / 86400) : timeline.archive_day);
+        check(ArrowArrayFinishElement(&out.array));
     }
     void navigation(const cppgnss::FrameView &f, Batch &out, Batch &ev,
                     const std::optional<cppgnss::Measurements> &measurements) {
@@ -629,13 +956,15 @@ struct Reader {
             return;
         if (measurements) {
             try {
-                advance(time_of(*measurements));
+                timeline.advance(time_of(*measurements));
             } catch (const std::runtime_error &) { /* Invalid time is counted by
                                                       observation import. */
             }
         }
-        auto emit = [&](int64_t ms, const cppgnss::RawBits &bits) {
-            append_bits(out, Tick(ms) * 1000000000, setup_id, bits);
+        auto emit = [&](std::optional<Tick> t, const cppgnss::RawBits &bits) {
+            append_bits(out, t, setup_id, bits, timeline);
+            if (!t)
+                ++raw_untimed;
             ++raw_count;
             ++raw_families[bits.family];
             for (const auto &c : bits.checks) {
@@ -667,14 +996,13 @@ struct Reader {
             if (time) {
                 monotonic(Tick(*time) * 1000000000, "navigation/receiver",
                           f.offset);
-                advance(Tick(*time) * 1000000000);
-                if (usable_anchor()) {
-                    for (const auto &bits : nav_bits)
-                        emit(*time, bits);
-                    nav_bits.clear();
-                    backlog_bytes = 0;
-                }
             }
+            auto precise = time ? std::optional<Tick>(Tick(*time) * 1000000000)
+                                : std::nullopt;
+            if (precise && ubx_anchor)
+                *precise += Tick(UBX::read_le<int32_t>(f.payload, 4)) * 1000;
+            timeline.set_navigation(precise);
+            new_navigation = bool(time);
         }
         auto decoded = cppgnss::decode_raw_bits(f);
         if (decoded.status == cppgnss::RawBitsStatus::unsupported ||
@@ -685,28 +1013,8 @@ struct Reader {
         }
         if (decoded.status == cppgnss::RawBitsStatus::excluded)
             ++raw_skipped["excluded"];
-        if (decoded.record) {
-            if (usable_anchor())
-                emit(*nav_ms, *decoded.record);
-            else {
-                auto bytes = retained_bytes(*decoded.record);
-                while (!nav_bits.empty() &&
-                       backlog_bytes + bytes > backlog_limit) {
-                    auto removed = retained_bytes(nav_bits.front());
-                    backlog_bytes -= removed;
-                    backlog_dropped_bytes += removed;
-                    ++backlog_dropped;
-                    nav_bits.pop_front();
-                }
-                if (bytes > backlog_limit) {
-                    ++backlog_dropped;
-                    backlog_dropped_bytes += bytes;
-                } else {
-                    backlog_bytes += bytes;
-                    nav_bits.push_back(std::move(*decoded.record));
-                }
-            }
-        }
+        if (decoded.record)
+            emit(timeline.anchor(), *decoded.record);
         const auto p = f.payload;
         if (f.protocol == cppgnss::Protocol::ubx && f.id == 0x0161 &&
             p.size() == 4) {
@@ -768,9 +1076,9 @@ struct Reader {
         : decoder(protocol == "ubx" ? cppgnss::Protocol::ubx
                                     : cppgnss::Protocol::sbf),
           setup_id(id), antenna(ant),
-          timeout_ps((Tick(period_seconds) * ps + period_ps) * 10) {
+          timeline(Tick(period_seconds) * ps + period_ps) {
         if (period_seconds < 0 || period_ps < 0 || period_ps >= ps ||
-            timeout_ps <= 0)
+            timeline.period <= 0)
             throw std::invalid_argument("Expected a positive epoch period in "
                                         "exact seconds/picoseconds");
         if (protocol != "ubx" && protocol != "sbf")
@@ -779,7 +1087,7 @@ struct Reader {
             throw std::invalid_argument(
                 "RAWX importer supports antenna 0 only");
     }
-    std::array<std::shared_ptr<Batch>, 4> feed(std::span<const uint8_t> data) {
+    std::array<std::shared_ptr<Batch>, 7> feed(std::span<const uint8_t> data) {
         std::unique_lock lock(mutex, std::try_to_lock);
         if (!lock.owns_lock())
             throw std::runtime_error("Concurrent importer use");
@@ -787,7 +1095,10 @@ struct Reader {
         auto ev = events();
         auto raw = raw_bits();
         auto clock = measurement_clock();
-        std::array batches{out, ev, raw, clock};
+        auto monitor = receiver_status();
+        auto estimates = ::estimates(false);
+        auto pulses = ::estimates(true);
+        std::array batches{out, ev, raw, clock, monitor, estimates, pulses};
         for (size_t i = 0; i < batches.size(); ++i)
             Batch::reserve(batches[i]->array, capacity_hints[i]);
         auto emit = [&](const cppgnss::Measurements &e) {
@@ -815,6 +1126,8 @@ struct Reader {
                 ++meas3;
             auto e = cppgnss::decode_measurements(f);
             navigation(f, *raw, *ev, e);
+            status(f, *monitor, *ev);
+            estimates_frame(f, *estimates, *pulses);
             auto extra = cppgnss::decode_measurement_extras(f);
             auto adopt = [&](const cppgnss::Measurements &time) {
                 if (!pending || pending->week != time.week ||
@@ -890,10 +1203,13 @@ struct Reader {
         ev->finish();
         raw->finish();
         clock->finish();
+        monitor->finish();
+        estimates->finish();
+        pulses->finish();
         for (size_t i = 0; i < batches.size(); ++i)
             capacity_hints[i] =
                 Batch::sizes(batches[i]->array, batches[i]->schema);
-        return {out, ev, raw, clock};
+        return batches;
     }
     py::dict checkpoint() {
         std::unique_lock lock(mutex, std::try_to_lock);
@@ -903,24 +1219,22 @@ struct Reader {
         state["nav_ms"] = nav_ms;
         state["nav_conflict"] = nav_conflict;
         state["closure_ms"] = closure_ms;
-        state["progress_time"] =
-            progress_time ? py::object(time_parts(*progress_time)) : py::none();
+        state["time_policy"] = 2;
+        auto save_time = [&](const char *key, std::optional<Tick> t) {
+            state[key] = t ? py::object(time_parts(*t)) : py::none();
+        };
+        save_time("navigation", timeline.navigation);
+        save_time("progress_time", timeline.progress);
+        save_time("uptime", timeline.uptime);
+        save_time("anchor_uptime", timeline.anchor_uptime);
+        save_time("uptime_gpst", timeline.uptime_gpst);
+        save_time("paired_offset", timeline.paired_offset);
+        state["archive_day"] = timeline.archive_day;
+        state["new_navigation"] = new_navigation;
         py::dict times;
         for (const auto &[axis, time] : last_times)
             times[axis.c_str()] = time_parts(time);
         state["last_times"] = times;
-        py::list bits;
-        for (const auto &b : nav_bits) {
-            std::vector<std::array<std::string, 6>> checks;
-            for (const auto &c : b.checks)
-                checks.push_back({c.origin, c.kind, c.scope, c.result,
-                                  c.evidence, c.source_field});
-            bits.append(py::make_tuple(
-                b.system, b.family, b.format, b.unit, b.content, b.satellite,
-                b.signals, b.bit_length, b.body, checks, b.receiver_channel,
-                b.viterbi_count, b.rs_corrected_symbols));
-        }
-        state["nav_bits"] = bits;
         auto offset = pending ? pending_start : decoder.pending_offset();
         state["skip_bytes"] = decoder.pending_offset() - offset;
         return state;
@@ -934,12 +1248,26 @@ struct Reader {
         nav_ms = state["nav_ms"].cast<std::optional<int64_t>>();
         nav_conflict = state["nav_conflict"].cast<bool>();
         closure_ms = state["closure_ms"].cast<std::optional<int64_t>>();
-        if (!state["progress_time"].is_none()) {
-            auto t = state["progress_time"].cast<std::pair<int64_t, int64_t>>();
-            if (t.first < 0 || t.second < 0 || t.second >= ps)
-                throw std::runtime_error("Invalid checkpoint progress time");
-            progress_time = Tick(t.first) * ps + t.second;
-        }
+        if (!state.contains("time_policy") ||
+            state["time_policy"].cast<int>() != 2)
+            throw std::runtime_error(
+                "Old receiver-time checkpoint; rebuild import");
+        auto load_time = [&](const char *key) -> std::optional<Tick> {
+            if (state[key].is_none())
+                return {};
+            auto t = state[key].cast<std::pair<int64_t, int64_t>>();
+            if (t.second <= -ps || t.second >= ps)
+                throw std::runtime_error("Invalid checkpoint time fraction");
+            return Tick(t.first) * ps + t.second;
+        };
+        timeline.navigation = load_time("navigation");
+        timeline.progress = load_time("progress_time");
+        timeline.uptime = load_time("uptime");
+        timeline.anchor_uptime = load_time("anchor_uptime");
+        timeline.uptime_gpst = load_time("uptime_gpst");
+        timeline.paired_offset = load_time("paired_offset");
+        timeline.archive_day = state["archive_day"].cast<int64_t>();
+        new_navigation = state["new_navigation"].cast<bool>();
         nav_skip_before = state["skip_bytes"].cast<uint64_t>();
         for (auto item : state["last_times"].cast<py::dict>()) {
             auto value = item.second.cast<py::sequence>();
@@ -949,28 +1277,6 @@ struct Reader {
                 throw std::runtime_error("Invalid checkpoint GPST");
             last_times[item.first.cast<std::string>()] =
                 Tick(seconds) * ps + fraction;
-        }
-        for (auto item : state["nav_bits"].cast<py::list>()) {
-            auto b = py::cast<py::sequence>(item);
-            cppgnss::RawBits r;
-            r.system = b[0].cast<std::string>();
-            r.family = b[1].cast<std::string>();
-            r.format = b[2].cast<std::string>();
-            r.unit = b[3].cast<std::string>();
-            r.content = b[4].cast<std::string>();
-            r.satellite = b[5].cast<uint16_t>();
-            r.signals = b[6].cast<std::vector<std::string>>();
-            r.bit_length = b[7].cast<uint32_t>();
-            r.body = b[8].cast<std::vector<uint8_t>>();
-            r.receiver_channel = b[10].cast<std::optional<uint16_t>>();
-            r.viterbi_count = b[11].cast<std::optional<uint8_t>>();
-            r.rs_corrected_symbols = b[12].cast<std::optional<uint8_t>>();
-            for (auto c : b[9].cast<std::vector<std::array<std::string, 6>>>())
-                r.checks.push_back({c[0], c[1], c[2], c[3], c[4], c[5]});
-            backlog_bytes += retained_bytes(r);
-            if (backlog_bytes > backlog_limit)
-                throw std::runtime_error("Invalid navigation checkpoint size");
-            nav_bits.push_back(std::move(r));
         }
     }
     py::dict summary() {
@@ -1002,7 +1308,7 @@ struct Reader {
             *safe_day =
                 std::min(*safe_day, int64_t(time_of(*pending) / ps / 86400));
         d["safe_day"] = safe_day;
-        d["cursor_day"] = cursor_day;
+        d["cursor_day"] = cursor_day.value_or(timeline.archive_day);
         d["skipped_protocol_frames"] = decoder.skipped_protocol_frames;
         d["skipped_protocol_bytes"] = decoder.skipped_protocol_bytes;
         d["ignored_meas3_blocks"] = meas3;
@@ -1019,10 +1325,7 @@ struct Reader {
         d["raw_bits_skipped"] = raw_skipped;
         d["raw_bits_untimed"] = raw_untimed;
         d["raw_bits_unsupported"] = raw_unsupported;
-        d["raw_bits_pending"] = nav_bits.size();
-        d["raw_bits_pending_bytes"] = backlog_bytes;
-        d["raw_bits_dropped"] = backlog_dropped;
-        d["raw_bits_dropped_bytes"] = backlog_dropped_bytes;
+        d["receiver_restarts"] = restarts;
         return d;
     }
 };

@@ -132,12 +132,12 @@ static, forward Float scope; this is not a PPP-AR or CSRS-equivalent solver.
 The [receiver clock pipeline](docs/receiver-clock.md) separates extraction,
 clock reconstruction, and plotting:
 
-- `ngo-receiver-clock` uses a native UBX scanner to export NAV-CLOCK samples to
-  Parquet, together with clock-adjustment events and available MON-SYS
-  temperature/runtime telemetry. Runtime decreases identify observed restarts;
-  missing MON-SYS does not imply uninterrupted receiver operation.
+- `ngo-receiver-clock` reads CommonNEX receiver-clock, measurement-clock,
+  status, pulse and restart catalogs, then produces derived clock Parquet.
+  Receiver protocols and time association are handled only by the importer;
+  unavailable time stays unknown and restart uncertainty is not bridged.
 - `ngo-receiver-clock-reunwrap` recalculates clock arcs and accumulated bias
-  corrections from existing Parquet, without rescanning UBX. Short gaps retain
+  corrections from existing Parquet, including UBX and SBF adjustment evidence. Short gaps retain
   the accumulated correction; the default timeout is 50 seconds. Unresolved
   jumps remain explicit uncertainty boundaries, not inferred reboots.
 - `ngo-receiver-clock-plot` produces parallel hourly detail PNGs and daily overviews

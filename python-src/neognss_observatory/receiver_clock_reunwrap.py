@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Recompute clock arcs from immutable extracted samples without reading UBX."""
+"""Vectorized clock analysis shared by CommonNEX processing and re-unwrapping."""
 
 import json
 import shutil
@@ -32,13 +32,23 @@ class BatchUnwrapper:
         t = integer("gpst_ns", -1)
         if not len(t):
             return table
-        bias, drift, session = (integer(n) for n in ("clock_bias_ns", "clock_drift_ns_s", "receiver_session_id"))
+        bias, drift = (integer(n, float("nan")) for n in ("clock_bias_ns", "clock_drift_ns_s"))
+        session = integer("receiver_session_id")
         flag = integer("rawx_clock_reset", False)
-        current = (t, bias, drift, session)
-        before = self.previous or (-1, 0, 0, int(session[0]))
-        pt, pb, pd, ps = (np.r_[value, values[:-1]] for value, values in zip(before, current))
-        valid = t >= 0
-        prior_valid = pt >= 0
+        cumulative = (
+            integer("cumulative_clock_jumps_ms", 256) if "cumulative_clock_jumps_ms" in table.column_names else np.full(len(t), 256)
+        )
+        sbf = (
+            np.array([s in ("SBF-PVTGeodetic", "SBF-PVTCartesian") for s in table["source_message"].to_pylist()])
+            if "source_message" in table.column_names
+            else np.zeros(len(t), bool)
+        )
+        valid = (t >= 0) & np.isfinite(bias) & np.isfinite(drift)
+        if "continuity_known" in table.column_names:
+            valid &= integer("continuity_known", False)
+        current = (t, bias, drift, session, cumulative, sbf, valid)
+        before = self.previous or (-1, 0, 0, int(session[0]), 256, False, False)
+        pt, pb, pd, ps, pc, prev_sbf, prior_valid = (np.r_[value, values[:-1]] for value, values in zip(before, current))
         restart = session != ps
         dt = (t - pt) / 1e9
         if np.any(valid & prior_valid & ~restart & (dt <= 0)):
@@ -47,9 +57,18 @@ class BatchUnwrapper:
         fresh = valid & (~prior_valid | restart | gap)
         comparable = valid & ~fresh
         jump = bias - pb - pd * dt
-        rounded = np.rint(jump / 1e6).astype(np.int64) * 1000000
+        milliseconds = np.rint(np.where(comparable, jump, 0) / 1e6)
+        if np.any(np.abs(milliseconds) > np.iinfo(np.int64).max // 1000000):
+            raise ValueError("Clock adjustment exceeds int64 range")
+        rounded = milliseconds.astype(np.int64) * 1000000
+        counted = comparable & sbf & prev_sbf & (cumulative < 256) & (pc < 256)
+        # The adapter-specific modulo is not inferred from uint64 storage.
+        current_counter = np.where(cumulative < 256, cumulative, 256).astype(np.int64)
+        previous_counter = np.where(pc < 256, pc, 256).astype(np.int64)
+        delta = (current_counter - previous_counter + 128) % 256 - 128
+        rounded = np.where(counted, delta * 1000000, rounded)
         adjusted = comparable & (rounded != 0) & (np.abs(jump - rounded) <= self.tolerance)
-        unresolved = comparable & ~adjusted & ((np.abs(jump) > self.tolerance) | flag)
+        unresolved = comparable & ~adjusted & ((np.abs(jump) > self.tolerance) | flag | (counted & (delta != 0)))
         fresh |= unresolved
         arc = self.arc + np.cumsum(fresh)
         total = self.adjustment + np.cumsum(np.where(adjusted, rounded, 0))
@@ -64,15 +83,18 @@ class BatchUnwrapper:
         quality[unresolved] = "unresolved_adjustment"
         quality[adjusted & ~flag] = "bias_inferred_adjustment"
         quality[adjusted & flag] = "rawx_confirmed_adjustment"
-        self.previous = (int(t[-1]), float(bias[-1]), float(drift[-1]), int(session[-1]))
+        quality[adjusted & counted] = "sbf_counted_adjustment"
+        self.previous = tuple(values[-1].item() for values in current)
         self.arc, self.adjustment = int(arc[-1]), int(total[-1])
         self.counts.update(
             {
                 "samples": len(t),
                 "clock_arcs": int(np.sum(fresh)),
-                "unassigned_samples": int(np.sum(~valid)),
-                "bias_inferred_adjustment": int(np.sum(adjusted & ~flag)),
-                "rawx_confirmed_adjustment": int(np.sum(adjusted & flag)),
+                "unassigned_samples": int(np.sum(t < 0)),
+                "unusable_samples": int(np.sum(~valid)),
+                "bias_inferred_adjustment": int(np.sum(adjusted & ~flag & ~counted)),
+                "rawx_confirmed_adjustment": int(np.sum(adjusted & flag & ~counted)),
+                "sbf_counted_adjustment": int(np.sum(adjusted & counted)),
             }
         )
         for name, values in (
@@ -103,10 +125,8 @@ def cli(input_dir, output, max_gap, jump_tolerance_ns):
         source, output = input_dir.resolve(), output.resolve()
         summary = json.loads((source / "summary.json").read_text())
         parquet = pq.ParquetFile(source / "clock.parquet")
-        if parquet.schema_arrow.metadata.get(b"protocol") == b"sbf":
-            raise ValueError(
-                "SBF re-unwrapping from Parquet is not implemented; rerun ngo-receiver-clock -p sbf to retain counted adjustments"
-            )
+        if parquet.schema_arrow.metadata.get(b"input_format") != b"CommonNEX":
+            raise ValueError("Re-import receiver-clock analysis from CommonNEX before re-unwrapping")
         if parquet.schema_arrow.metadata.get(b"time_scale") != b"GPST":
             raise ValueError("Expected GPST sample timestamps")
         output.mkdir(parents=True, exist_ok=False)

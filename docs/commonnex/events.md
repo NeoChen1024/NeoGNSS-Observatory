@@ -1,7 +1,7 @@
 # CommonNEX events and scoped context
 
-Status: selected v0 design; UBX/SBF completion payloads are implemented, while
-other payloads and adapters remain pending.
+Status: selected v0 design; UBX/SBF completion and receiver restart evidence are
+implemented. Other payloads and adapters remain pending.
 [Overview](overview.md) | [Import policy](import-policy.md)
 
 ## Purpose
@@ -78,6 +78,13 @@ stored in the [measurement-clock auxiliary catalog](auxiliary.md#measurement-clo
 Do not infer a restart, gap or loss of lock merely from a clock adjustment.
 
 ## Reading and persistence
+
+Receiver restart Events use `kind=RECEIVER_RESTART`, `scope=RECEIVER`,
+`applicability=POINT`, `evidence=INFERRED`, and a nullable `gpst`.
+`receiver_uptime_s` retains the new uptime; `payload.restart_reason` is
+`UPTIME_DECREASE` or `GPST_UPTIME_OFFSET_JUMP`. The completion payload is null.
+These untimed Events follow the same [placement policy](telemetry-time.md) as
+receiver telemetry; they do not invent a GPST or require an epoch reference.
 
 Consumers needing discontinuity interpretation load the relevant Events context before
 using observations. Read earlier partitions as necessary to obtain a still-valid

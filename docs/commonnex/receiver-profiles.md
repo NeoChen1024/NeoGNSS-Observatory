@@ -69,10 +69,10 @@ PVTGeodetic (4007), ReceiverTime (5914), or EndOfPVT (5921) in stream order.
 Include at least one of these when recording RawBits. MeasEpoch timestamps do
 not substitute for independent navigation context. RawBits block SIS timestamps
 are neither retained nor used as fallback; complete SIS time need not be
-recoverable from an individual canonical body. Unknown/expired context uses a
-bounded backlog; invalid navigation anchors disable the current context.
+recoverable from an individual canonical body. Unknown/expired context emits
+null-time RawBits; invalid navigation anchors disable the current context.
 UBX EOE does not reset the RawBits anchor. Both protocols follow the
-[10-period timeout and 4 MiB backlog policy](raw-bits-importer.md#anchor-timeout-and-bounded-backlog).
+[receiver-time association policy](telemetry-time.md).
 
 RTCM3 mapping must resolve the full epoch/date/time-scale context; a partial
 time-of-week alone is not a complete GPST timestamp. The adapter must validate
@@ -169,7 +169,7 @@ quality remains null. Preserve association across physical file boundaries.
   historical-input limitations rather than requiring identical message sets.
 - [x] Exclude applied observation clock-offset correction; preserve source
   measurement-clock evidence separately without substituting navigation telemetry.
-- [x] Bound RawBits anchor age by 10 nominal periods and backlog by 4 MiB.
+- [x] Bound RawBits anchor age by 10 nominal periods; retain untimed records without backlog.
 
 ### Source validation still required
 

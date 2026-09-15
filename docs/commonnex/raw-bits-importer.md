@@ -93,34 +93,14 @@ RawBits arriving with a usable anchor is emitted immediately with that anchor's
 `nav_epoch_gpst`. NAV-EOE only closes a matching navigation completion Event;
 it does not flush RawBits or clear its anchor. SFRBX may arrive after EOE.
 
-### Anchor timeout and bounded backlog
+### Anchor timeout and missing time
 
-The importer uses a GPST high-water mark from valid measurement epochs and
-navigation anchors. An anchor expires only when `high_water - anchor > 10 *
-epoch_period_s`; equality is accepted. Measurement time advances this timeout
-clock but never supplies a RawBits timestamp or binds the two epoch families.
-No host clock, file time, SIS time, or byte-rate estimate is used. Without new
-reliable time evidence, elapsed anchor age cannot be observed; the timeout is
-not a physical reception-age guarantee. A newly received navigation anchor
-already older than this limit is not usable. Explicit invalid navigation time
-disables the previous anchor, but does not discard the backlog.
-
-RawBits without a usable anchor enters a FIFO backlog. The next usable anchor
-flushes it in arrival order at that anchor's time. Thus association may use a
-preceding anchor normally or a following anchor on recovery, not necessarily
-the closest epoch or actual reception/transmission time. Equal-time anchors do
-not duplicate previously emitted records. Canonical bodies remain unchanged.
-
-The backlog has a 4 MiB accounted-size limit: native record structures, body,
-strings and check/signal entries are counted by logical size, not allocator
-capacity, so restored state makes the same eviction decisions. Allocator/deque
-overhead is additional; this is not a total process RSS limit. Evict oldest
-records first, count dropped records/accounted bytes and warn once per import.
-An individual oversized record is discarded. EOF retains bounded backlog in
-continuation state when a timed import cursor is available; a wholly untimed
-input cannot publish a dated dataset and fails with its pending counts.
-File, chunk and GPST-day boundaries do not reset context. Daily partitioning
-uses the final associated navigation timestamp, including backlog flushes.
+Use the shared [receiver-time policy](telemetry-time.md): 10-period freshness,
+nullable navigation GPST, uptime association and restart boundaries. Emit complete
+RawBits immediately even without time. There is no time-waiting backlog or
+retroactive timestamp filling. Unknown-time records stay in the last known GPST
+directory, or `1980/01/06/` before any known date; their timestamp remains null.
+File, chunk and GPST-day boundaries do not reset receiver context.
 
 RawBits block SIS timestamps are not
 stored, used for partitioning, or used as a fallback. They need not be recoverable

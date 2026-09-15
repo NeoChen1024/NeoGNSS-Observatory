@@ -9,7 +9,8 @@ The logger depends directly on `libcppgnss`.
 | SFRBX/GEORawL1 extraction, SBAS L1 bits, MT18/26, IGP coordinate rules | `libcppgnss` |
 | Full available SBF schema generation | `libcppgnss`, from pinned `contrib/pysbf2` |
 | GPST epoch association, archive segmentation and quarantine policy | `libneognss-obs` |
-| Clock adjustments, runtime-decrease restarts, temperature association | `libneognss-obs` |
+| Receiver time association and restart evidence | `libneognss-obs` |
+| Clock unwrap, adjustment inference, temperature association | Python/NumPy over CommonNEX |
 | SBAS mask completeness, correction/mask ages, grid resets | `libneognss-obs` |
 | GPS observation normalization without RTKLIB types | `libcppgnss` |
 | Static GPS Float PPP adapter, filter and residual batches | `libneognss-obs`, linked to RTKLIB-EX |
@@ -28,7 +29,7 @@ they do not invoke conversion executables or write a RINEX observation intermedi
 Python reads bounded chunks and writes output products. Native code performs
 framing, decoding and per-message state updates without calling Python for each
 raw frame. pybind11 releases the GIL during native processing and converts final
-record batches after reacquiring it. Currently, clock/subframe/grid paths use
+record batches after reacquiring it. Currently, subframe/grid paths use
 native JSON trees converted to Python lists/dictionaries; PPP/STEC numerical
 results use copied NumPy structured arrays. Some settings and summaries also
 use JSON text conversion. These are current implementations, not the selected
@@ -44,7 +45,9 @@ axis; native receiver fields remain in raw archives and protocol decoder APIs.
 Both share native UBX epoch interpretation, but only reconstruction computes
 overlap fingerprints/indexes. SBAS extraction also uses that epoch assembler
 without QA diagnostics; it requires neither reconstruction nor proof of a QA
-run. Receiver-clock reads raw or reconstructed recordings directly too.
+run. Receiver-clock consumes CommonNEX telemetry and Events only; its shared
+vectorized unwrap also powers re-unwrapping of derived Parquet. It has no raw
+clock scanner or protocol-selection fallback.
 
 SBAS frame Parquet is the source-independent boundary: 250-bit message body,
 GPST, canonical signal identity, CRC/acceptance, and explicit continuity/end
@@ -153,9 +156,10 @@ is also retained. SBAS satellite identity is normalized separately from the
 raw receiver identifiers. `GEORawL5` is never passed to the L1 parser. The SBF
 adapter feeds `ngo-cnex-import run -p sbf` through native Arrow batches, using
 receiver navigation TOW/WNc (not SIS timestamps) and separate receiver/independent
-CRC checks. RawBits uses a 10-period source-time timeout and 4 MiB bounded
-backlog; EOE does not clear its anchor. Measurement time only advances the
-timeout high-water mark. UBX and SBF produce
+CRC checks. RawBits uses a 10-period receiver-time timeout and nullable
+GPST, without a time-waiting backlog; EOE does not clear its anchor.
+[Shared receiver time](commonnex/telemetry-time.md) retains uptime and restart
+boundaries. Measurement time only advances the timeout high-water mark. UBX and SBF produce
 the same CommonNEX SBAS L1 RawBits layout. Grid reads these records and Events;
 its derived products retain RINEX `satellite_system`, `satellite_number` and
 `signal` fields, displaying SBAS identities as Sxx throughout.

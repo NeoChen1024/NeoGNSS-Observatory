@@ -49,11 +49,11 @@ cannot run. Processors declare their required capabilities and reject only an
 unsupported requested operation. RawBits remains first-class even when stored
 in separate Parquet files. Decoded ephemerides do not reconstruct received bits.
 
-Observation and RawBits require usable GPST epoch association. Records whose
-time remains unresolved after bounded importer buffering are skipped and counted;
-raw archives allow later reconstruction. No unknown-time Observation/RawBits
-storage branch is required. RawBits-only remains legal with valid navigation
-time stored in `nav_epoch_gpst`. Legitimate untimed RINEX special events retain
+Observation requires usable measurement GPST. RawBits and receiver telemetry
+retain complete records with nullable GPST and available receiver uptime under
+the [shared time policy](telemetry-time.md), without waiting for future anchors.
+Untimed placement uses the last known GPST day or the origin date, never a
+fabricated timestamp. RawBits-only remains legal. Untimed RINEX special events retain
 their separate semantics. No independent epoch tables or mandatory row-to-row
 references exist. Timestamps are not unique keys. Setup metadata remains
 shared; continuity-sensitive consumers load applicable Events, including

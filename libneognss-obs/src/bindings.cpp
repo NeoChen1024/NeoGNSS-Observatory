@@ -231,27 +231,6 @@ PYBIND11_MODULE(_native, m) {
         .def("summary", [](Subframes &s) {
             return run(s, [](auto &p) { return p.summary(); });
         });
-    using Clock = Guarded<neognss_obs::ClockProcessor>;
-    py::class_<Clock>(m, "ClockProcessor")
-        .def(py::init<double, double, double, const std::string &>(),
-             py::arg("max_gap") = 50, py::arg("tolerance") = 50000,
-             py::arg("temperature_max_age") = 5, py::arg("protocol") = "ubx")
-        .def("feed",
-             [](Clock &s, py::buffer data, const std::string &source) {
-                 auto info = data.request();
-                 auto b = view(info);
-                 return run(s, [&](auto &p) { return p.feed(b, source); });
-             })
-        .def("end_file",
-             [](Clock &s) {
-                 return run(s, [](auto &p) { return p.end_file(); });
-             })
-        .def(
-            "finish",
-            [](Clock &s) { return run(s, [](auto &p) { return p.finish(); }); })
-        .def("summary", [](Clock &s) {
-            return run(s, [](auto &p) { return p.summary(); });
-        });
     using Grid = Guarded<neognss_obs::GridProcessor>;
     py::class_<Grid>(m, "GridProcessor")
         .def(py::init<double, double, double>(),

@@ -90,14 +90,13 @@ def ordered_inputs(paths, protocol):
         kind = "observation" if result["observation"] is not None else "navigation"
         time = result[kind]
         if time is None:
-            raise ValueError(
-                f"No usable GPST in the first {limit} bytes of {path}; inspect/re-stitch the input. No filename fallback."
-            )
-        found.append((tuple(time), path, size, kind))
-    found.sort(key=lambda item: item[0])
+            click.echo(f"Warning: no head GPST in {path}; preserving supplied input order for this import", err=True)
+        found.append((tuple(time) if time is not None else None, path, size, kind))
+    if all(item[0] is not None for item in found):
+        found.sort(key=lambda item: item[0])
     click.echo("Input order (head timestamps; no overlap removal):", err=True)
     for time, path, _, kind in found:
-        click.echo(f"  {gpst_text(time)} [{kind}] {path}", err=True)
+        click.echo(f"  {gpst_text(time) if time is not None else 'unknown GPST'} [{kind}] {path}", err=True)
     return [(path, 0, size) for _, path, size, _ in found]
 
 
@@ -306,10 +305,9 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
     """Head-probe and time-sort INPUTS, then import one continuous recording path.
 
     Catalogs: observations (including MeasExtra/smoothing state), raw-bits,
-    observation/navigation completion events and measurement-clock evidence.
-    RawBits uses a 10-period anchor timeout and 4 MiB backlog. See the coverage
-    table for documented and sample-verified adapters. Other telemetry and
-    cadence/restart events are not yet imported.
+    completion/restart events, measurement-clock evidence, receiver status,
+    clock estimates and pulse timing. Unknown RawBits/telemetry time is retained
+    as null; no time-waiting backlog. See the coverage table for adapter limits.
     No automatic overlap merging. Rebuild requires the complete replacement input.
     """
     writers = {}
@@ -386,7 +384,9 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
         reader = _native.CnexObservationReader(protocol, setup["setup_id"], source_antenna, period_seconds, period_ps)
         if state:
             reader.restore(state["navigation_context"])
-        counts = {"observations": 0, "events": 0, "raw-bits": 0, "measurement-clock": 0}
+        counts = dict.fromkeys(
+            ("observations", "events", "raw-bits", "measurement-clock", "receiver-status", "receiver-clock", "pulse-timing"), 0
+        )
         started = set()
         published = list(state["published_files"]) if state else []
         current_state_path = resume_from
@@ -436,7 +436,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
             return writers[key][0]
 
         def check_tail(key, batch):
-            if mode != "tail":
+            if mode != "tail" or key[1] not in {"observations", "measurement-clock"}:
                 return
             if key not in tail_limits:
                 maxima = []
@@ -505,11 +505,15 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
         def write_batches(batches, snapshot):
             # Only this worker touches catalogs while parsing is running.
             for catalog, batch in zip(counts, batches):
+                if "_archive_day" in batch.schema.names:
+                    days = batch.column("_archive_day").to_numpy()
+                    batch = batch.drop_columns(["_archive_day"])
+                else:
+                    seconds = pc.cast(batch.column(time_column(catalog)), pa.int64(), safe=False).to_numpy()
+                    days = seconds // 86400
                 schemas[catalog] = batch.schema
                 if not batch.num_rows:
                     continue
-                seconds = pc.cast(batch.column(time_column(catalog)), pa.int64(), safe=False).to_numpy()
-                days = seconds // 86400
                 for day in np.unique(days):
                     day_name = day_path(day)
                     key = day_name, catalog
@@ -522,10 +526,9 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
                 publish(snapshot)
 
         warned_foreign = False
-        warned_backlog = False
         total = sum(size - start for _, start, size in segments)
         click.echo(
-            "Importing observations, canonical RawBits, completion events and measurement clock evidence.",
+            "Importing observations, RawBits, events and receiver clock/status/pulse telemetry.",
             err=True,
         )
         # Bound outstanding work, including the active write, to two input
@@ -558,11 +561,6 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
                             raise RuntimeError(f"{path}: {error}") from error
                         batches = tuple(pa.record_batch(batch) for batch in native_batches)
                         summary = reader.summary()
-                        if summary["raw_bits_dropped"] and not warned_backlog:
-                            click.echo(
-                                "Warning: RawBits backlog exceeded 4 MiB; oldest records discarded (see final counts)", err=True
-                            )
-                            warned_backlog = True
                         processed[str(path)] = {"path": str(path), "size": size, "offset": size - remaining}
                         tail = []
                         offset = summary["resume_offset"]
@@ -604,8 +602,8 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
             click.echo("Warning: unsupported/untimed/invalid input was encountered; inspect summary", err=True)
         if summary["measextra_unmatched"] or summary["measextra_ambiguous"] or summary["measextra_unsupported"]:
             click.echo("Warning: some MeasExtra records could not be associated; inspect summary", err=True)
-        if summary["raw_bits_untimed"] or summary["raw_bits_unsupported"] or summary["raw_bits_pending"]:
-            click.echo("Warning: RawBits records were withheld or unsupported; inspect counts and navigation context", err=True)
+        if summary["raw_bits_untimed"] or summary["raw_bits_unsupported"]:
+            click.echo("Warning: RawBits includes retained null-time or unsupported records; inspect counts", err=True)
     except (ValueError, KeyError, OSError, RuntimeError, pa.ArrowException) as exc:
         for writer, _, _ in writers.values():
             if writer is not None:
