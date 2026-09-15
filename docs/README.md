@@ -1,6 +1,7 @@
 # Documentation
 
-These documents describe the current implementation. Historical runs, superseded
+Tool documents describe the current implementation; design documents explicitly
+distinguish selected contracts from implemented subsets. Historical runs, superseded
 designs and migration logs belong in Git history. Dataset facts are retained
 only when they affect present interpretation or processing.
 
@@ -15,14 +16,14 @@ only when they affect present interpretation or processing.
 
 - [Ginan shim](ginan-shim.md): single-context native backend design,
   GIM/bias calibration investigation and implementation checklist.
-- [CommonNEX and ParquetNEX v0](commonnex/overview.md): Core observations,
-  optional navigation/auxiliary schemas, receiver profiles, Parquet persistence
+- [CommonNEX and ParquetNEX v0](commonnex/overview.md): Core observations and RawBits,
+  optional DecodedNav/auxiliary schemas, receiver profiles, Parquet persistence
   and batch/incremental/live processing contracts; broader than the implemented pilot.
 
 ## Tools
 
-- [CommonNEX importer pilot](commonnex/importer.md): native RAWX/MeasEpoch to daily
-  Observation and completion-event Parquet, tail parts and revisions.
+- [CommonNEX importer pilot](commonnex/importer.md): native UBX/SBF observations,
+  RawBits, receiver telemetry and Events to daily Parquet, tail parts and revisions.
 - [GPS STEC and receiver DCB](stec.md): CommonNEX input, incremental phase leveling,
   GIM-constrained absolute estimates and hourly plots.
 - [Offline PPP Float](ppp.md): raw GPS observations, local precise products and numerical/plot outputs.

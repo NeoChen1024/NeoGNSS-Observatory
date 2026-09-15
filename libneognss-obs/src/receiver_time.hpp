@@ -43,14 +43,21 @@ struct ReceiverTime {
         } else
             anchor_uptime.reset();
     }
-    Restart report_uptime(Tick t, std::optional<Tick> report_gpst) {
+    Restart report_uptime(Tick t, std::optional<Tick> report_gpst,
+                          bool direct_time) {
         auto reason = Restart::none;
         if (uptime && t < *uptime)
             reason = Restart::uptime_decrease;
-        // A direct status timestamp, or a fresh navigation context whose
-        // progress is independently known, is required for offset comparison.
-        if (reason == Restart::none && report_gpst && navigation && progress &&
-            *progress - *navigation <= period) {
+        // Same-report time needs no navigation association. Borrowed time
+        // must also be fresh against the NEW uptime: progress can be frozen.
+        // Without a preceding uptime at the anchor, wait for a later pair.
+        const bool fresh_pair =
+            report_gpst &&
+            (direct_time ||
+             (navigation && progress && anchor_uptime &&
+              *progress >= *navigation && *progress - *navigation <= period &&
+              t >= *anchor_uptime && t - *anchor_uptime <= period));
+        if (reason == Restart::none && fresh_pair) {
             auto offset = *report_gpst - t;
             if (paired_offset && (offset - *paired_offset > restart_threshold ||
                                   *paired_offset - offset > restart_threshold))
@@ -64,8 +71,8 @@ struct ReceiverTime {
         }
         uptime = t;
         uptime_gpst = progress;
-        if (!anchor_uptime && navigation && report_gpst &&
-            *report_gpst - *navigation <= period)
+        if (!anchor_uptime && navigation && fresh_pair &&
+            *report_gpst >= *navigation && *report_gpst - *navigation <= period)
             anchor_uptime = t;
         return reason;
     }

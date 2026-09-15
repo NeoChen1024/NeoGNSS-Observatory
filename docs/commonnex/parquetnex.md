@@ -21,8 +21,8 @@ this implementation column before Parquet storage. Append via new parts, not
 by modifying a closed Parquet file.
 
 Use PyArrow RecordBatches backed by the native Arrow-compatible buffers for
-writing, and pass batches read from Parquet back through the same native import
-interface. Do not route bulk values through JSON, lists of dictionaries or
+writing, and pass replay batches to the relevant CommonNEX consumer interface,
+not back to the raw-byte importer. Do not route bulk values through JSON, lists of dictionaries or
 per-row Python objects. Nullable columns use Arrow validity bitmaps and become
 Parquet nulls. This does not require Arrow IPC serialization between C++ and
 Python, or a Parquet round trip for direct processing.

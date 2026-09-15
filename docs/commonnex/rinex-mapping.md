@@ -52,14 +52,16 @@ strongly deprecated and instruct decoders/encoders to ignore it.
 
 For the project's RINEX 3.x/4.x import scope:
 
-- Ignore this header record and its continuation lines, including in header
-  updates. Do not create a `rinex_phase_shift` field, Event or correction state.
+- Inspect declarations and their continuation lines, including header updates.
+  Reject input declaring any nonzero phase shift as unsupported. This is a
+  deliberate project scope restriction, not a requirement of RINEX 4.02.
+- Zero declarations or absence do not trigger this rejection. Do not create a
+  `rinex_phase_shift` field, Event or correction state.
 - Preserve the exported carrier-phase observations; do not apply or undo a
   phase shift based on this declaration.
-- Do not reject a file solely because the header is present or contains a
-  nonzero value. It describes shifts used when generating the observations,
-  not an instruction to shift them again. Its omission from CommonNEX is an
-  explicit limit of metadata preservation; the raw archive retains it.
+- The declaration describes shifts used when generating observations, not an
+  instruction to shift them again. Its omission from CommonNEX is an explicit
+  limit of metadata preservation; the raw archive retains it.
 
 This exclusion does not remove carrier-phase signal conventions or the
 independent half-cycle/LLI fields. It is also separate from the rejection of

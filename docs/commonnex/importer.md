@@ -242,7 +242,8 @@ it does not rename or relabel previously generated SIS-timed data.
 It also stores the last anchor, receiver uptime, fresh paired offset, archive
 day, timeout high-water mark, independent UBX completion context, required
 period and replay skip offset. Replay does not duplicate RawBits or telemetry.
-State version 3 additionally requires receiver-time policy 2; older association
+State version 3 additionally requires receiver-time policy 3, which preserves
+the full pending navigation completion timestamp; older association
 cursors and period changes are rejected. Rebuild old experimental imports.
 It is not a science catalog or general recovery manifest.
 Raw context files must remain available and unchanged; the basic size check does
@@ -313,7 +314,10 @@ transaction or full crash recovery is promised. Old revisions are retained.
 - [x] Uptime and fresh GPST/uptime restart evidence in Events.
 - [x] Convert the receiver-clock analysis CLI to consume these CommonNEX catalogs.
 - [x] UBX navigation completion independent of RawBits output.
-- [ ] Cadence and restart Events.
+- [ ] Cadence Events.
+- [x] Gate borrowed UBX navigation/uptime pairs on new-uptime freshness;
+  directly timestamped SBF status does not require a navigation anchor.
+- [x] Apply SBF MeasEpoch E6BUsed to Type2 as well as Type1 observations.
 - [x] Reviewed RawBits layouts and independent navigation-time association;
   distinguish sample-verified and documentary adapters in the coverage table.
 - [ ] Additional input protocols and any explicitly requested reconciliation.

@@ -32,8 +32,9 @@ remain on Observation rows.
 | --- | --- | --- |
 | `setup_id` | string | Affected logical station |
 | `kind` | enum | Kind above |
-| `scope` | enum | `STREAM`, `OBSERVATION` or `NAVIGATION` |
-| `gpst` | GpstTimestamp | Event location, target epoch time, or state/interval start |
+| `scope` | enum | `STREAM`, `OBSERVATION`, `NAVIGATION` or `RECEIVER` |
+| `gpst` | GpstTimestamp? | Event location, target epoch time, or state/interval start; restart evidence may be untimed |
+| `receiver_uptime_s` | Duration? | Reported uptime for receiver restart evidence; null for completion |
 | `applicability` | enum | `POINT`, `EPOCH`, `INTERVAL` or `STATE` |
 | `end_gpst` | GpstTimestamp? | Exclusive interval/state end, if explicitly supplied |
 | `evidence` | enum | Reported versus inferred basis; exact adapter vocabulary pending |
@@ -41,6 +42,9 @@ remain on Observation rows.
 
 `GpstTimestamp`, `TimeDelta` and `Duration` use `DECIMAL(38,12)` seconds.
 No event ID or epoch foreign key is required. Multiple events may share time.
+Implemented completion Events require non-null GPST; receiver restart Events
+permit null GPST. Other event kinds must define their time constraints before
+implementation; nullable storage is not permission to omit required times.
 `EPOCH` applies only to its declared epoch context, never implicitly forward.
 `INTERVAL` is `[gpst,end_gpst)` with a required end later than the start.
 `STATE` starts inclusively and lasts until explicit end or a superseding

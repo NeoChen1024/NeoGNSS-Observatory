@@ -37,10 +37,12 @@ retained or used as fallback. Canonical bits remain unchanged.
 Use reconstructed Era A
 segments, excluding unassigned data, or nonoverlapping raw UBX/SBF recordings.
 No reconstruction index, QA stamp or XZ decompression is
-required. UBX navigation association uses fresh NAV-TIMEGPS and matching EOE,
+required. UBX navigation association uses fresh NAV-TIMEGPS; EOE is only a
+navigation completion boundary and does not gate RawBits association,
 independently of RAWX measurement time. SBF GEORawL1 uses synchronous receiver navigation time,
 without claiming that an individual raw block completes a navigation epoch.
-Unusable time is counted and omitted, never invented. See the
+Unusable RawBits time is retained as null by import and skipped by grid,
+never invented. See the
 [importer guide](commonnex/importer.md) for continuation and coverage limits.
 
 Continuous file/day boundaries preserve framing and signal state. Grid's
@@ -73,7 +75,14 @@ Grid re-decodes SBAS bodies in bounded C++ batches and verifies CRC metadata
 against their bytes. Receiver-rejected frames do not update masks or corrections.
 Independent stream state spans Parquet files and GPST midnight. Grid consumes
 navigation completion Events and rejects unsupported navigation event kinds;
-broader restart/discontinuity mappings remain future importer work.
+receiver-scope restart Events are currently filtered out, not applied as grid
+boundaries. The importer already emits these Events. Until grid gains an
+explicit mapping, short receiver restarts can incorrectly retain previous
+mask/aging state; a navigation/reception gap is not a substitute for restart
+handling.
+
+- [ ] Consume receiver restart Events in grid, defining timed and untimed
+  boundaries without carrying masks across an established restart.
 
 Grid schema version 3 contains RINEX `satellite_system`/`satellite_number`
 identity (`S`/`37`, displayed as `S37`), signal, `stream_id`,

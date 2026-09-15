@@ -161,7 +161,7 @@ std::optional<Measurements> decode_measurements(const FrameView &f) {
                 ++e.unsupported;
             return m;
         }
-        if (type1 && m.system == "E" && m.signal == "6C" && (p[9] & 64))
+        if (m.system == "E" && m.signal == "6C" && (p[9] & 64))
             m.signal = "6B";
         auto cn = u(p, q + (type1 ? 15 : 2), 1);
         if (cn != 255)

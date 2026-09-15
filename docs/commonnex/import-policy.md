@@ -61,8 +61,9 @@ association and maintain state across file/day boundaries. Consumers may read
 only the families they need; recording telemetry must not require enabling a
 PPP, SBAS, or clock-analysis algorithm.
 
-Bounded buffering may be needed to resolve a later time anchor, companion block,
-or pulse association. Unresolved timing remains explicit at finalization.
+Bounded buffering may be needed to assemble companion blocks or protocol
+fragments. Complete RawBits/telemetry does not wait for a later time anchor;
+unresolved timing is immediately explicit.
 Telemetry is not automatically deduplicated either; equal numerical readings
 at different occurrences or from different sensors remain distinct. A navigation EOE does not finalize an unrelated future pulse record.
 
@@ -92,8 +93,8 @@ paths can describe the same logical station without implying that the importer
 can automatically fuse them. Restitch/QA is not an enforced prerequisite.
 The importer head-probes and stable-sorts selected files, then rejects backwards
 observation and receiver navigation time during the normal read. RawBits uses
-the last usable receiver navigation epoch or the next usable anchor after
-bounded buffering; source SIS timestamps are not retained
+the last usable receiver navigation epoch, otherwise null without waiting
+for a future anchor; source SIS timestamps are not retained
 or used as a fallback. Canonical payloads remain unchanged. This does not
 add deduplication, tail probing or automatic overlap repair; see
 [ordering and reversal checks](importer.md#head-only-ordering-and-time-reversal).
@@ -148,12 +149,14 @@ cadence. Source-local checks use that declared cadence; merged-stream coverage
 against Setup's P may still show gaps. Label the scope and period used instead
 of silently changing the Setup or blaming the receiver for decimation.
 
-Retain observations, timestamps and anomaly findings. Out-of-range intervals
+Retain observations, timestamps and anomaly findings. Positive out-of-range intervals
 are not a reason to reject the entire import, snap epochs, fabricate samples or
 automatically reset processing state. This shared rule does not mandate another
 full QA pass in every consumer; solver reset/timeout policies remain separate.
 Live absence beyond 1.2 P can be provisional; final interval classification uses
 observation time, not network arrival latency.
+The current ordered-input importer rejects time reversals as stated above;
+cadence-gap/too-short-interval Events remain unimplemented.
 
 ### Completion, late data, and state
 

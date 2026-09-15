@@ -696,6 +696,7 @@ struct Reader {
     std::vector<const cppgnss::Measurement *> selected_rows;
     bool nav_conflict = false;
     std::optional<int64_t> closure_ms;
+    std::optional<Tick> closure_time;
     uint64_t nav_skip_before = 0, raw_count = 0, raw_untimed = 0,
              raw_unsupported = 0;
     void estimates_frame(const cppgnss::FrameView &f, Batch &clocks,
@@ -901,7 +902,7 @@ struct Reader {
             }
         }
         auto paired = (!ubx || new_navigation) ? sample : std::nullopt;
-        auto reason = timeline.report_uptime(uptime, paired);
+        auto reason = timeline.report_uptime(uptime, paired, !ubx);
         new_navigation = false;
         if (ubx)
             sample = timeline.anchor();
@@ -909,6 +910,7 @@ struct Reader {
             ++restarts;
             nav_ms.reset();
             closure_ms.reset();
+            closure_time.reset();
             if (ubx)
                 sample.reset();
             auto c = ev.array.children;
@@ -1003,6 +1005,8 @@ struct Reader {
                                 : std::nullopt;
             if (precise && ubx_anchor)
                 *precise += Tick(UBX::read_le<int32_t>(f.payload, 4)) * 1000;
+            if (ubx_anchor)
+                closure_time = precise;
             timeline.set_navigation(precise);
             new_navigation = bool(time);
         }
@@ -1020,12 +1024,12 @@ struct Reader {
         const auto p = f.payload;
         if (f.protocol == cppgnss::Protocol::ubx && f.id == 0x0161 &&
             p.size() == 4) {
-            if (closure_ms && !nav_conflict &&
+            if (closure_ms && closure_time && !nav_conflict &&
                 *closure_ms % 604800000 == UBX::read_le<uint32_t>(p, 0)) {
-                complete(ev, Tick(*closure_ms) * 1000000000, setup_id, false,
-                         "NAVIGATION");
+                complete(ev, *closure_time, setup_id, false, "NAVIGATION");
             }
             closure_ms.reset();
+            closure_time.reset();
             nav_conflict = false;
         }
     }
@@ -1221,11 +1225,12 @@ struct Reader {
         state["nav_ms"] = nav_ms;
         state["nav_conflict"] = nav_conflict;
         state["closure_ms"] = closure_ms;
-        state["time_policy"] = 2;
+        state["time_policy"] = 3;
         auto save_time = [&](const char *key, std::optional<Tick> t) {
             state[key] = t ? py::object(time_parts(*t)) : py::none();
         };
         save_time("navigation", timeline.navigation);
+        save_time("closure_time", closure_time);
         save_time("progress_time", timeline.progress);
         save_time("uptime", timeline.uptime);
         save_time("anchor_uptime", timeline.anchor_uptime);
@@ -1251,7 +1256,7 @@ struct Reader {
         nav_conflict = state["nav_conflict"].cast<bool>();
         closure_ms = state["closure_ms"].cast<std::optional<int64_t>>();
         if (!state.contains("time_policy") ||
-            state["time_policy"].cast<int>() != 2)
+            state["time_policy"].cast<int>() != 3)
             throw std::runtime_error(
                 "Old receiver-time checkpoint; rebuild import");
         auto load_time = [&](const char *key) -> std::optional<Tick> {
@@ -1263,6 +1268,7 @@ struct Reader {
             return Tick(t.first) * ps + t.second;
         };
         timeline.navigation = load_time("navigation");
+        closure_time = load_time("closure_time");
         timeline.progress = load_time("progress_time");
         timeline.uptime = load_time("uptime");
         timeline.anchor_uptime = load_time("anchor_uptime");

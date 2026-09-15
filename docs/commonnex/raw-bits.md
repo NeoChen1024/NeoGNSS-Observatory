@@ -1,6 +1,7 @@
 # CommonNEX RawBits record family
 
-Status: v0 design draft; not an implemented format or API.
+Status: selected v0 design with an implemented UBX/SBF subset; see
+[RawBits importer](raw-bits-importer.md) for coverage and validation limits.
 
 [Overview](overview.md)
 
@@ -20,9 +21,9 @@ still applies; the record structure itself is not tied to a constellation.
 A decoded ephemeris or correction record does not replace received raw bits.
 RawBits-only sources and datasets are valid without raw observations. They use
 the same Setup identity and navigation-time association as mixed datasets;
-never require observations or fabricate C/L/D/S values. Valid navigation
-time association is required; unresolved records are skipped and counted after
-bounded association attempts, not stored under invented epochs. Storage requires canonical packing support, not
+never require observations or fabricate C/L/D/S values. Navigation time is
+nullable: retain unresolved records without inventing an epoch, using the
+[shared placement policy](telemetry-time.md). Storage requires canonical packing support, not
 a solver or a decoded-navigation implementation.
 Adapters normalize them directly, and ParquetNEX preserves them for later
 decoding without reopening UBX/SBF input. Scientific message-decoder
@@ -201,7 +202,8 @@ legitimate navigation fragment.
 
 ## Adapter decisions
 
-The following are proposed mappings based on the survey, not implemented APIs.
+The following are mapping contracts; implementation coverage is tracked in the
+[RawBits importer](raw-bits-importer.md).
 
 | Parameter group | Proposed retention |
 | --- | --- |
@@ -320,12 +322,11 @@ failed or unknown checks do not prevent general raw-bit preservation.
 RawBits stores the associated navigation epoch time in `nav_epoch_gpst` directly.
 It is not precise transmission or receiver arrival time, nor an observation
 measurement timestamp. No epoch table, `nav_epoch_id`, or mandatory occurrence
-counter is required. Importers may buffer records while
-waiting for a justified anchor. If association remains unresolved at the bounded
-buffer limit or finalization, skip the record and count/report the exclusion.
-Do not snap to nearby epochs or guess dates from filenames. There is no
-unassociated RawBits table or partition; raw archives remain available for future
-reconstruction. Navigation validity checks and time association are separate:
+counter is required. Emit complete records immediately with nullable navigation
+time; do not wait for an anchor, backfill timestamps or drop records for missing
+time. Untimed rows use the last known GPST day, or `1980/01/06/` before any known
+date, without assigning that directory date to the row. Do not snap to nearby
+epochs or guess dates from filenames. Navigation validity checks and time association are separate:
 a failed navigation CRC does not itself invalidate an otherwise usable epoch.
 
 Navigation context may exist without observations. Multiple occurrences within

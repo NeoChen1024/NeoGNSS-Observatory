@@ -14,7 +14,7 @@ infer the source time scale from the constellation of each observation:
 | --- | --- |
 | UBX RAWX | Measurement week plus receiver-exported GPS-aligned TOW; exact binary64-to-picosecond rounding before adding week |
 | SBF MeasEpoch | GPS-aligned WNc plus integer millisecond TOW, converted exactly |
-| UBX RawBits anchor | Valid NAV-TIMEGPS week/iTOW, deliberately millisecond navigation context; no requirement that SFRBX precede EOE |
+| UBX RawBits anchor | Valid NAV-TIMEGPS week/iTOW/fTOW, preserving the full reported precision; no requirement that SFRBX precede EOE |
 | SBF RawBits anchor | Valid synchronous navigation block WNc/TOW; never RawNavBits SIS timestamp |
 | Future RINEX/RTCM3 adapters | Resolve declared scale, full date/week and any required leap-second context explicitly; not implemented by CommonNEX import yet |
 

@@ -53,8 +53,9 @@ its non-ISO status alone is not a reason for a repository-wide header rewrite.
 Python reads bounded chunks and writes output products. Native code performs
 framing, decoding and per-message state updates without calling Python for each
 raw frame. pybind11 releases the GIL during native processing and converts final
-record batches after reacquiring it. Currently, subframe/grid paths use
-native JSON trees converted to Python lists/dictionaries; PPP/STEC numerical
+record batches after reacquiring it. CommonNEX import uses native Arrow arrays;
+the downstream SBAS grid adapter still uses batched Python dictionaries and
+native JSON trees. PPP/STEC numerical
 results use copied NumPy structured arrays. Some settings and summaries also
 use JSON text conversion. These are current implementations, not the selected
 CommonNEX interchange design below. Memory use depends on batch sizes.
@@ -67,17 +68,19 @@ axis; native receiver fields remain in raw archives and protocol decoder APIs.
 
 `ngo-dataset-qa` offers read-only `scan` (default) and explicit `restitch`.
 Both share native UBX epoch interpretation, but only reconstruction computes
-overlap fingerprints/indexes. SBAS extraction also uses that epoch assembler
-without QA diagnostics; it requires neither reconstruction nor proof of a QA
+overlap fingerprints/indexes. CommonNEX RawBits import uses independent
+receiver-time association without requiring reconstruction or proof of a QA
 run. Receiver-clock consumes CommonNEX telemetry and Events only; its shared
 vectorized unwrap also powers re-unwrapping of derived Parquet. It has no raw
 clock scanner or protocol-selection fallback.
 
-SBAS frame Parquet is the source-independent boundary: 250-bit message body,
-GPST, canonical signal identity, CRC/acceptance, and explicit continuity/end
-records. No raw envelopes, field dictionaries or source-offset mappings are
-persisted in it. Grid reads only these files, re-decodes SBAS in native batches,
-and links intervals to frame IDs. Daily partitioning never resets state.
+CommonNEX RawBits and Events are the SBAS grid input boundary: canonical
+250-bit SBAS L1 bodies, nullable navigation GPST, signal identity and scoped
+checks. Grid skips null-time occurrences and re-decodes supported bodies in
+native batches. Its interval/frame IDs are derived output identifiers, not
+CommonNEX row references. Daily partitioning never resets state. Receiver
+restart Event handling in grid remains a downstream implementation gap; see
+[SBAS processing](subframes.md).
 
 ## Selected CommonNEX interop design
 

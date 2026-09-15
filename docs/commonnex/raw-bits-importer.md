@@ -86,7 +86,7 @@ UBX SBAS and QZSS L1S may carry a ninth container word: only the documented
 
 ## Time and downstream scope
 
-UBX uses valid NAV-TIMEGPS week/iTOW (millisecond navigation context); SBF uses
+UBX uses valid NAV-TIMEGPS week/iTOW/fTOW (full reported navigation precision); SBF uses
 valid receiver TOW/WNc from PVTCartesian (4006), PVTGeodetic (4007),
 ReceiverTime (5914), or EndOfPVT (5921). Fix type is not time validity.
 RawBits arriving with a usable anchor is emitted immediately with that anchor's

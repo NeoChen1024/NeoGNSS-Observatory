@@ -1,7 +1,8 @@
 # CommonNEX and ParquetNEX v0
 
-Status: design specification under review; not an implemented format or API.
-This document set does not change existing schemas, CLI behavior, or datasets.
+Status: v0 specification under review with an implemented UBX/SBF importer and
+selected downstream consumers. The [importer](importer.md) identifies shipped
+coverage; unchecked design tasks do not imply working adapters or APIs.
 
 ## Scope and document map
 
@@ -41,7 +42,7 @@ families they use, not every navigation-content decoder.
 | --- | --- |
 | Observation-only | Directly timed Observation and applicable Events/context |
 | Observation + RawBits | Both families with their respective epoch associations |
-| RawBits-only | Directly timed RawBits and applicable Events/context, without Observation |
+| RawBits-only | RawBits with nullable navigation time and applicable Events/context, without Observation |
 
 RawBits-only is a valid CommonNEX dataset, not an incomplete observation dataset.
 Do not synthesize empty observations, require RAWX, or reject it because PPP/TEC
@@ -217,7 +218,9 @@ Checked items mean a design decision or stated research validation, not shipped 
   independent navigation context and scoped CRC checks; feed the SBAS grid reader.
 - [x] Extend RawBits to the documented GPS/Galileo/BeiDou/QZSS/SBAS containers,
   retaining unclassified services and distinguishing sample/documentary validation.
-- [ ] Add native Arrow input/replay consumers and remaining catalog mappings.
+- [x] Add native Arrow observation replay for STEC and CommonNEX telemetry input
+  for receiver-clock analysis.
+- [ ] Add remaining consumers/catalog mappings, including CommonNEX PPP input.
 - [x] Implement bounded daily observation writes and raw-tail continuation.
 - [x] Implement filename validation, next revision/part allocation and latest
   catalog selection without overwriting existing parts.

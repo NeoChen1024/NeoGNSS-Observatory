@@ -56,6 +56,15 @@ near the full association timeout: that would manufacture a false restart.
 Where freshness cannot be established, omit the offset-based check; the direct
 uptime-decrease check remains available.
 
+The importer accepts a reliable timestamp carried in the same SBF status
+report as a direct pair, without requiring another navigation message. For
+UBX's borrowed navigation context, both GPST progress and the new uptime must
+be within one cadence of the anchor and its associated uptime respectively.
+Frozen GPST progress alone does not establish freshness. If no uptime was
+available at the anchor, wait for a subsequent justified pair before building
+the offset baseline. Sparse reports may therefore omit offset-based detection;
+they still retain uptime and direct decrease detection. No GPST is extrapolated.
+
 Emit a restart Event with the triggering evidence, clear the old associations
 and start a new relationship. Store valid GPST/uptime pairs and the original
 uptime reports so downstream clock processing can reconstruct continuity.

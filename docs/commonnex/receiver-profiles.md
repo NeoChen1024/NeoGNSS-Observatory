@@ -50,9 +50,9 @@ source exporting RXM-SFRBX but no RXM-RAWX is a supported design use case for
 RawBits-only import. Validate actual model/firmware output and time anchors;
 do not require RAWX to associate navigation epochs. TIMEGPS/EOE availability
 and other justified navigation-time mappings are adapter-specific, not assumed
-for every receiver. If time cannot be resolved after bounded association
-attempts, skip and report those records; do not persist null `nav_epoch_gpst`.
-RawBits-only means no observations, not no usable navigation time.
+for every receiver. Complete RawBits without usable navigation context are
+retained with null `nav_epoch_gpst`, under the shared time/placement policy.
+RawBits-only does not require either observations or a usable time anchor.
 The standard message spelling is RXM-SFRBX.
 
 ## Time and completion contracts
@@ -60,6 +60,10 @@ The standard message spelling is RXM-SFRBX.
 UBX observation epochs use RAWX measurement time. TIMEGPS supplies navigation
 context and is not allowed to overwrite it. EOE closes its associated navigation
 epoch; the adapter must specify the relationship to RAWX completion explicitly.
+The canonical navigation timestamp includes TIMEGPS fTOW, without truncating
+sub-millisecond precision. EOE matches the original iTOW token, then emits
+completion at that TIMEGPS report's full timestamp, including across resume.
+This preserves reported precision, not precise RawBits reception time.
 
 SBF measurement epochs and companion-block completion require an explicit
 MeasEpoch/MeasExtra/EndOfMeas association rule. RawBits stores associated navigation time directly,
@@ -82,9 +86,10 @@ Exact message IDs, time anchoring and sequence rules remain mapping review
 items; Core does not invent them.
 
 RINEX epochs use their declared time system and record structure. Decode header
-scale factors and applicable event metadata. `SYS / PHASE SHIFT` is explicitly
-unsupported and ignored, not mapped to CommonNEX or applied/undone. Its presence
-alone does not reject a file; see the
+scale factors and applicable event metadata. Nonzero `SYS / PHASE SHIFT`
+declarations are unsupported and reject the input, including header updates.
+Zero declarations or absence do not trigger rejection; no shift is applied,
+undone or mapped to CommonNEX. See the
 [phase-shift exclusion](rinex-mapping.md#unsupported-phase-shift-declaration).
 Only DBHZ S observables are supported. An explicitly different unit is an
 unsupported-unit error. Interpret an omitted unit header under the applicable
