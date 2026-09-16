@@ -26,7 +26,11 @@
   },
   "network": {
     "connect_timeout_seconds": 30,
-    "stall_timeout_seconds": 300
+    "stall_timeout_seconds": 300,
+    "completion_timeout_seconds": 300,
+    "tcp_keepalive_idle_seconds": 60,
+    "tcp_keepalive_interval_seconds": 30,
+    "tcp_keepalive_probes": 5
   },
   "compression": {
     "preset": 6,

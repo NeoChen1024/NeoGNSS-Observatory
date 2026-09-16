@@ -129,7 +129,14 @@ def read_config(path):
         expand_path(destination["path"], date(2026, 9, 15))
     defaults = {
         "schedule": {"daily_utc": "00:10", "retry_seconds": 600},
-        "network": {"connect_timeout_seconds": 30, "stall_timeout_seconds": 300},
+        "network": {
+            "connect_timeout_seconds": 30,
+            "stall_timeout_seconds": 300,
+            "completion_timeout_seconds": 300,
+            "tcp_keepalive_idle_seconds": 60,
+            "tcp_keepalive_interval_seconds": 30,
+            "tcp_keepalive_probes": 5,
+        },
         "compression": {"preset": 6, "threads": 2, "memory_limit_mib": 512},
     }
     for section, values in defaults.items():
@@ -142,7 +149,8 @@ def read_config(path):
         raise PushError("schedule.daily_utc must be HH:MM in UTC")
     integer(schedule["retry_seconds"], "schedule.retry_seconds", 1, 86400)
     for key in defaults["network"]:
-        integer(config["network"][key], f"network.{key}", 1, 86400)
+        upper = 127 if key == "tcp_keepalive_probes" else 32767 if key.startswith("tcp_keepalive_") else 86400
+        integer(config["network"][key], f"network.{key}", 1, upper)
     compression = config["compression"]
     integer(compression["preset"], "compression.preset", 0, 9)
     integer(compression["threads"], "compression.threads", 1, 64)

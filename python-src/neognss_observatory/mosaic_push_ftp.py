@@ -63,6 +63,15 @@ class TransferWatch:
             self.bytes += count
             self.last_progress = time.monotonic()
 
+    def finish_data(self):
+        self.progress()
+        with self.lock:
+            if self.aborted:
+                raise PushError("Transfer cancelled after stalled progress")
+            self.last_progress = None
+            self.started = None
+        self.check_stop()
+
     def poll(self):
         with self.lock:
             stalled = self.last_progress is not None and time.monotonic() - self.last_progress >= self.stall_seconds
@@ -117,6 +126,30 @@ class ImplicitTLS(SecureFTP):
 
 
 @contextlib.contextmanager
+def transfer_phase(label):
+    LOG.info("%s", label)
+    started = time.monotonic()
+    try:
+        yield
+    except (OSError, EOFError, ftplib.Error) as exc:
+        raise PushError(f"{label}: {exc}") from exc
+    LOG.info("%s completed in %.1f seconds", label, time.monotonic() - started)
+
+
+def completion_reply(ftp, name, network):
+    timeout = network["completion_timeout_seconds"]
+    previous_timeout = ftp.sock.gettimeout()
+    try:
+        ftp.sock.settimeout(timeout)
+        with transfer_phase(f"Waiting for FTP transfer-complete reply for {name} (timeout {timeout}s)"):
+            reply = ftp.voidresp()
+            LOG.info("FTP transfer-complete reply for %s: %s", name, reply[:3])
+    finally:
+        with contextlib.suppress(OSError):
+            ftp.sock.settimeout(previous_timeout)
+
+
+@contextlib.contextmanager
 def connect(endpoint, network, watch, secure=False):
     if secure:
         if endpoint.get("verify_tls", True):
@@ -136,6 +169,12 @@ def connect(endpoint, network, watch, secure=False):
         ftp.login(endpoint["username"], endpoint["password"])
         if secure:
             ftp.prot_p()
+        # The control connection is idle while the separate data socket is busy.
+        # Linux TCP probes keep that connection active through NAT/firewalls.
+        ftp.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        ftp.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, network["tcp_keepalive_idle_seconds"])
+        ftp.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, network["tcp_keepalive_interval_seconds"])
+        ftp.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, network["tcp_keepalive_probes"])
         with watch.track(ftp.sock):
             ftp.voidcmd("TYPE I")
             yield ftp
@@ -182,7 +221,7 @@ def receive(ftp, name, output, watch, network, expected_size):
             watch.advance(len(block))
         if watch.aborted:
             raise PushError("Download cancelled after stalled progress")
-    ftp.voidresp()
+    completion_reply(ftp, name, network)
 
 
 def send(ftp, name, source, watch, network):
@@ -197,12 +236,16 @@ def send(ftp, name, source, watch, network):
                     raise PushError("Upload connection stopped accepting bytes")
                 watch.advance(count)
                 view = view[count:]
+        watch.finish_data()
         if isinstance(data, ssl.SSLSocket):
             # Complete TLS close_notify before reading the FTP completion reply.
-            data.unwrap().close()
+            timeout = network["completion_timeout_seconds"]
+            data.settimeout(timeout)
+            with transfer_phase(f"TLS data-channel shutdown for {name} (timeout {timeout}s)"):
+                data.unwrap().close()
         if watch.aborted:
             raise PushError("Upload cancelled after stalled progress")
-    ftp.voidresp()
+    completion_reply(ftp, name, network)
 
 
 def enter_directory(ftp, path):

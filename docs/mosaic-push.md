@@ -212,6 +212,18 @@ MiB/s since that transfer's data connection began (using a monotonic clock).
 Upload progress means bytes accepted by the client socket; completion additionally
 requires the server's final FTP reply.
 
+Control sockets use TCP keepalive even while the data connection is busy. The Linux
+settings default to `tcp_keepalive_idle_seconds: 60`,
+`tcp_keepalive_interval_seconds: 30`, and `tcp_keepalive_probes: 5`. This is TCP
+probing, not concurrent FTP NOOP commands that could consume transfer replies.
+The separate `completion_timeout_seconds` (default 300) bounds TLS data-channel
+shutdown and then waiting for the FTP transfer-complete reply. During these phases
+the byte-progress watchdog is suspended; socket timeouts and shutdown cancellation
+still apply. Ordinary control commands return to `connect_timeout_seconds` after
+the completion reply. Logs identify TLS shutdown, completion reply, temporary SIZE,
+rename, and final SIZE phases separately. An equal-sized remote temporary file alone
+does not count as a successfully published transfer.
+
 Compression defaults to preset 6, two threads and a 512 MiB memory limit. xz may
 reduce threads/dictionary settings to satisfy that limit. `XZ_OPT` and
 `XZ_DEFAULTS` are ignored so JSON settings and the explicit CLI override own compressor behavior. Output is

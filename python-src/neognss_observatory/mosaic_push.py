@@ -40,6 +40,7 @@ from .mosaic_push_ftp import (
     optional_size,
     receive,
     send,
+    transfer_phase,
 )
 
 LOG = logging.getLogger("neognss_observatory.mosaic_push")
@@ -331,16 +332,21 @@ class Mirror:
         directory = expand_path(endpoint["path"], date.fromisoformat(record["day"]))
         with self.session(destination=True) as ftp:
             enter_directory(ftp, directory)
-            if optional_size(ftp, archive.name) != identity["size"]:
+            with transfer_phase(f"Checking final remote size for {relative}"):
+                remote_size = optional_size(ftp, archive.name)
+            if remote_size != identity["size"]:
                 temporary = archive.name + ".ngo-mosaic-push.part"
                 LOG.info("Uploading %s (%d bytes)", relative, identity["size"])
                 with archive.open("rb") as stream:
                     send(ftp, temporary, stream, self.push_watch, self.config["network"])
-                if file_identity(archive) != identity or optional_size(ftp, temporary) != identity["size"]:
-                    raise PushError("Uploaded size mismatch or local archive changed")
-                ftp.rename(temporary, archive.name)
-                if optional_size(ftp, archive.name) != identity["size"]:
-                    raise PushError("Published remote size mismatch")
+                with transfer_phase(f"Verifying uploaded temporary size for {relative}"):
+                    if file_identity(archive) != identity or optional_size(ftp, temporary) != identity["size"]:
+                        raise PushError("Uploaded size mismatch or local archive changed")
+                with transfer_phase(f"Publishing remote archive by rename for {relative}"):
+                    ftp.rename(temporary, archive.name)
+                with transfer_phase(f"Verifying published remote size for {relative}"):
+                    if optional_size(ftp, archive.name) != identity["size"]:
+                        raise PushError("Published remote size mismatch")
             else:
                 LOG.info("Remote size matches; skipping %s", relative)
         record["uploaded"] = receipt
