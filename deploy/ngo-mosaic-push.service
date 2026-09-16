@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-only
+[Unit]
+Description=Mirror mosaic SBF archives and forward via FTPS
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=mosaic-push
+Group=mosaic-push
+# Adjust this path to the repository-root uv environment on the RPi.
+ExecStart=/opt/NeoGNSS-Observatory/.venv/bin/ngo-mosaic-push --config /etc/ngo-mosaic-push.json
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=90
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Keep this consistent with archive_root in the JSON configuration.
+ReadWritePaths=/srv/mosaic-archive
+
+[Install]
+WantedBy=multi-user.target

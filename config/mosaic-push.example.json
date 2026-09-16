@@ -1,0 +1,36 @@
+{
+  "archive_root": "/srv/mosaic-archive",
+  "source": {
+    "host": "192.168.3.1",
+    "port": 21,
+    "username": "anonymous",
+    "password": "",
+    "path": "/DSK1/SSN/GRB0051",
+    "station": "bee_",
+    "year_base": 2000
+  },
+  "destination": {
+    "enabled": true,
+    "host": "archive.example.net",
+    "port": 21,
+    "username": "replace-me",
+    "password": "replace-me",
+    "tls": "explicit",
+    "verify_tls": true,
+    "ca_file": null,
+    "path": "/archive/%Y/%m/%d"
+  },
+  "schedule": {
+    "daily_utc": "00:10",
+    "retry_seconds": 600
+  },
+  "network": {
+    "connect_timeout_seconds": 30,
+    "stall_timeout_seconds": 300
+  },
+  "compression": {
+    "preset": 6,
+    "threads": 2,
+    "memory_limit_mib": 512
+  }
+}

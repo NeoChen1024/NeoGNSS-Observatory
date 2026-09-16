@@ -1,0 +1,25 @@
+{
+  "archive_root": "~mosaic/BEE0",
+  "source": {
+    "host": "mosaic-x5",
+    "path": "/DSK1/SSN/GRB0051",
+    "station": "bee_",
+    "year_base": 2000
+  },
+  "destination": {
+    "enabled": false
+  },
+  "schedule": {
+    "daily_utc": "00:10",
+    "retry_seconds": 600
+  },
+  "network": {
+    "connect_timeout_seconds": 30,
+    "stall_timeout_seconds": 300
+  },
+  "compression": {
+    "preset": 6,
+    "threads": 2,
+    "memory_limit_mib": 512
+  }
+}

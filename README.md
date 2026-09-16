@@ -33,6 +33,9 @@ All Python commands use the `ngo-` prefix, including `ngo-cnex-import`. With the
 executable directory on `PATH`, type `ngo-` and use shell command completion
 to list them. Each command provides `--help`.
 
+[`ngo-mosaic-push`](docs/mosaic-push.md) mirrors closed mosaic receiver SBF files
+over FTP, keeps verified local xz archives, and forwards them to one FTPS server.
+
 The Python package requires Python 3.11 or newer. Runtime dependencies are
 declared in `requirements.txt`. The `ngo-cddis-download` command inventories,
 downloads and verifies external GNSS products. `ngo-dataset-qa` performs optional

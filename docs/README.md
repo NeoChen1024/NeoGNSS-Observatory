@@ -22,6 +22,7 @@ only when they affect present interpretation or processing.
 
 ## Tools
 
+- [Mosaic push](mosaic-push.md): receiver FTP mirroring, verified local xz archives and FTPS forwarding.
 - [CommonNEX importer pilot](commonnex/importer.md): native UBX/SBF observations,
   RawBits, receiver telemetry and Events to daily Parquet, tail parts and revisions.
 - [GPS STEC and receiver DCB](stec.md): CommonNEX input, incremental phase leveling,
