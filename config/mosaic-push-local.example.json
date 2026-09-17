@@ -1,14 +1,20 @@
 {
   "archive_root": "~mosaic/BEE0",
+  "output": {
+    "group": null,
+    "mode": null,
+    "dirmode": null
+  },
+  "storage": {
+    "limit_gib": null
+  },
   "source": {
     "host": "mosaic-x5",
     "path": "/DSK1/SSN/GRB0051",
     "station": "bee_",
     "year_base": 2000
   },
-  "destination": {
-    "enabled": false
-  },
+  "destinations": {},
   "schedule": {
     "daily_utc": "00:10",
     "retry_seconds": 600

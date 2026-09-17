@@ -33,8 +33,15 @@ All Python commands use the `ngo-` prefix, including `ngo-cnex-import`. With the
 executable directory on `PATH`, type `ngo-` and use shell command completion
 to list them. Each command provides `--help`.
 
-[`ngo-mosaic-push`](docs/mosaic-push.md) mirrors closed mosaic receiver SBF files
-over FTP, keeps verified local xz archives, and forwards them to one FTPS server.
+[`ngo-mosaic-push`](docs/mosaic-push.md) runs as a daemon or one-shot sync on a
+Linux receiver host such as a Raspberry Pi. It retrieves closed mosaic SBF files
+over FTP, verifies local xz compression, and publishes archives with per-file
+SHA-512 checksums of the original SBF to independently enabled FTPS targets.
+A single JSON configuration controls resumable transfers, retry backoff, local
+file/directory permissions and an optional storage cap that protects pending
+uploads while evicting older completed archives. Start with the
+[configuration example](config/mosaic-push.example.json), or the
+[local-only example](config/mosaic-push-local.example.json) without FTPS forwarding.
 
 The Python package requires Python 3.11 or newer. Runtime dependencies are
 declared in `requirements.txt`. The `ngo-cddis-download` command inventories,

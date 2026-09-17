@@ -1,5 +1,13 @@
 {
   "archive_root": "/srv/mosaic-archive",
+  "output": {
+    "group": null,
+    "mode": null,
+    "dirmode": null
+  },
+  "storage": {
+    "limit_gib": null
+  },
   "source": {
     "host": "192.168.3.1",
     "port": 21,
@@ -9,16 +17,21 @@
     "station": "bee_",
     "year_base": 2000
   },
-  "destination": {
-    "enabled": true,
-    "host": "archive.example.net",
-    "port": 21,
-    "username": "replace-me",
-    "password": "replace-me",
-    "tls": "explicit",
-    "verify_tls": true,
-    "ca_file": null,
-    "path": "/archive/%Y/%m/%d"
+  "destinations": {
+    "primary": {
+      "enabled": true,
+      "host": "archive.example.net",
+      "port": 21,
+      "username": "replace-me",
+      "password": "replace-me",
+      "tls": "explicit",
+      "verify_tls": true,
+      "ca_file": null,
+      "path": "/archive/%Y/%m/%d"
+    },
+    "backup": {
+      "enabled": false
+    }
   },
   "schedule": {
     "daily_utc": "00:10",
