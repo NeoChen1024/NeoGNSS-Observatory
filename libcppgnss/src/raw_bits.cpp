@@ -453,6 +453,21 @@ RawBitsResult decode(const FrameView &f) {
     b.resize(length);
     pack(r, b);
     integrity(r, b);
+    if (sbf && r.family == "BDS_B2B_UNCLASSIFIED" && p[7] == 1 &&
+        value(b, 0, 6) == r.satellite &&
+        std::any_of(r.checks.begin(), r.checks.end(), [](const auto &c) {
+            return c.origin == "independent" && c.kind == "crc" &&
+                   c.scope == "message" && c.result == "pass";
+        })) {
+        // July 2020 B2b/PPP-B2b ICD type assignments. The unprotected
+        // prefix is only a consistency gate, never a service discriminator.
+        // Preserve reserved types and failed checks without guessing a family.
+        const auto type = value(b, 12, 18);
+        if (type == 10 || type == 30 || type == 40)
+            r.family = "BDS_BCNAV3";
+        else if ((type >= 1 && type <= 7) || type == 63)
+            r.family = "BDS_PPP_B2B";
+    }
     if (sbf) {
         if (length == 1800) {
             receiver(r, "crc", "sf2", p[7], "CRCSF2");

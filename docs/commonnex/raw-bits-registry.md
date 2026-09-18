@@ -86,8 +86,8 @@ mappings may emit records, regardless of this registry status.
 | `BDS_D2` | `D1D2_300_V1` | 300 | CHECKED common BCH packing; D2 identification must be justified |
 | `BDS_BCNAV1` | `BCNAV1_1800_V1` | 1800 | CHECKED SF2/SF3 CRC regions, not complete BCH/LDPC validation |
 | `BDS_BCNAV2` | `BCNAV2_576_V1` | 576 | CHECKED systematic-region CRC |
-| `BDS_BCNAV3` | `B2B_984_V1` | 984 | CHECKED common retained envelope; service routing still pending |
-| `BDS_PPP_B2B` | `B2B_984_V1` | 984 | CHECKED common retained envelope; service routing still pending |
+| `BDS_BCNAV3` | `B2B_984_V1` | 984 | CHECKED SBF; guarded routing for types 10/30/40 |
+| `BDS_PPP_B2B` | `B2B_984_V1` | 984 | CHECKED SBF types 1-5/63; 6/7 documentary routing |
 | `SBAS_L1` | `SBAS_L1_250_V1` | 250 | CHECKED |
 | `SBAS_L5` | `SBAS_L5_250_V1` | 250 | CHECKED in full SBF recording |
 | `GPS_CNAV2` | `CNAV2_1800_V1` | 1800 | DOCUMENTED; no current sample |
@@ -108,10 +108,11 @@ other CRC region is not a format equivalence. No system prefix is required.
 The two B2b families share an outer unpacker, not a correction/ephemeris decoder.
 The retained 984-bit region is a 12-bit prefix followed by the 972-bit coded
 message; the systematic 486-bit region ends in CRC. The service's subsequent
-field interpretation differs. A CRC pass cannot select the family. Until a
-reliable service discriminator is specified, do not label every BDSRawB2b
-record as either family or silently claim semantic normalization is complete.
-Use the explicitly selected `BDS_B2B_UNCLASSIFIED` family when unresolved.
+field interpretation differs. A CRC pass alone cannot select the family.
+The implemented supported-type classifier additionally requires receiver CRC
+success, prefix PRN agreement and an assigned type under the July 2020 ICDs;
+see the [routing contract](raw-bits-layouts.md#b2b-open-service-versus-ppp-b2b).
+Use `BDS_B2B_UNCLASSIFIED` for unresolved/reserved/failed-check records.
 The formal July 2020 ICDs also define identical LDPC matrices. Their prefix
 semantics and systematic data fields differ; see the
 [B2b comparison](raw-bits-layouts.md#b2b-open-service-versus-ppp-b2b) for exact

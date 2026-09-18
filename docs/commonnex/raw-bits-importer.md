@@ -22,7 +22,7 @@ version 2. Other revisions/signals are counted, never guessed from payload size.
 | BeiDou D1/D2 | 4047, unclassified subtype | Explicit D1/D2 sigId | `D1D2_300_V1` | Actual UBX/SBF |
 | BeiDou B-CNAV1 | 4218 | Not mapped | `BCNAV1_1800_V1` | Actual SBF |
 | BeiDou B-CNAV2 | 4219 | Not mapped | `BCNAV2_576_V1` | Actual SBF |
-| BeiDou B2b, unclassified service | 4242 | Not mapped | `B2B_984_V1` | Actual SBF |
+| BeiDou B2b, B-CNAV3 / PPP-B2b / unclassified | 4242 | Not mapped | `B2B_984_V1` | Actual SBF; guarded type routing |
 | SBAS L1 | 4020 | SBAS L1 | `SBAS_L1_250_V1` | Actual UBX/SBF |
 | SBAS L5 | 4021 | Not mapped | `SBAS_L5_250_V1` | Actual SBF |
 | GPS/QZSS CNAV-2 | 4221 / 4227 | Not mapped | `CNAV2_1800_V1` | Documentary; constructed containers only |
@@ -31,7 +31,8 @@ version 2. Other revisions/signals are counted, never guessed from payload size.
 | QZSS L6, unclassified service | 4069,4270,4271 | Not mapped | `L6_2000_V1` | Documentary; constructed containers only |
 
 Current real-data checks cover Era A/B samples, a complete Era C SBF day and
-the complete BEE0 2026-09-13 recording. They establish these receiver mappings,
+the complete BEE0 2026-09-13 recording; B2b/QZSS CNAV classification additionally
+uses the complete BEE0 2026-09-16/17 recordings. They establish these receiver mappings,
 not full archive coverage or exhaustive receiver/firmware support. Constructed
 inputs check bit order, padding, lengths, routing and Arrow output; they are
 not RF evidence. Galileo QP/restricted signals without an agreed receiver
@@ -41,9 +42,13 @@ representation remain outside this implementation. GLONASS/NavIC are excluded.
 
 - `BDS_D1D2_UNCLASSIFIED` retains SBF legacy bits when no explicit subtype is
   supplied. UBX sigId explicitly distinguishes D1/D2 and is mapped accordingly.
-- `BDS_B2B_UNCLASSIFIED` preserves both possible services' common envelope.
-  CRC success, PRN range and reserved/corrupted message types do not identify
-  B-CNAV3 versus PPP-B2b. Content decoding may classify later using evidence.
+- B2b routing requires both receiver and independent message CRC success and
+  agreement between the body prefix PRN and SBF satellite identity. Under the
+  July 2020 ICD assignments, types 10/30/40 select `BDS_BCNAV3`, while 1-7/63
+  select `BDS_PPP_B2B`. All other cases retain `BDS_B2B_UNCLASSIFIED`.
+  CRC alone, reserved prefix values or PRN ranges never select the service.
+  No classifier state is shared across occurrences; body/checks are unchanged.
+  This is supported-type routing, not full content validation or a PPP decoder.
 - `QZS_L6_UNCLASSIFIED` preserves full 2000-bit messages, including RS parity.
   L6D/L6E contributors are retained when known; neither implies CLAS/MADOCA.
   Legacy 4069 Source 0 means unknown (empty contributors), 1 L6D, 2 L6E.

@@ -61,7 +61,7 @@ No receiver implementation is inferred from another receiver's support.
 | BeiDou D1/D2 | 300 / 38 | subframe | UBX and SBF BCH-layout validation |
 | BeiDou B1C (B-CNAV1) | 1800 / 225 | frame represented as `message` | SBF SF2/SF3 CRC slices validated |
 | BeiDou B2a (B-CNAV2) | 576 / 72 | frame represented as `message` | SBF information-region CRC validated |
-| BeiDou B2b | 984 / 123 | frame represented as `message` | SBF CRC slice validated; B-CNAV3 versus PPP-B2b service routing remains TODO |
+| BeiDou B2b | 984 / 123 | frame represented as `message` | SBF CRC slice validated; guarded supported-type service routing |
 | SBAS L1 | 250 / 32 | message | UBX and SBF CRC validation |
 | SBAS L5 | 250 / 32 | message | Full-file SBF CRC validation |
 
@@ -92,6 +92,15 @@ merely to make the chain pass.
 Take `W[0:300]` from ten U4 words, discarding the final 20 container bits.
 Unlike LNAV, do not take 30 bits from each word. The last 24 body bits are CRC;
 the check covers the preceding 276 bits. This is not a CNAV-2 layout.
+
+QZSS L2C/L5 retain `QZS_CNAV`, including type 0 (test/default message),
+type 60 (QZNMA, L5 only) and type 61 (regional ionosphere/clock/ISC).
+These are content types within CNAV, not separate body formats or service
+families. Preserve failed-check and reserved-type occurrences too; family
+identification from the receiver container does not assert usable navigation.
+IS-QZSS-PNT-006 sections 4.3.1/4.3.2 define these distinctions. Complete BEE0
+September 16/17 recordings include CRC-valid types 0, 10, 11, 12, 15, 30-33,
+35, 37, 60 and 61; type 60 occurs only on L5 in those inputs.
 
 ### Galileo pages
 
@@ -180,12 +189,19 @@ The open-service ICD covers MEO/IGSO B-CNAV3 and defines types 10, 30 and 40;
 type 0 is invalid and all others are reserved (table 7-1). The PPP ICD
 describes GEO broadcasts and defines types 1-7 and 63 (null information),
 with 8-62 reserved (table 6-1); that table does not assign type 0.
-Known service context and a valid, defined message type provide evidence
-for routing. Do not classify solely by a hard-coded PRN range, the availability
-bit, body length, or CRC success. Reserved/corrupt types cannot independently
-identify a family. Actual receiver service routing remains to be verified;
-use `BDS_B2B_UNCLASSIFIED` for an unresolved record rather than choosing either
-service. The shared format still retains the full coded envelope.
+The implemented classifier is bounded to those documented type assignments:
+require independent message CRC success, SBF CRCPassed=1, and agreement of
+prefix PRN with the SBF satellite. Then 10/30/40 select `BDS_BCNAV3`, and
+1-7/63 select `BDS_PPP_B2B`. Otherwise retain `BDS_B2B_UNCLASSIFIED`.
+This is not authentication or a guarantee about future reserved-type reuse.
+Do not classify solely by a hard-coded PRN range, availability bit, length or
+CRC success. Do not inherit a family from previous messages by that satellite.
+Reserved prefix bits are preserved, not required to be zero or used for routing.
+Complete BEE0 September 16/17 recordings confirm both service type sets
+(PPP types 1-5/63; 6/7 remain documentary). They also contain CRC-valid types
+0/8 and prefix-PRN mismatches: those remain unclassified. Prefix agreement is
+only a consistency gate because CRC does not protect it. Canonical bodies,
+LDPC parity and all original checks remain unchanged by classification.
 
 B-CNAV3 SOW refers to the start of its transmitted frame in BDT; it does not
 replace the record's GPST navigation-epoch context. PPP correction epochs
@@ -240,7 +256,7 @@ Completed checkboxes describe research validation, not shipped importer support.
 
 - [x] Enumerate the reviewed uppercase signal/family/format identifiers and
   legal pairs in raw-bits-registry.md, distinguishing pending receiver support.
-- [ ] Finalize B-CNAV3 versus PPP-B2b service routing; CRC agreement alone is
+- [x] Implement guarded B-CNAV3 versus PPP-B2b supported-type routing; CRC agreement alone is
   insufficient to identify the service.
 
 ### Deferred source validation
