@@ -175,10 +175,50 @@ is on stdout; processing progress and warnings are on stderr.
 
 ### Head-only ordering and time reversal
 
-Import uses an ordered parsing producer and one Parquet writer thread. The
-writer partitions Arrow batches by GPST day and compresses with Zstandard level
-3 while native parsing continues. At most two writes are outstanding (including
-the active write), bounding queued data to two decoded input chunks; decoded
+Import uses an ordered parsing producer with a native stateless decode pool,
+one native Arrow construction thread and a Python Parquet write coordinator
+with four catalog-write workers.
+`--decode-workers` defaults to 4 (range 1-32, including the feeding thread);
+1 performs decoding and Arrow construction inline for comparison or constrained
+hosts. The Arrow and Python writer threads are additional to this decode-worker count.
+The pool parallelizes RAWX/MeasEpoch, MeasExtra and RawBits
+decoding, including canonical packing and independent navigation checks.
+Framing/transport checks, time association, restart detection, epoch assembly,
+MeasExtra joins remain sequential in original frame order. MeasExtra matching
+uses reusable sorted indexes of channel/signal/antenna keys, retaining the
+unmatched and ambiguous-key rules without per-epoch tree-node allocations.
+Worker completion order never determines scientific record order.
+
+Completed observations and RawBits move to the single-owner Arrow construction
+thread in bounded batches. Time, uptime and archive-day context are captured
+at their original stream position, not looked up later in the worker. At most
+two build jobs are outstanding, including the active job; other catalog arrays
+remain on the feeding thread. No builder is written from two threads. Each
+successful `feed()` drains build jobs before exporting arrays or allowing a
+checkpoint. Build failures propagate through the feeding call.
+
+Complete frames are copied into owned bounded batches (at most 2,048 frames,
+or a 1 MiB wire-byte threshold plus the final frame). Worker tasks claim small
+groups, not individual Python callbacks. Tiny batches run on the feeding
+thread. Each decode batch finishes before its results or errors are consumed
+in order; no jobs remain at a successful `feed()` return/checkpoint. A failed
+feed is not a resumable publication: retain the last published continuation
+state rather than attempting to checkpoint partially consumed work. Worker
+count is execution configuration, not scientific state, and may change on resume.
+
+The coordinator partitions Arrow batches by GPST day and submits independent
+catalog writes to a four-thread pool. Each catalog has at most one outstanding
+write, and a chunk's writes finish before the next chunk is dispatched. A given
+ParquetWriter is never written concurrently. Compression remains Zstandard
+level 3. Writer allocation, part numbering, counts and publication stay on the
+coordinator; workers only encode/write their assigned batch. Eviction drains
+outstanding writes before closing any writer, preserving the eight-open-writer
+limit. A write failure prevents queued chunks from publishing; shutdown waits
+for active writes before closing files and retaining unpublished staging.
+
+Native parsing continues during catalog writes. At most two input-chunk write
+tasks are outstanding (including the active coordinator task), bounding queued
+data to two decoded input chunks; decoded
 memory can be substantially larger than `--chunk-mib`. Arrow buffers cross the
 thread boundary without serialization. Writer failures propagate to the importer;
 each publication barrier drains its writes before updating continuation state. Decoder
@@ -186,7 +226,8 @@ state remains sequential across files. The progress bar measures parsed input;
 the importer waits for the final queued writes before completing.
 
 Native buffers reserve leaf capacity from the previous bounded batch. Observation
-scalar columns are populated per epoch, with child-length and validity invariants
+scalar and quality columns are populated per epoch, batching all-null columns
+and struct completion, with child-length and validity invariants
 checked before finishing each group. RawBits reads packed receiver words directly
 and retains the same canonical packing and scoped integrity results without
 byte-per-bit expansion. CRC lookup tables preserve the existing polynomials and

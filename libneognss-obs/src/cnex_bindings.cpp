@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "cnex_build.hpp"
+#include "cnex_decode.hpp"
 #include "receiver_time.hpp"
 #include <bit>
 #include <boost/int128/int128.hpp>
@@ -298,65 +300,100 @@ std::shared_ptr<Batch> observations() {
     b->init();
     return b;
 }
-void append_details(Batch &b, const cppgnss::Measurement &m) {
+void finish_struct(ArrowArray &array, int64_t count) {
+    const auto length = array.length + count;
+    for (int64_t i = 0; i < array.n_children; ++i)
+        if (array.children[i]->length != length)
+            throw std::runtime_error("Struct column length mismatch");
+    auto bitmap = ArrowArrayValidityBitmap(&array);
+    if (bitmap->buffer.data)
+        check(ArrowBitmapAppend(bitmap, 1, count));
+    array.length = length;
+}
+void reserve_boolean_fill(ArrowArray &array, int64_t count) {
+    // The pinned nanoarrow bulk empty/null path reserves only length + 1
+    // bits before filling count bits. Size the boolean data buffer first,
+    // including boolean children of a bulk-null struct.
+    auto buffer = ArrowArrayBuffer(&array, 1);
+    const auto bytes = (array.length + count + 7) / 8;
+    if (bytes > buffer->size_bytes)
+        check(ArrowBufferAppendFill(buffer, 0, bytes - buffer->size_bytes));
+}
+void append_details(Batch &b,
+                    std::span<const cppgnss::Measurement *const> rows) {
     auto c = b.array.children;
-    int statuses[] = {m.code_status, m.phase_status, 2};
-    float sigmas[] = {m.code_sigma, m.phase_sigma, m.doppler_sigma};
-    std::optional<bool> bounds[] = {m.code_sigma_lower_bound,
-                                    m.phase_sigma_lower_bound,
-                                    m.doppler_sigma_lower_bound};
+    const auto count = int64_t(rows.size());
     for (int i = 0; i < 3; ++i) {
         auto q = c[9 + i];
-        str(q->children[0], statuses[i] == 0   ? "valid"
-                            : statuses[i] == 1 ? "invalid"
-                                               : "unknown");
-        number(q->children[1], sigmas[i]);
-        check(ArrowArrayAppendNull(q->children[2], 1));
-        if (std::isfinite(sigmas[i]) && bounds[i].has_value())
-            integer(q->children[3], *bounds[i]);
-        else
-            check(ArrowArrayAppendNull(q->children[3], 1));
-        check(ArrowArrayFinishElement(q));
+        for (auto m : rows) {
+            const int status = i == 0   ? m->code_status
+                               : i == 1 ? m->phase_status
+                                        : 2;
+            str(q->children[0], status == 0   ? "valid"
+                                : status == 1 ? "invalid"
+                                              : "unknown");
+            const float sigma = i == 0   ? m->code_sigma
+                                : i == 1 ? m->phase_sigma
+                                         : m->doppler_sigma;
+            const auto bound = i == 0   ? m->code_sigma_lower_bound
+                               : i == 1 ? m->phase_sigma_lower_bound
+                                        : m->doppler_sigma_lower_bound;
+            number(q->children[1], sigma);
+            if (std::isfinite(sigma) && bound.has_value())
+                integer(q->children[3], *bound);
+            else
+                check(ArrowArrayAppendNull(q->children[3], 1));
+        }
+        check(ArrowArrayAppendNull(q->children[2], count));
+        finish_struct(*q, count);
     }
     auto q = c[12];
-    check(ArrowArrayAppendNull(q->children[0], 1));
-    integer(q->children[1], m.half_ambiguity);
-    if (m.half_subtracted)
-        integer(q->children[2], *m.half_subtracted);
-    else
-        check(ArrowArrayAppendNull(q->children[2], 1));
-    check(ArrowArrayAppendNull(q->children[3], 1));
-    auto l = q->children[4];
-    if (m.lock_ms) {
-        decimal(l->children[0], Tick(*m.lock_ms) * 1000000000);
-        check(ArrowArrayAppendNull(l->children[1], 1));
-        str(l->children[2],
-            m.lock_lower_bound ? "lower_bound" : "reported_value");
-        check(ArrowArrayFinishElement(l));
-    } else
-        check(ArrowArrayAppendNull(l, 1));
-    if (m.continuity_counter) {
-        integer(q->children[5], *m.continuity_counter);
-        integer(q->children[6], 256);
-    } else {
-        check(ArrowArrayAppendNull(q->children[5], 1));
-        check(ArrowArrayAppendNull(q->children[6], 1));
-    }
-    check(ArrowArrayFinishElement(q));
-    check(ArrowArrayAppendNull(c[13], 1));
-    if (m.has_extra || m.code_smoothing_applied.has_value()) {
-        auto x = c[14];
-        number(x->children[0], m.code_multipath_m);
-        number(x->children[1], m.code_smoothing_m);
-        number(x->children[2], m.phase_multipath_cycles);
-        if (m.code_smoothing_applied.has_value())
-            integer(x->children[3], *m.code_smoothing_applied);
+    reserve_boolean_fill(*q->children[0], count);
+    check(ArrowArrayAppendNull(q->children[0], count));
+    check(ArrowArrayAppendNull(q->children[3], count));
+    for (auto row : rows) {
+        const auto &m = *row;
+        integer(q->children[1], m.half_ambiguity);
+        if (m.half_subtracted)
+            integer(q->children[2], *m.half_subtracted);
         else
-            check(ArrowArrayAppendNull(x->children[3], 1));
-        check(ArrowArrayFinishElement(x));
-    } else
-        check(ArrowArrayAppendNull(c[14], 1));
-    number(c[15], m.doppler_variance_factor);
+            check(ArrowArrayAppendNull(q->children[2], 1));
+        auto l = q->children[4];
+        if (m.lock_ms) {
+            decimal(l->children[0], Tick(*m.lock_ms) * 1000000000);
+            check(ArrowArrayAppendNull(l->children[1], 1));
+            str(l->children[2],
+                m.lock_lower_bound ? "lower_bound" : "reported_value");
+            check(ArrowArrayFinishElement(l));
+        } else
+            check(ArrowArrayAppendNull(l, 1));
+        if (m.continuity_counter) {
+            integer(q->children[5], *m.continuity_counter);
+            integer(q->children[6], 256);
+        } else {
+            check(ArrowArrayAppendNull(q->children[5], 1));
+            check(ArrowArrayAppendNull(q->children[6], 1));
+        }
+    }
+    finish_struct(*q, count);
+    reserve_boolean_fill(*c[13]->children[3], count);
+    check(ArrowArrayAppendNull(c[13], count));
+    for (auto row : rows) {
+        const auto &m = *row;
+        if (m.has_extra || m.code_smoothing_applied.has_value()) {
+            auto x = c[14];
+            number(x->children[0], m.code_multipath_m);
+            number(x->children[1], m.code_smoothing_m);
+            number(x->children[2], m.phase_multipath_cycles);
+            if (m.code_smoothing_applied.has_value())
+                integer(x->children[3], *m.code_smoothing_applied);
+            else
+                check(ArrowArrayAppendNull(x->children[3], 1));
+            check(ArrowArrayFinishElement(x));
+        } else
+            check(ArrowArrayAppendNull(c[14], 1));
+        number(c[15], m.doppler_variance_factor);
+    }
 }
 void append_epoch(Batch &b, std::span<const cppgnss::Measurement *const> rows,
                   Tick t, std::string_view setup_id) {
@@ -381,18 +418,10 @@ void append_epoch(Batch &b, std::span<const cppgnss::Measurement *const> rows,
         number(c[7], m->doppler);
     for (auto m : rows)
         number(c[8], m->cn0);
-    for (auto m : rows)
-        append_details(b, *m);
+    append_details(b, rows);
     // Equivalent to FinishElement for N non-null struct rows, with the same
     // child-length invariant checked once after all columns have been filled.
-    auto length = b.array.length + int64_t(rows.size());
-    for (int64_t i = 0; i < b.array.n_children; ++i)
-        if (c[i]->length != length)
-            throw std::runtime_error("Observation column length mismatch");
-    auto bitmap = ArrowArrayValidityBitmap(&b.array);
-    if (bitmap->buffer.data)
-        check(ArrowBitmapAppend(bitmap, 1, rows.size()));
-    b.array.length = length;
+    finish_struct(b.array, rows.size());
 }
 std::shared_ptr<Batch> events() {
     auto b = std::make_shared<Batch>();
@@ -478,8 +507,8 @@ std::shared_ptr<Batch> raw_bits() {
     return b;
 }
 void append_bits(Batch &b, std::optional<Tick> t, const std::string &setup_id,
-                 const cppgnss::RawBits &bits,
-                 const neognss_obs::ReceiverTime &timeline) {
+                 const cppgnss::RawBits &bits, std::optional<Tick> uptime,
+                 int64_t archive_day) {
     auto c = b.array.children;
     str(c[0], setup_id);
     if (t)
@@ -528,14 +557,14 @@ void append_bits(Batch &b, std::optional<Tick> t, const std::string &setup_id,
     optional_integer(c[15]->children[0], bits.viterbi_count);
     optional_integer(c[15]->children[1], bits.rs_corrected_symbols);
     check(ArrowArrayFinishElement(c[15]));
-    if (auto uptime = timeline.associated_uptime()) {
+    if (uptime) {
         decimal(c[16], *uptime);
         str(c[17], "ASSOCIATED");
     } else {
         check(ArrowArrayAppendNull(c[16], 1));
         check(ArrowArrayAppendNull(c[17], 1));
     }
-    integer(c[18], t ? int64_t(*t / ps / 86400) : timeline.archive_day);
+    integer(c[18], t ? int64_t(*t / ps / 86400) : archive_day);
     check(ArrowArrayFinishElement(&b.array));
 }
 std::shared_ptr<Batch> measurement_clock() {
@@ -644,8 +673,20 @@ std::shared_ptr<Batch> estimates(bool pulse) {
     b->init();
     return b;
 }
+struct ObservationOutput {
+    Tick time;
+    std::vector<cppgnss::Measurement> rows;
+};
+struct RawOutput {
+    std::optional<Tick> time, uptime;
+    int64_t archive_day;
+    cppgnss::RawBits bits;
+};
 struct Reader {
     cppgnss::StreamDecoder decoder;
+    neognss_obs::CnexDecodePool decode_pool;
+    neognss_obs::CnexBuildLane build_lane;
+    unsigned decode_workers;
     std::string setup_id;
     unsigned antenna;
     std::optional<cppgnss::Measurements> pending;
@@ -693,7 +734,8 @@ struct Reader {
     std::map<std::string, uint64_t> raw_checks, raw_skipped;
     std::string check_key;
     std::array<Batch::Capacity, 7> capacity_hints;
-    std::vector<const cppgnss::Measurement *> selected_rows;
+    using JoinEntry = std::pair<uint32_t, cppgnss::Measurement *>;
+    std::vector<JoinEntry> join_targets, join_sources;
     bool nav_conflict = false;
     std::optional<int64_t> closure_ms;
     std::optional<Tick> closure_time;
@@ -953,8 +995,10 @@ struct Reader {
                 sample ? int64_t(*sample / ps / 86400) : timeline.archive_day);
         check(ArrowArrayFinishElement(&out.array));
     }
-    void navigation(const cppgnss::FrameView &f, Batch &out, Batch &ev,
-                    const std::optional<cppgnss::Measurements> &measurements) {
+    void navigation(const cppgnss::FrameView &f, std::vector<RawOutput> &out,
+                    Batch &ev,
+                    const std::optional<cppgnss::Measurements> &measurements,
+                    cppgnss::RawBitsResult &decoded) {
         // Replayed observation tails must not replay already imported RawBits.
         if (f.offset < nav_skip_before)
             return;
@@ -965,8 +1009,7 @@ struct Reader {
                                                       observation import. */
             }
         }
-        auto emit = [&](std::optional<Tick> t, const cppgnss::RawBits &bits) {
-            append_bits(out, t, setup_id, bits, timeline);
+        auto emit = [&](std::optional<Tick> t, cppgnss::RawBits &bits) {
             if (!t)
                 ++raw_untimed;
             ++raw_count;
@@ -983,6 +1026,8 @@ struct Reader {
                 }
                 ++raw_checks[check_key];
             }
+            out.push_back({t, timeline.associated_uptime(),
+                           timeline.archive_day, std::move(bits)});
         };
         const bool sbf_anchor =
             f.protocol == cppgnss::Protocol::sbf &&
@@ -1010,7 +1055,6 @@ struct Reader {
             timeline.set_navigation(precise);
             new_navigation = bool(time);
         }
-        auto decoded = cppgnss::decode_raw_bits(f);
         if (decoded.status == cppgnss::RawBitsStatus::unsupported ||
             decoded.status == cppgnss::RawBitsStatus::malformed) {
             ++raw_unsupported;
@@ -1034,27 +1078,44 @@ struct Reader {
         }
     }
     void associate_extras() {
-        using Key = std::tuple<unsigned, unsigned, unsigned>;
         auto key = [](const auto &m) {
-            return Key{m.receiver_channel, m.native_signal, m.antenna};
+            return (uint32_t(m.receiver_channel) << 16) |
+                   (uint32_t(m.native_signal) << 8) | m.antenna;
         };
-        std::map<Key, std::vector<cppgnss::Measurement *>> targets;
-        std::map<Key, size_t> source_counts;
+        join_targets.clear();
+        join_sources.clear();
         for (auto &m : pending->rows)
-            targets[key(m)].push_back(&m);
+            join_targets.emplace_back(key(m), &m);
         for (auto &x : extras)
-            ++source_counts[key(x)];
-        for (auto &x : extras) {
-            auto found = targets.find(key(x));
-            if (found == targets.end()) {
-                ++extra_unmatched;
+            join_sources.emplace_back(key(x), &x);
+        auto less = [](const JoinEntry &a, const JoinEntry &b) {
+            return a.first < b.first;
+        };
+        std::sort(join_targets.begin(), join_targets.end(), less);
+        std::sort(join_sources.begin(), join_sources.end(), less);
+        size_t target = 0;
+        for (size_t source = 0; source < join_sources.size();) {
+            const auto k = join_sources[source].first;
+            size_t end = source + 1;
+            while (end < join_sources.size() && join_sources[end].first == k)
+                ++end;
+            const auto count = end - source;
+            auto &x = *join_sources[source].second;
+            source = end;
+            while (target < join_targets.size() &&
+                   join_targets[target].first < k)
+                ++target;
+            if (target == join_targets.size() ||
+                join_targets[target].first != k) {
+                extra_unmatched += count;
                 continue;
             }
-            if (found->second.size() != 1 || source_counts[key(x)] != 1) {
-                ++extra_ambiguous;
+            if (count != 1 || (target + 1 < join_targets.size() &&
+                               join_targets[target + 1].first == k)) {
+                extra_ambiguous += count;
                 continue;
             }
-            auto &m = *found->second[0];
+            auto &m = *join_targets[target].second;
             m.has_extra = true;
             m.code_sigma = x.code_sigma;
             m.phase_sigma = x.phase_sigma;
@@ -1078,10 +1139,11 @@ struct Reader {
         extras.clear();
     }
     Reader(const std::string &protocol, const std::string &id, unsigned ant,
-           int64_t period_seconds, int64_t period_ps)
+           int64_t period_seconds, int64_t period_ps, unsigned workers)
         : decoder(protocol == "ubx" ? cppgnss::Protocol::ubx
                                     : cppgnss::Protocol::sbf),
-          setup_id(id), antenna(ant),
+          decode_pool(workers), build_lane(workers > 1),
+          decode_workers(workers), setup_id(id), antenna(ant),
           timeline(Tick(period_seconds) * ps + period_ps) {
         if (period_seconds < 0 || period_ps < 0 || period_ps >= ps ||
             timeline.period <= 0)
@@ -1107,7 +1169,36 @@ struct Reader {
         std::array batches{out, ev, raw, clock, monitor, estimates, pulses};
         for (size_t i = 0; i < batches.size(); ++i)
             Batch::reserve(batches[i]->array, capacity_hints[i]);
-        auto emit = [&](const cppgnss::Measurements &e) {
+        std::vector<ObservationOutput> completed_observations;
+        std::vector<RawOutput> completed_bits;
+        std::deque<std::future<void>> builds;
+        auto flush_build = [&] {
+            if (completed_observations.empty() && completed_bits.empty())
+                return;
+            if (builds.size() >= 2) {
+                builds.front().get();
+                builds.pop_front();
+            }
+            builds.push_back(build_lane.submit(std::packaged_task<void()>(
+                [out, raw, id = setup_id, ant = antenna,
+                 observations = std::move(completed_observations),
+                 bits = std::move(completed_bits)] {
+                    std::vector<const cppgnss::Measurement *> selected;
+                    for (const auto &epoch : observations) {
+                        selected.clear();
+                        for (const auto &m : epoch.rows)
+                            if (m.antenna == ant)
+                                selected.push_back(&m);
+                        append_epoch(*out, selected, epoch.time, id);
+                    }
+                    for (const auto &record : bits)
+                        append_bits(*raw, record.time, id, record.bits,
+                                    record.uptime, record.archive_day);
+                })));
+            completed_observations.clear();
+            completed_bits.clear();
+        };
+        auto emit = [&](cppgnss::Measurements &e) {
             Tick t;
             try {
                 t = time_of(e);
@@ -1118,23 +1209,23 @@ struct Reader {
             ++epochs;
             complete(*ev, t, setup_id, !e.tow_ms.has_value());
             append_clock(*clock, e, t, setup_id);
-            selected_rows.clear();
             for (auto &m : e.rows)
-                if (m.antenna == antenna)
-                    selected_rows.push_back(&m);
-                else
+                if (m.antenna != antenna)
                     ++other_antenna;
-            append_epoch(*out, selected_rows, t, setup_id);
+            completed_observations.push_back({t, std::move(e.rows)});
         };
-        decoder.feed(data, [&](const cppgnss::FrameView &f) {
+        auto consume = [&](neognss_obs::CnexDecodedFrame &item) {
+            if (item.error)
+                std::rethrow_exception(item.error);
+            const auto &f = item.frame;
             if (f.protocol == cppgnss::Protocol::sbf && f.id >= 4109 &&
                 f.id <= 4113)
                 ++meas3;
-            auto e = cppgnss::decode_measurements(f);
-            navigation(f, *raw, *ev, e);
+            auto &e = item.measurements;
+            navigation(f, completed_bits, *ev, e, item.bits);
             status(f, *monitor, *ev);
             estimates_frame(f, *estimates, *pulses);
-            auto extra = cppgnss::decode_measurement_extras(f);
+            auto &extra = item.extras;
             auto adopt = [&](const cppgnss::Measurements &time) {
                 if (!pending || pending->week != time.week ||
                     pending->tow_ms != time.tow_ms) {
@@ -1204,7 +1295,50 @@ struct Reader {
                     has_measurements = false;
                 }
             }
+        };
+        // Own complete wire bytes, never retain StreamDecoder's callback spans.
+        // Bound decoded temporaries independently of Python's input chunk size.
+        std::vector<uint8_t> wire;
+        std::vector<neognss_obs::CnexDecodedFrame> frames;
+        std::vector<size_t> offsets;
+        auto flush = [&] {
+            for (size_t i = 0; i < frames.size(); ++i) {
+                auto &f = frames[i].frame;
+                const auto length = f.wire.size();
+                f.wire =
+                    std::span<const uint8_t>(wire).subspan(offsets[i], length);
+                f.payload = f.wire.subspan(
+                    f.protocol == cppgnss::Protocol::ubx ? 6 : 8, length - 8);
+            }
+            decode_pool.run(frames);
+            for (auto &item : frames)
+                consume(item);
+            flush_build();
+            frames.clear();
+            offsets.clear();
+            wire.clear();
+        };
+        size_t serial_frames = 0;
+        decoder.feed(data, [&](const cppgnss::FrameView &f) {
+            if (decode_workers == 1) {
+                neognss_obs::CnexDecodedFrame item{f};
+                item.decode();
+                consume(item);
+                if (++serial_frames == 2048) {
+                    flush_build();
+                    serial_frames = 0;
+                }
+                return;
+            }
+            offsets.push_back(wire.size());
+            wire.insert(wire.end(), f.wire.begin(), f.wire.end());
+            frames.push_back({f});
+            if (frames.size() >= 2048 || wire.size() >= 1024 * 1024)
+                flush();
         });
+        flush();
+        for (auto &job : builds)
+            job.get();
         out->finish();
         ev->finish();
         raw->finish();
@@ -1357,9 +1491,10 @@ void bind_cnex(py::module_ &m) {
              py::arg("requested_schema") = py::none());
     py::class_<Reader>(m, "CnexObservationReader")
         .def(py::init<const std::string &, const std::string &, unsigned,
-                      int64_t, int64_t>(),
+                      int64_t, int64_t, unsigned>(),
              py::arg("protocol"), py::arg("setup_id"), py::arg("antenna"),
-             py::arg("period_seconds"), py::arg("period_ps"))
+             py::arg("period_seconds"), py::arg("period_ps"),
+             py::arg("decode_workers") = 4)
         .def("feed",
              [](Reader &r, py::bytes bytes) {
                  char *p;

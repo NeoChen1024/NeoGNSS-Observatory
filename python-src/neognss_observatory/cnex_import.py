@@ -295,13 +295,20 @@ def list_parts(station):
 )
 @click.option("--chunk-mib", type=click.IntRange(1, 64), default=4, show_default=True)
 @click.option(
+    "--decode-workers",
+    type=click.IntRange(1, 32),
+    default=4,
+    show_default=True,
+    help="Native decode workers, including the feeding thread; >1 adds an Arrow builder thread, 1 runs native work inline.",
+)
+@click.option(
     "--source-antenna",
     type=click.IntRange(0, 7),
     default=0,
     show_default=True,
     help="Native observation input to import into this station; RAWX requires 0.",
 )
-def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_antenna, recursive):
+def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_workers, source_antenna, recursive):
     """Head-probe and time-sort INPUTS, then import one continuous recording path.
 
     Catalogs: observations (including MeasExtra/smoothing state), raw-bits,
@@ -381,7 +388,9 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
         if period_seconds > 2**63 - 1:
             raise ValueError("epoch_period_s exceeds native importer range")
         period_ps = int(fraction_text)
-        reader = _native.CnexObservationReader(protocol, setup["setup_id"], source_antenna, period_seconds, period_ps)
+        reader = _native.CnexObservationReader(
+            protocol, setup["setup_id"], source_antenna, period_seconds, period_ps, decode_workers
+        )
         if state:
             reader.restore(state["navigation_context"])
         counts = dict.fromkeys(
@@ -390,6 +399,13 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
         started = set()
         published = list(state["published_files"]) if state else []
         current_state_path = resume_from
+        catalog_writes = {}
+        writer_failure = None
+
+        def drain_catalogs():
+            for future in catalog_writes.values():
+                future.result()
+            catalog_writes.clear()
 
         def time_column(catalog):
             return "nav_epoch_gpst" if catalog == "raw-bits" else "gpst"
@@ -397,6 +413,8 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
         def get_writer(key, schema):
             if key not in writers or writers[key][0] is None:
                 if len(active) >= 8:
+                    # Eviction must never close a writer still compressing.
+                    drain_catalogs()
                     victim, _ = active.popitem(last=False)
                     writer, temporary, target = writers[victim]
                     writer.close()
@@ -456,6 +474,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
 
         def publish(snapshot):
             nonlocal current_state_path
+            drain_catalogs()
             if rebuild:
                 for day_name in {key[0] for key in writers}:
                     for catalog in counts:
@@ -502,8 +521,9 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
             active.clear()
             tail_limits.clear()
 
-        def write_batches(batches, snapshot):
-            # Only this worker touches catalogs while parsing is running.
+        def write_catalogs(batches, snapshot):
+            # The coordinator owns partitioning and all bookkeeping. Pool jobs
+            # only write a batch to their exclusively owned ParquetWriter.
             for catalog, batch in zip(counts, batches):
                 if "_archive_day" in batch.schema.names:
                     days = batch.column("_archive_day").to_numpy()
@@ -519,11 +539,28 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
                     key = day_name, catalog
                     selected = batch.filter(pa.array(days == day))
                     check_tail(key, selected)
-                    get_writer(key, batch.schema).write_batch(selected)
+                    previous = catalog_writes.pop(catalog, None)
+                    if previous is not None:
+                        previous.result()
+                    writer = get_writer(key, batch.schema)
+                    catalog_writes[catalog] = catalog_pool.submit(writer.write_batch, selected)
                 counts[catalog] += batch.num_rows
+            drain_catalogs()
             safe_day = snapshot["summary"]["safe_day"]
             if writers and safe_day is not None and min(k[0] for k in writers) < day_path(safe_day):
                 publish(snapshot)
+
+        def write_batches(batches, snapshot):
+            nonlocal writer_failure
+            if writer_failure is not None:
+                raise writer_failure
+            try:
+                write_catalogs(batches, snapshot)
+            except BaseException as exc:
+                # An already queued input chunk must not publish after a
+                # preceding catalog failed. Pool shutdown drains active jobs.
+                writer_failure = exc
+                raise
 
         warned_foreign = False
         total = sum(size - start for _, start, size in segments)
@@ -535,6 +572,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, source_anten
         # chunks. Arrow buffers are shared, not serialized across the thread.
         pending_writes = deque()
         with (
+            ThreadPoolExecutor(max_workers=4, thread_name_prefix="cnex-catalog") as catalog_pool,
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="cnex-parquet") as writer_pool,
             tqdm(total=total, unit="B", unit_scale=True, desc="CommonNEX", file=sys.stderr) as progress,
         ):

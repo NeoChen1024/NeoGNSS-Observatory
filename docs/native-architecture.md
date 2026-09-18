@@ -92,6 +92,18 @@ Status: native-to-Python output is wired into the CommonNEX importer.
 `StecCnexReader` accepts replayed Observation Arrow batches directly, maps the
 selected GPS pair and quality into the numerical engine, and retains a pending
 measurement epoch across batches. Other analysis-binding migrations remain pending.
+The CommonNEX importer uses a bounded native decode pool for stateless
+Measurements/MeasExtra/RawBits work. It owns copied frame bytes until all jobs
+complete, then applies results to the sequential receiver/epoch state machine
+in stream order. Completed observations and RawBits, with frozen receiver-time
+context, move to one bounded Arrow construction lane; other catalogs remain on
+the feeding thread. Arrow builders remain single-owner, and all build jobs drain
+before a successful feed returns. MeasExtra joins use compact reusable sorted
+indexes while retaining duplicate/ambiguity checks. Python uses one partition/
+publication coordinator and four workers for independent catalog writes;
+each ParquetWriter remains single-owner during writes, and barriers drain all
+catalog work before eviction or publication. See the
+[importer execution model](commonnex/importer.md#head-only-ordering-and-time-reversal).
 STEC checkpoints preserve native arc state between daily invocations; end of an
 invocation is not end of the scientific stream. Python owns product selection,
 daily sample persistence, affected-window DCB refitting and incremental plots.
