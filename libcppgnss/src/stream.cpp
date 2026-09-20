@@ -22,6 +22,9 @@ uint16_t sbf_crc(std::span<const uint8_t> bytes) {
 }
 void StreamDecoder::feed(std::span<const uint8_t> data,
                          const std::function<void(const FrameView &)> &emit) {
+    if (failed_)
+        throw std::logic_error(
+            "StreamDecoder callback failed; construct a new decoder");
     bytes += data.size();
     pending_.insert(pending_.end(), data.begin(), data.end());
     size_t pos = 0;
@@ -71,14 +74,22 @@ void StreamDecoder::feed(std::span<const uint8_t> data,
         ++frames;
         const uint16_t id =
             ubx ? (p[2] << 8) | p[3] : (p[4] + 256u * p[5]) & 0x1fff;
-        emit({detected, offset_ + pos, id, uint8_t(ubx ? 0 : p[5] >> 5), wire,
-              wire.subspan(ubx ? 6 : 8, length - 8)});
+        try {
+            emit({detected, offset_ + pos, id, uint8_t(ubx ? 0 : p[5] >> 5),
+                  wire, wire.subspan(ubx ? 6 : 8, length - 8)});
+        } catch (...) {
+            failed_ = true;
+            throw;
+        }
         pos += length;
     }
     pending_.erase(pending_.begin(), pending_.begin() + pos);
     offset_ += pos;
 }
 void StreamDecoder::finish() const {
+    if (failed_)
+        throw std::logic_error(
+            "StreamDecoder callback failed; construct a new decoder");
     if (!pending_.empty())
         throw std::runtime_error("Truncated protocol stream at byte " +
                                  std::to_string(offset_));

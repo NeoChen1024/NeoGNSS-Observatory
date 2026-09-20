@@ -10,8 +10,6 @@
 namespace UBX {
 
 bool ubx_nav_pvt_semantically_valid(const ubx_nav_pvt &pvt) {
-    if (!pvt.valid)
-        return false;
 
     const _ubx_nav_pvt &data = pvt.data;
     // UBX-NAV-PVT valid bits 0 and 1 indicate a valid date and time.
@@ -33,7 +31,7 @@ bool ubx_nav_pvt_fix_ok(const ubx_nav_pvt &pvt) {
 }
 
 bool ubx_nav_eoe_semantically_valid(const ubx_nav_eoe &eoe) {
-    return eoe.valid && eoe.data.iTOW <= UINT32_C(86400) * 1000 * 7;
+    return eoe.data.iTOW <= UINT32_C(86400) * 1000 * 7;
 }
 
 std::string ubx_nav_pvt_fix_type(const ubx_nav_pvt &pvt) {
@@ -67,56 +65,6 @@ std::string ubx_nav_pvt_fix_type(const ubx_nav_pvt &pvt) {
     if (pvt.data.flags_bit & 0x02)
         fix_type += "/DGNSS";
     return fix_type;
-}
-
-void ubx_nav_pvt_dump(const ubx_nav_pvt &pvt, FILE *fp) {
-    const _ubx_nav_pvt &data = pvt.data;
-    auto dump = std::format(
-        "(NAV-PVT, iTOW={}, year={}, month={}, day={}, hour={}, min={}, "
-        "sec={}, valid={}, "
-        "tAcc={}, nano={}, fixType={}, flags={}, flags2={}, numSV={}, lon={}, "
-        "lat={}, "
-        "height={}, hMSL={}, hAcc={}, vAcc={}, velN={}, velE={}, velD={}, "
-        "gSpeed={}, "
-        "headMot={}, sAcc={}, headAcc={}, pDOP={}, headVeh={})\n",
-        data.iTOW, data.year, data.month, data.day, data.hour, data.min,
-        data.second, data.valid_bit, data.tAcc, data.nano, data.fixType,
-        data.flags_bit, data.flags2_bit, data.numSV, data.lon, data.lat,
-        data.height, data.hMSL, data.hAcc, data.vAcc, data.velN, data.velE,
-        data.velD, data.gSpeed, data.headMot, data.sAcc, data.headAcc,
-        data.pDOP, data.headVeh);
-    fputs(dump.c_str(), fp);
-}
-
-void ubx_nav_eoe_dump(const ubx_nav_eoe &eoe, FILE *fp) {
-    auto dump = std::format("(NAV-EOE, iTOW={})\n", eoe.data.iTOW);
-    fputs(dump.c_str(), fp);
-}
-
-bool ubx_nav_dump_custom(const ubx_frame &frame, FILE *fp) {
-    if (frame.class_id != UBX_CLASS_NAV)
-        return false;
-
-    switch (frame.msg_id) {
-    case UBX_NAV_PVT: {
-        ubx_nav_pvt pvt(frame);
-        if (pvt.valid)
-            ubx_nav_pvt_dump(pvt, fp);
-        else
-            fputs("(NAV-PVT, invalid payload)\n", fp);
-        return true;
-    }
-    case UBX_NAV_EOE: {
-        ubx_nav_eoe eoe(frame);
-        if (eoe.valid)
-            ubx_nav_eoe_dump(eoe, fp);
-        else
-            fputs("(NAV-EOE, invalid payload)\n", fp);
-        return true;
-    }
-    default:
-        return false;
-    }
 }
 
 } // namespace UBX

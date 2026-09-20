@@ -44,7 +44,7 @@ int main() {
     assert((!SignalKey{6, 2, 0, 0}.prn()));
     assert((!SignalKey{99, 2, 0, 0}.prn()));
     SubframeDemultiplexer demux;
-    const ubx_frame invalid(std::span<const uint8_t>{});
+    const cppgnss::FrameView invalid{cppgnss::Protocol::sbf, 0, 0, 0, {}, {}};
     bool called = false;
     assert(
         demux.dispatch(invalid, [&](const auto &) { called = true; }).status ==

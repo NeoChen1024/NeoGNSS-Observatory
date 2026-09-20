@@ -34,7 +34,7 @@ struct SubframeResult {
     SubframeStatus status;
     std::optional<NavigationSubframe> subframe;
 };
-SubframeResult parse_subframe(const ubx_frame &frame);
+SubframeResult parse_subframe(const cppgnss::FrameView &frame);
 // UBX SFRBX v2 SBAS L1 C/A adapter. Other signals are never guessed from bits.
 cppgnss::SBAS::Result parse_sbas(const NavigationSubframe &subframe);
 
@@ -43,7 +43,7 @@ class SubframeDemultiplexer {
     using Sink = std::function<void(const NavigationSubframe &)>;
     // One callback per frame, with a key suitable for separate state machines.
     // No per-stream frame history is retained; applications own retention/I/O.
-    SubframeResult dispatch(const ubx_frame &frame, const Sink &sink);
+    SubframeResult dispatch(const cppgnss::FrameView &frame, const Sink &sink);
     const std::map<SignalKey, uint64_t> &counts() const { return counts_; }
     void clear() { counts_.clear(); }
 

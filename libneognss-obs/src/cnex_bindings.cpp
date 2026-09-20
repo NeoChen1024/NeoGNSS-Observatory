@@ -7,6 +7,9 @@
 #include <cppgnss/measurements.hpp>
 #include <cppgnss/raw_bits.hpp>
 #include <cppgnss/sbf.hpp>
+#include <cppgnss/sbf_pvt_gen.hpp>
+#include <cppgnss/sbf_receiver_time_gen.hpp>
+#include <cppgnss/sbf_status_gen.hpp>
 #include <cppgnss/ubx_subframe.hpp>
 #include <map>
 #include <memory>
@@ -754,22 +757,34 @@ struct Reader {
         const auto p = f.payload;
         if (ubx && p.size() != (pulse ? 16 : 20))
             return;
-        cppgnss::SBF::Block block;
+        double sbf_offset = 0, sbf_bias = 0, sbf_drift = 0;
+        unsigned sbf_system = 0, sbf_sync_age = 0, sbf_error = 0;
         if (!ubx) {
-            block = cppgnss::SBF::decode(f.id, f.revision, p);
-            if (block.status != cppgnss::SBF::Status::decoded)
-                return;
+            if (pulse) {
+                auto parsed = cppgnss::parse<cppgnss::SBF::xPPSOffset>(f);
+                if (!parsed)
+                    return;
+                sbf_offset = parsed.value().Offset;
+                sbf_sync_age = parsed.value().SyncAge;
+                sbf_system = parsed.value().TimeScale;
+            } else {
+                auto accept = [&](const auto &parsed) {
+                    if (!parsed)
+                        return false;
+                    sbf_bias = parsed.value().RxClkBias;
+                    sbf_drift = parsed.value().RxClkDrift;
+                    sbf_system = parsed.value().TimeSystem;
+                    sbf_error = parsed.value().Error;
+                    return true;
+                };
+                if (f.id == 4006) {
+                    if (!accept(cppgnss::parse<cppgnss::SBF::PVTCartesian>(f)))
+                        return;
+                } else if (!accept(
+                               cppgnss::parse<cppgnss::SBF::PVTGeodetic>(f)))
+                    return;
+            }
         }
-        auto value = [&](const char *name) {
-            return std::visit(
-                [](const auto &v) -> double {
-                    if constexpr (std::is_arithmetic_v<
-                                      std::decay_t<decltype(v)>>)
-                        return double(v);
-                    throw std::runtime_error("Non-numeric clock quantity");
-                },
-                block.fields.at(name));
-        };
         std::optional<Tick> t;
         std::string reference = "UNKNOWN";
         if (!ubx) {
@@ -777,7 +792,7 @@ struct Reader {
             auto week = UBX::read_le<uint16_t>(p, 4);
             if (tow < 604800000 && week != 65535)
                 t = (Tick(week) * 604800000 + tow) * 1000000000;
-            int system = int(value(pulse ? "TimeScale" : "TimeSystem"));
+            int system = int(sbf_system);
             if (pulse)
                 reference = system == 1     ? "GPST"
                             : system == 2   ? "UTC"
@@ -848,11 +863,11 @@ struct Reader {
         str(c[6], reference);
         if (pulse) {
             bool valid =
-                ubx ? !(p[14] & 16) : scaled(value("Offset"), 1000).has_value();
+                ubx ? !(p[14] & 16) : scaled(sbf_offset, 1000).has_value();
             optional_decimal(
                 c[7], valid ? (ubx ? std::optional<Tick>(
                                          -Tick(UBX::read_le<int32_t>(p, 8)))
-                                   : scaled(value("Offset"), 1000))
+                                   : scaled(sbf_offset, 1000))
                             : std::nullopt);
             integer(c[8], valid);
             if (ubx) {
@@ -869,8 +884,8 @@ struct Reader {
             } else {
                 for (int i = 9; i <= 11; ++i)
                     check(ArrowArrayAppendNull(c[i], 1));
-                decimal(c[12], Tick(uint64_t(value("SyncAge"))) * ps);
-                integer(c[13], value("SyncAge") == 255);
+                decimal(c[12], Tick(sbf_sync_age) * ps);
+                integer(c[13], sbf_sync_age == 255);
                 check(ArrowArrayAppendNull(c[15], 1));
             }
             integer(c[14], t ? int64_t(*t / ps / 86400) : timeline.archive_day);
@@ -881,12 +896,10 @@ struct Reader {
             integer(c[10], int64_t(UBX::read_le<uint32_t>(p, 16)) * 1000);
             integer(c[11], t ? int64_t(*t / ps / 86400) : timeline.archive_day);
         } else {
-            bool valid = value("Error") == 0;
-            optional_decimal(c[7], valid
-                                       ? scaled(value("RxClkBias"), 1000000000)
-                                       : std::nullopt);
-            auto drift =
-                valid ? scaled(value("RxClkDrift"), 1000000000) : std::nullopt;
+            bool valid = sbf_error == 0;
+            optional_decimal(c[7], valid ? scaled(sbf_bias, 1000000000)
+                                         : std::nullopt);
+            auto drift = valid ? scaled(sbf_drift, 1000000000) : std::nullopt;
             if (drift) {
                 if (*drift < std::numeric_limits<int64_t>::min() ||
                     *drift > std::numeric_limits<int64_t>::max())
@@ -918,24 +931,14 @@ struct Reader {
             temperature = UBX::read_le<int8_t>(f.payload, 18);
             sample = timeline.anchor();
         } else {
-            auto block = cppgnss::SBF::decode(f.id, f.revision, f.payload);
-            if (block.status != cppgnss::SBF::Status::decoded)
+            auto block = cppgnss::parse<cppgnss::SBF::ReceiverStatus>(f);
+            if (!block)
                 return;
-            auto value = [&](const char *name) {
-                return std::visit(
-                    [](const auto &v) -> double {
-                        if constexpr (std::is_arithmetic_v<
-                                          std::decay_t<decltype(v)>>)
-                            return double(v);
-                        throw std::runtime_error("Non-numeric receiver status");
-                    },
-                    block.fields.at(name));
-            };
-            uptime = Tick(uint64_t(value("UpTime"))) * ps;
-            auto temp = value("Temperature");
+            uptime = Tick(block.value().UpTime) * ps;
+            auto temp = double(block.value().Temperature);
             temperature =
                 temp ? temp - 100 : std::numeric_limits<double>::quiet_NaN();
-            fine = bool(value("FineTime"));
+            fine = bool(block.value().RxState.FineTime);
             auto tow = UBX::read_le<uint32_t>(f.payload, 0);
             auto week = UBX::read_le<uint16_t>(f.payload, 4);
             if (*fine && tow < 604800000 && week != 65535) {

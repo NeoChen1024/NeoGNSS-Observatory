@@ -82,8 +82,7 @@ struct DatasetScan::State {
                 [&] {
                     if (qa || f.id != 0x0213)
                         return;
-                    auto parsed =
-                        UBX::parse_subframe(UBX::ubx_frame(f.wire.subspan(2)));
+                    auto parsed = UBX::parse_subframe(f);
                     if (!parsed.subframe)
                         return;
                     const auto &s = *parsed.subframe;
@@ -102,15 +101,15 @@ struct DatasetScan::State {
         } else if (qa) {
             // SBF schemas define whether a block actually carries TOW/WNc.
             const auto block =
-                cppgnss::SBF::decode(f.id, f.revision, f.payload);
+                cppgnss::SBF::inspect(f.id, f.revision, f.payload);
             if (block.status == cppgnss::SBF::Status::invalid_payload) {
                 count("invalid_payloads");
                 return;
             }
-            if (!block.fields.contains("TOW") || !block.fields.contains("WNc"))
+            if (!block.tow_ms || !block.week)
                 return;
-            const auto tow = std::get<uint64_t>(block.fields.at("TOW"));
-            const auto week = std::get<uint64_t>(block.fields.at("WNc"));
+            const auto tow = *block.tow_ms;
+            const auto week = *block.week;
             if (tow >= 604800000 || week == 65535) {
                 count("invalid_times");
                 return;

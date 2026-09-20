@@ -19,7 +19,7 @@ git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
-build/libcppgnss/neoubxlogger -n -q -f /path/to/input.ubx
+build/libcppgnss/neognsslogger -p ubx -n -q -f /path/to/input.ubx
 ```
 
 CMake generates parsers in the build directory; it never installs dependencies
@@ -60,17 +60,25 @@ and SBF descriptors/decoders under `cppgnss::SBF`.
 - `read_ubx_frame()` in `ubx_reader.hpp` accepts a caller-owned byte reader,
   distinguishes EOF/truncation/timeout/error, and returns frame bytes without
   sync. Construct `ubx_frame` from those bytes to validate length and checksum.
-- The initial reader preserves the logger's framing policy: callback failure
-  discards partial state, and a corrupt length can consume a following frame.
+- This byte-reader API discards partial state on callback failure,
+  and a corrupt length can consume a following frame.
   It is not yet an archive-salvage or byte-offset-indexing API.
-- Generated `valid` means structural decoding succeeded. NAV semantic validity
-  is separate. Scaled wire fields remain raw values; do not assume they are
+- The logger uses `StreamDecoder` instead: bounded input chunks, validated
+  complete UBX/SBF wire frames and atomic skipping of foreign-protocol frames.
+- Successful `ParseResult<T>` means structural decoding succeeded. NAV semantic validity
+  is separate. UBX scaled wire fields remain raw values; do not assume they are
   already expressed in physical units or that timestamps are valid UTC.
-- Diagnostics are silent by default. `set_parse_error_handler()` installs a
-  per-thread callback and returns the previous handler. Message views are
-  borrowed only for the duration of the callback.
-- Explicit `dump(FILE*)` and `write(FILE*)` helpers use caller-owned streams;
-  the library never opens files, reconnects sockets, or rotates recordings.
+- Generated UBX messages are independent decoded-data classes, not subclasses
+  of `ubx_any_msg`. They retain decoded fields and `dump()`, without
+  a duplicate raw payload or inherited frame identity. Keep the source frame
+  when raw bytes or transport identity are needed; `ubx_any_msg` remains the
+  separate generic raw-message container.
+- Typed parsing returns errors as values and never invokes diagnostic callbacks.
+  The standalone legacy `ubx_frame` checksum reader still supports its silent-by-default
+  `set_parse_error_handler()`; it is not used by the validated-frame path.
+- Message `dump()` methods return `std::string`; callers handle text I/O.
+  Binary `write(FILE*)` helpers use caller-owned streams; the library never
+  opens files, reconnects sockets, or rotates recordings.
 
 The generated schema covers NAV, RXM, MON, TIM, ESF, HNR, LOG, SEC, CFG, and ACK.
 Names also cover upstream messages without generated decoders. Debug dispatch
@@ -85,48 +93,136 @@ API examples, limitations, and the Python batch exporter.
 borrowed frame views. `feed()` keeps incomplete frames across calls; call
 `finish()` only at a real end of stream. Reader statistics include invalid
 frames and noise. No implicit transport or terminal output is performed.
+If a frame callback throws, its original exception propagates and the decoder
+becomes unusable: subsequent `feed()` and `finish()` calls throw `std::logic_error`.
+Construct a new decoder to restart; callback side effects are not rolled back,
+and pending bytes from the failed decoder must not be replayed automatically.
 
-`sbf.hpp` exposes all 125 pinned pysbf2 block descriptors: 117 have payload
-definitions; eight explicitly remain unsupported. Decoding returns typed field
-values, original payload, revision, status and unconsumed tail. Repeated fields
-use upstream-style `_01` suffixes; wide integers and raw byte fields retain
-precision. Unknown blocks remain raw. The schema does not describe every
-firmware revision, and structural decoding is not semantic validation.
+SBF codegen covers all 125 pinned blocks in 17 functional groups: 117 have
+payload definitions and eight explicitly remain unsupported. Generated headers
+such as `sbf_measurement_gen.hpp`, `sbf_pvt_gen.hpp` and `sbf_status_gen.hpp`
+expose a concrete type per message. Both protocols use the same API:
+
+```cpp
+#include <cppgnss/parse.hpp>
+#include <cppgnss/sbf_measurement_gen.hpp>
+#include <cppgnss/ubx_rxm_gen.hpp>
+
+auto result = cppgnss::parse<cppgnss::SBF::MeasEpoch>(frame);
+if (result) {
+    const auto& message = result.value();
+    // message.MeasEpochChannelType1 contains the decoded observations.
+} else {
+    // result.error(): code, optional payload-relative byte offset, detail.
+}
+// UBX: cppgnss::parse<UBX::ubx_rxm_rawx>(frame)
+// Type-agnostic text: cppgnss::dump(frame)
+```
+
+`ParseResult<T>` holds either owned decoded data or a `ParseError`, never a
+partially decoded message. `value()` supports move extraction;
+`consumed()` is available on success. Accessing the wrong result branch throws
+`std::logic_error`. Parsing checks protocol, message ID, variant and payload
+bounds, but relies on the caller's framing/checksum validation. `StreamDecoder`
+provides that validation; fabricating a `FrameView` does not validate its CRC.
+No raw-payload copy or second checksum pass is required. Allocation failures
+remain exceptions, not malformed-input errors. `decode_payload` is generated
+implementation machinery; callers use `parse<T>` for identity checking.
+
+`UbxMessageId` and `SbfMessageId` are generated from the pinned name registries,
+including names without typed decoders. Message types declare `protocol`,
+`message_id` and `message_name`. IDs do not include firmware revision or payload
+variant; unknown numeric IDs remain representable in `FrameView`. SBF revision
+stays in the source frame and is not a claim of layout support for every version.
+
+Repeated groups are nested `std::vector<SubBlock>`, conditional groups are
+`std::optional<SubBlock>`, and bit fields remain nested under their source field.
+For example, `result.value().MeasEpochChannelType1[i].MeasEpochChannelType2[j]`
+addresses a secondary observation, and `result.value().CommonFlags.CodeSmoothing`
+addresses a flag. Invalid C++ identifier characters become underscores, with a
+`field_` prefix when needed; dumps retain original source field names. Binary
+fields and wide integers own their bytes. No field-name map is constructed.
+
+`SBF::inspect(id, revision, payload)` provides layout status, consumed length
+and optional native TOW/WNc for generic QA. That time is not necessarily a
+receiver-navigation anchor. Each message owns a `std::string dump() const`
+method that formats its stored fields, preserving nested groups and allowing
+message-specific formatting. `cppgnss::dump(frame)` dispatches to these methods
+for either protocol, includes raw bytes and errors for failures, and preserves
+unconsumed trailing bytes. Output is one line per message, with repeated groups
+expanded as nested lists rather than counts. It is human-readable text, not a
+stable serialization format. `schemas()` remains descriptor
+introspection, not the runtime parsing engine. The former `Block.fields` /
+dynamic `decode()` API is removed. The schema does not describe every firmware
+revision, and structural decoding is not semantic validation.
 
 `cppgnss::SBAS::parse_l1()` accepts 32 MSB-first bytes holding 250 air bits.
 `UBX::parse_sbas()` adapts SFRBX; `cppgnss::SBF::extract_sbas_l1()` adapts
-GEORawL1, preserving receiver CRC status and native SBF fields. GEORawL5 is
+GEORawL1 from a `FrameView`, preserving receiver CRC status and native SBF fields. GEORawL5 is
 never silently passed through the L1 decoder.
 
-## Logger compatibility
+## UBX/SBF logger
 
-`examples/ubxlogger.cpp` builds the existing `neoubxlogger` executable:
+`examples/gnsslogger.cpp` builds `neognsslogger`.
 
 | Flag | Behavior |
 | --- | --- |
+| `-p ubx\|sbf`, `--protocol` | Input protocol; default UBX |
 | `-f FILE` | File input; stdin is the default |
 | `-t HOST:PORT` | TCP input with reconnection |
 | `-n` | Disable recording |
-| `-d` | Dump every frame to stderr |
+| `-d` | Dump every accepted frame's decoded fields to stderr |
 | `-q` | Suppress live status; retain periodic statistics |
 | `--expected-period-ms N` | Expected navigation cadence; default 1000 ms, use 100 for 10 Hz or 33 for approximately 30 Hz |
 | `--epoch-interval-ms N` | Alias for `--expected-period-ms` |
+| `--expected-measurement-period-ms N` | SBF EndOfMeas cadence; defaults to the navigation period, independently configurable |
 | `--epoch-tolerance-percent N` | Symmetric interval tolerance; default ±20%, configurable from 0 to 99% |
-| `--expect-nav-clock` | Warn when an EOE interval contains no valid-length NAV-CLOCK |
+| `--expect-nav-clock` | UBX only: warn when an EOE interval contains no valid-length NAV-CLOCK |
+| `--disk-buffer-mib N` | Bounded background disk buffer; default 64 MiB, minimum 1 MiB |
 | `OUTPUT_DIR` | Optional first positional argument; recording root, default `./` |
 
-The periodic `FIX` percentage counts usable 2D, 3D, GNSS+dead-reckoning and
+For UBX, the periodic `FIX` percentage counts usable 2D, 3D, GNSS+dead-reckoning and
 TIME-only solutions (`fixType` 2–5), always requiring `gnssFixOK`. A receiver
 operating in timing mode can therefore report `FIX 100%` without a 2D/3D
 position solution. No-fix, dead-reckoning-only, reserved types and solutions
 without `gnssFixOK` are not counted as successes. The denominator remains
 the semantically valid NAV-PVT messages received during the statistics period.
 
+SBF reports PVT Mode, Error and satellite count from PVTCartesian/PVTGeodetic.
+Its FIX numerator requires Error=0 and Mode Type 1–8 or 10, including fixed
+location (3); no-solution and reserved types are excluded. Each received PVT
+block contributes to the denominator, including both variants if both are enabled.
+
+`-d` prints the strings returned by UBX/SBF message dumps. SBF displays block name,
+revision, schema status and decoded fields (including bit fields and
+indexed repeated fields). Binary and wide-integer values use hex. Unknown blocks,
+private schemas and schema decoding failures include the raw payload as hex;
+decoded trailing bytes are also displayed. Schema coverage is limited by the
+pinned definitions; this is not a claim that every revision is fully decoded.
+CRC-valid blocks remain recordable regardless of schema decoding support.
+`-n -d` requires neither recording time anchors nor epoch-completion messages.
+
 The output root and monthly subdirectories are created when the first complete
 epoch is recorded. Relative and absolute paths are supported. `-n` does not
 create the output directory. More than one positional argument is an error.
 
-`-f`/`-t` and `-d`/`-q` remain mutually exclusive. Frames are buffered until
+A single background I/O thread owns directory creation, file opening, ordered
+writes and day rotation. Completed recording intervals enter a bounded RAM queue;
+`--disk-buffer-mib` counts allocated payload capacity both queued and actively
+being written. Queue metadata, stdio buffering and the separate incomplete-epoch
+buffer are additional memory. The receive thread does not wait for free queue
+space: exhaustion stops recording with an explicit error rather than silently
+dropping data or blocking reception. This absorbs temporary disk stalls, not
+sustained insufficient throughput. Debug/status output still uses stderr directly.
+
+At normal EOF, accepted writes are drained and close errors are checked before
+success is reported. On a parsing or buffer-exhaustion error, already accepted
+writes are drained before exiting unsuccessfully; the rejected interval is not
+written. Disk errors stop the writer and are reported to the receive loop or at
+shutdown. Draining can wait on a stalled filesystem. This is not durable storage:
+abrupt termination or power loss can lose queued/buffered bytes.
+
+`-f`/`-t` and `-d`/`-q` remain mutually exclusive. When recording UBX, frames are buffered until
 NAV-EOE. Every EOE requires a fresh valid NAV-TIMEGPS with the same iTOW;
 missing, invalid, conflicting or non-increasing time causes a nonzero exit.
 The entire epoch, including EOE, is written to its GPST day. NAV-PVT calendar
@@ -135,17 +231,32 @@ fields never select the output date. Outputs are named
 with exactly three millisecond digits, including `000`.
 Nominal iTOW defines the epoch boundary; fTOW remains unchanged in the raw
 message and is not used to move a nominal epoch across a day boundary.
-EOF with an incomplete recording epoch fails without publishing that epoch.
+
+SBF recording buffers frames through EndOfPVT and uses its valid GPST WNc/TOW
+to flush/rotate. It requires EndOfPVT on the selected output stream, not an
+extra TIMEGPS-equivalent message. EndOfMeas is a separate measurement diagnostic
+boundary, never the recording boundary. SBF output uses the same naming rule
+with `.sbf`. RawBits/SIS timestamps never control rotation or monotonicity.
+Frames following a completion marker belong to the next recording interval;
+the logger does not reorder asynchronous blocks or claim all enclosed blocks
+share the marker's timestamp. Input wire bytes are preserved without repacking.
+
+EOF with an incomplete recording interval fails without writing that interval.
 The pending epoch buffer is limited to 64 MiB; exceeding it fails explicitly.
 Truncated file input and output flush/close failures return nonzero. TCP uses
-the existing byte-at-a-time read and five-second receive timeout, discarding
-partial frames on timeout before resynchronizing. This application is not a
-lossless offline archive normalizer.
+bounded 64 KiB reads and a five-second receive timeout. A timeout/disconnect
+explicitly reports and discards the unfinished frame and recording interval,
+then resynchronizes; completed intervals are retained. Reconnection retries
+are two seconds apart. Valid foreign-protocol frames are warned and skipped;
+invalid transport frames and discarded noise are reported. Existing output
+files are never overwritten. This application is not a lossless offline archive
+normalizer. Recording files are buffered and remain open within a GPST day;
+default signal termination does not guarantee the last buffered bytes are flushed.
 
 ### Overnight continuity diagnostics
 
 ```sh
-neoubxlogger -q -t RECEIVER_HOST:PORT --expect-nav-clock /data/receiver-test \
+neognsslogger -p ubx -q -t RECEIVER_HOST:PORT --expect-nav-clock /data/receiver-test \
   2> receiver-test.log
 ```
 
@@ -154,8 +265,21 @@ enable NAV-CLOCK when using `--expect-nav-clock`. The logger does not configure
 the receiver. Add `-n` for diagnostics without recording. Keep the diagnostic
 log outside a not-yet-created output root, since the shell opens it first.
 
+For Septentrio, enable EndOfPVT; enable Measurements/EndOfMeas for observation
+continuity diagnostics and PVTGeodetic or PVTCartesian for live status:
+
+```sh
+neognsslogger -p sbf -q -t RECEIVER_HOST:PORT /data/sbf
+neognsslogger -p sbf -n -d -f /path/to/recording.sbf
+```
+
+Navigation and measurement diagnostics have independent histories, labeled by
+`axis`. If PVT is 1 Hz and measurements are 10 Hz, set
+`--expected-period-ms 1000 --expected-measurement-period-ms 100`.
+MeasEpoch changes without EndOfMeas and mismatched EndOfMeas are warnings.
+
 `[logger qc] epoch_gap` reports previous/current full GPST labels, epoch interval,
-expected interval, and the monotonic host EOE arrival interval. Missing epoch
+expected interval, and the monotonic host completion-marker arrival interval. Missing epoch
 counts are estimates under the configured fixed cadence, reported only when
 the interval matches a multiple of that cadence within tolerance. Off-cadence
 intervals are reported separately; cadence changes are not automatically learned.
@@ -175,13 +299,16 @@ statistics and on normal C++ scope exit, including ordinary fatal errors.
 Default SIGINT/SIGTERM handling is unchanged: retain periodic totals and
 individual warnings; a final summary is not guaranteed on signal termination.
 
-Warnings do not drop frames, insert epochs, change rotation, or stop recording.
-Missing/mismatched TIMEGPS, missing EOE and non-increasing GPST remain fatal
+Cadence and message-presence warnings do not drop frames, insert epochs,
+change rotation, or stop recording. Transport failures discard pending bytes
+as described above. Missing/mismatched TIMEGPS, missing recording completion
+and non-increasing GPST remain fatal
 according to the recording policy; diagnostics do not silently recover them.
-The host arrival interval measures application reception, not UART transmission
+These recording requirements do not apply to `-n` inspection. The host arrival
+interval measures application reception, not UART transmission
 or network latency in isolation. A gap cannot by itself identify the receiver,
 bridge, network, or gpsd as the cause. Compare equivalent receiver configurations
-and retain raw UBX alongside the log for investigation.
+and retain raw UBX/SBF alongside the log for investigation.
 
 ## Source provenance and licensing
 

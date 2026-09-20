@@ -106,27 +106,26 @@ class PayloadSchemaTests(unittest.TestCase):
         code = "#include <cppgnss/ubx_def.hpp>\n#include <cassert>\n#include <cstring>\n#include <format>\n"
         code += "namespace UBX { constexpr uint8_t UBX_SCHEMA_TEST = 0xfe;\n"
         code += generate_struct("SCHEMA-TEST", fields)
-        code += generate_parser_header("SCHEMA-TEST", fields, "ACK")
+        code += generate_parser_header("SCHEMA-TEST", fields, "ACK").replace(
+            "cppgnss::UbxMessageId::SCHEMA_TEST", "static_cast<cppgnss::UbxMessageId>(0x05fe)"
+        )
         code += generate_parser_impl("SCHEMA-TEST", fields, "ACK")
         code += """
 }
 int main() {
     using namespace UBX;
     static_assert(sizeof(_ubx_schema_test) == 23);
-    ubx_frame frame;
-    frame.valid = true;
-    frame.class_id = UBX_CLASS_ACK;
-    frame.msg_id = UBX_SCHEMA_TEST;
-    frame.length = 23;
-    frame.payload.resize(23);
+    std::vector<uint8_t> payload(23);
+    cppgnss::FrameView frame{cppgnss::Protocol::ubx, 0, 0x05fe, 0, {}, payload};
     // Second record, third point: offset 1 + 10 + 1 + 2*3 = 18.
-    frame.payload[18] = 0xfe;
-    frame.payload[19] = 0xff;
-    frame.payload[20] = 0x42;
-    frame.payload[21] = 0x34;
-    frame.payload[22] = 0x12;
-    ubx_schema_test parsed(frame);
-    assert(parsed.valid);
+    payload[18] = 0xfe;
+    payload[19] = 0xff;
+    payload[20] = 0x42;
+    payload[21] = 0x34;
+    payload[22] = 0x12;
+    auto result = cppgnss::parse<ubx_schema_test>(frame);
+    assert(result);
+    const auto &parsed = result.value();
     assert(parsed.data.records[1].points[2].reading == -2);
     assert(parsed.data.records[1].points[2].last == 0x42);
     assert(parsed.data.tail == 0x1234);

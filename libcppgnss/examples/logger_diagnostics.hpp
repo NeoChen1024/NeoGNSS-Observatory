@@ -10,6 +10,7 @@
 // Application diagnostics only: never change stream bytes or recording policy.
 struct LoggerDiagnostics {
     using Clock = std::chrono::steady_clock;
+    std::string_view axis = "navigation";
     int64_t interval_ms = 1000, tolerance_percent = 20, previous_ms = -1;
     bool expect_clock = false;
     uint64_t epochs = 0, gaps = 0, estimated_missing = 0, irregular = 0;
@@ -58,10 +59,11 @@ struct LoggerDiagnostics {
                 if (gap && aligned)
                     estimated_missing += slots - 1;
                 const auto text = std::format(
-                    "\n[logger qc] {} previous={} current={} interval_ms={} "
+                    "\n[logger qc] {} axis={} previous={} current={} "
+                    "interval_ms={} "
                     "expected_ms={} "
                     "arrival_interval_ms={} estimated_missing={}\n",
-                    gap ? "epoch_gap" : "irregular_interval",
+                    gap ? "epoch_gap" : "irregular_interval", axis,
                     label(previous_ms), label(ms), dt, interval_ms, arrival,
                     aligned && gap ? std::to_string(slots - 1) : "unknown");
                 fputs(text.c_str(), stderr);
@@ -93,17 +95,20 @@ struct LoggerDiagnostics {
     }
     void summary() const {
         const auto text =
-            std::format("\n[logger qc totals] epochs={} gaps={} "
+            std::format("\n[logger qc totals] axis={} epochs={} gaps={} "
                         "estimated_missing={} irregular={} "
                         "missing_NAV-CLOCK={} mismatched_NAV-CLOCK={} "
                         "duplicate_NAV-CLOCK={} "
                         "timeouts={} reconnects={} invalid_checksums={} "
                         "last_epoch={} expected_ms={} tolerance_percent={}\n",
-                        epochs, gaps, estimated_missing, irregular,
+                        axis, epochs, gaps, estimated_missing, irregular,
                         missing_clock, mismatched_clock, duplicate_clock,
                         timeouts, reconnects, invalid_checksums,
                         label(previous_ms), interval_ms, tolerance_percent);
         fputs(text.c_str(), stderr);
     }
-    ~LoggerDiagnostics() { summary(); }
+    ~LoggerDiagnostics() {
+        if (epochs || timeouts || reconnects || invalid_checksums)
+            summary();
+    }
 };

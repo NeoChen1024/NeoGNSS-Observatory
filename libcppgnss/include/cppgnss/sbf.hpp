@@ -2,18 +2,14 @@
 #pragma once
 #include <cppgnss/sbas.hpp>
 #include <cppgnss/stream.hpp>
-#include <map>
+#include <cstdio>
 #include <string>
-#include <variant>
 
 namespace cppgnss::SBF {
 struct WideInteger {
     std::vector<uint8_t> little_endian;
     bool is_signed;
 };
-using Value =
-    std::variant<uint64_t, int64_t, double, std::vector<uint8_t>, WideInteger>;
-using Fields = std::map<std::string, Value>;
 enum class Kind { scalar, bits, repeat, optional, padding };
 struct Field {
     std::string name;
@@ -39,20 +35,22 @@ enum class Status {
     unsupported_schema,
     invalid_payload
 };
-struct Block {
+struct BlockInfo {
     uint16_t id;
     uint8_t revision;
-    std::string name;
+    std::string_view name;
     Status status;
-    Fields fields;
-    std::vector<uint8_t> payload, trailing;
+    size_t consumed = 0;
     std::string error;
-    std::optional<uint64_t>
-        offset; // Set by a stream adapter, absent for payload-only decoding.
+    // Native block header time, not necessarily a receiver-navigation anchor.
+    std::optional<uint32_t> tow_ms;
+    std::optional<uint16_t> week;
 };
-// CRC/framing validation belongs to StreamDecoder. Preserve the raw payload,
-// revision and undecoded tail even when schema decoding fails.
-Block decode(uint16_t id, uint8_t revision, std::span<const uint8_t> payload);
+// Validate the generated layout and inspect header time without a dynamic map.
+// CRC/framing validation belongs to StreamDecoder; payload ownership stays with
+// caller.
+BlockInfo inspect(uint16_t id, uint8_t revision,
+                  std::span<const uint8_t> payload);
 struct SbasFrame {
     uint32_t tow_ms;
     uint16_t week, prn;
@@ -62,5 +60,5 @@ struct SbasFrame {
     cppgnss::SBAS::Result decoded;
 };
 // GEORawL1 only. GEORawL5 is deliberately not interpreted as an L1 message.
-std::optional<SbasFrame> extract_sbas_l1(const Block &);
+std::optional<SbasFrame> extract_sbas_l1(const FrameView &);
 } // namespace cppgnss::SBF

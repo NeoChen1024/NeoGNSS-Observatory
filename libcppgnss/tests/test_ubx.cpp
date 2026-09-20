@@ -22,6 +22,16 @@ static ubx_frame make_frame(uint8_t class_id, uint8_t msg_id,
     return ubx_frame(raw);
 }
 
+template <class T>
+static cppgnss::ParseResult<T> parse_frame(const ubx_frame &frame) {
+    return cppgnss::parse<T>({cppgnss::Protocol::ubx,
+                              0,
+                              uint16_t((frame.class_id << 8) | frame.msg_id),
+                              0,
+                              {},
+                              frame.payload});
+}
+
 template <UbxScalar T>
 static void put_le(ubx_buf_t &bytes, size_t offset, T value) {
     const auto wire =
@@ -57,11 +67,9 @@ int main() {
     assert(message.valid);
 
     ubx_nav_pvt pvt;
-    pvt.valid = true; // Simulate successful structural decoding.
     pvt.data.valid_bit = 0x03;
     pvt.data.month = 13;
     assert(!ubx_nav_pvt_semantically_valid(pvt));
-    assert(pvt.valid); // Semantic rejection must not rewrite parser validity.
     pvt.data.month = 7;
     pvt.data.day = 11;
     pvt.data.fixType = 3;
@@ -77,9 +85,6 @@ int main() {
     pvt.data.fixType = 5;
     pvt.data.flags_bit = 1;
     assert(ubx_nav_pvt_fix_type(pvt) == "TIME");
-    pvt.valid = false;
-    assert(!ubx_nav_pvt_fix_ok(pvt));
-    pvt.valid = true;
     pvt.data.valid_bit = 0;
     assert(!ubx_nav_pvt_fix_ok(pvt));
 
@@ -97,9 +102,10 @@ int main() {
     pvt_payload[24] = 0xfe; // lon = -2, raw 1e-7 degree units
     pvt_payload[25] = pvt_payload[26] = pvt_payload[27] = 0xff;
     pvt_payload[76] = 0x7b; // pDOP = 123, raw 0.01 units
-    const ubx_nav_pvt decoded(
+    auto decoded_result = parse_frame<ubx_nav_pvt>(
         make_frame(UBX_CLASS_NAV, UBX_NAV_PVT, pvt_payload));
-    assert(decoded.valid);
+    assert(decoded_result);
+    const auto &decoded = decoded_result.value();
     assert(decoded.data.year == 2026);
     assert(decoded.data.valid_bit == 3);
     assert(decoded.data.flags_bit == 3);
@@ -109,12 +115,12 @@ int main() {
     assert(ubx_nav_pvt_semantically_valid(decoded));
     assert(ubx_nav_pvt_fix_type(decoded) == "3D/DGNSS");
     pvt_payload.pop_back();
-    assert(!ubx_nav_pvt(make_frame(UBX_CLASS_NAV, UBX_NAV_PVT, pvt_payload))
-                .valid);
+    assert(!parse_frame<ubx_nav_pvt>(
+        make_frame(UBX_CLASS_NAV, UBX_NAV_PVT, pvt_payload)));
     // Public frame fields can be modified by callers; never trust length alone.
     auto inconsistent = make_frame(UBX_CLASS_NAV, UBX_NAV_PVT, pvt_payload);
     inconsistent.length = 92;
-    assert(!ubx_nav_pvt(inconsistent).valid);
+    assert(!parse_frame<ubx_nav_pvt>(inconsistent));
 
     assert(ubx_msg_name(0x06, 0x8a) == "CFG-VALSET");
     assert(ubx_msg_name(0x02, 0x36) == "RXM-SPARTN-KEY");
@@ -150,9 +156,11 @@ int main() {
     rawx_payload[38] = 5;
     put_le<uint16_t>(rawx_payload, 40, 1234);
     rawx_payload[46] = 3;
-    const ubx_rxm_rawx rawx(
+    auto rawx_result = parse_frame<ubx_rxm_rawx>(
         make_frame(UBX_CLASS_RXM, UBX_RXM_RAWX, rawx_payload));
-    assert(rawx.valid && rawx.meas_grp.size() == 1);
+    assert(rawx_result);
+    const auto &rawx = rawx_result.value();
+    assert(rawx.meas_grp.size() == 1);
     assert(rawx.rcvTow == 123456.25 && rawx.week == 2400 && rawx.leapS == 18);
     assert(rawx.recStat_bit == 3);
     const auto &measurement = rawx.meas_grp[0];
@@ -162,22 +170,23 @@ int main() {
            measurement.sigId == 5);
     assert(measurement.trkStat_bit == 3);
     rawx_payload[11] = 2;
-    assert(!ubx_rxm_rawx(make_frame(UBX_CLASS_RXM, UBX_RXM_RAWX, rawx_payload))
-                .valid);
+    assert(!parse_frame<ubx_rxm_rawx>(
+        make_frame(UBX_CLASS_RXM, UBX_RXM_RAWX, rawx_payload)));
 
     ubx_buf_t sfrbx_payload{0, 7, 0, 0, 2, 0, 2, 0};
     sfrbx_payload.resize(16);
     put_le<uint32_t>(sfrbx_payload, 8, 0x8b123456u);
     put_le<uint32_t>(sfrbx_payload, 12, 0xfedcba98u);
-    const ubx_rxm_sfrbx sfrbx(
+    auto sfrbx_result = parse_frame<ubx_rxm_sfrbx>(
         make_frame(UBX_CLASS_RXM, UBX_RXM_SFRBX, sfrbx_payload));
-    assert(sfrbx.valid && sfrbx.navdata_grp.size() == 2 && sfrbx.version == 2);
+    assert(sfrbx_result);
+    const auto &sfrbx = sfrbx_result.value();
+    assert(sfrbx.navdata_grp.size() == 2 && sfrbx.version == 2);
     assert(sfrbx.navdata_grp[0].dwrd == 0x8b123456u);
     assert(sfrbx.navdata_grp[1].dwrd == 0xfedcba98u);
     sfrbx_payload.pop_back();
-    assert(
-        !ubx_rxm_sfrbx(make_frame(UBX_CLASS_RXM, UBX_RXM_SFRBX, sfrbx_payload))
-             .valid);
+    assert(!parse_frame<ubx_rxm_sfrbx>(
+        make_frame(UBX_CLASS_RXM, UBX_RXM_SFRBX, sfrbx_payload)));
 
     FILE *fp = tmpfile();
     assert(fp != NULL);

@@ -20,7 +20,7 @@ The logger depends directly on `libcppgnss`.
 | Numerical table reductions, rendering and parallel PNG export | Python/NumPy |
 
 Python calls native processing through batch bindings. RTKLIB conversion,
-RxTools and FFmpeg are external tools. `neoubxlogger` is the standalone recording
+RxTools and FFmpeg are external tools. `neognsslogger` is the standalone UBX/SBF recording
 application. CommonNEX-input STEC and raw-input PPP link RTKLIB as a library;
 they do not invoke conversion executables or write a RINEX observation intermediate.
 
@@ -173,20 +173,40 @@ and [nanoarrow](https://arrow.apache.org/nanoarrow/latest/index.html).
 
 ## SBF schema coverage and limitations
 
-The generated descriptor tree covers every block in the pinned `SBF_BLOCKS`
+Generated typed parsers, grouped into 17 functional translation units, cover
+every block in the pinned `SBF_BLOCKS`
 dictionary: currently 125 named blocks, including 117 defined payloads and eight
 empty definitions. Generation supports nested repetition, field-controlled
 counts, conditional groups, LSB-first bitfields, sub-block length padding,
 remaining-payload byte fields, floating point and wide integers. Generated
-files stay in the build directory and are never edited manually.
+files stay in the build directory and are never edited manually. Each message
+has directly accessible members; repeated/conditional groups and bit fields
+preserve hierarchy. Each UBX/SBF message owns a `std::string dump() const` method;
+SBF formatting traverses the stored hierarchical members without reparsing or
+flattening them into a map. Generic dispatch delegates formatting to the message;
+the logger owns text I/O. Descriptor trees
+remain available for introspection only.
 
-Empty/proprietary definitions return `unsupported_schema`; unknown IDs return
-`unknown_block`. Bounds/structure errors return `invalid_payload`, with an error
-and original payload retained. Every block retains its revision and undecoded
-tail. A decoded status means the pinned schema could be read, **not** that every
+UBX/SBF use `parse<T>(FrameView)` and a shared `ParseResult<T>` containing either
+owned decoded fields or a structured error. No incomplete message is exposed
+on failure. Empty/proprietary definitions return `UNSUPPORTED_LAYOUT`;
+bounds/structure errors return `INVALID_PAYLOAD` with an optional payload-relative
+error offset. Successful results expose a consumed-byte count. Frame identity
+checks precede parsing; framing and checksum validation are not repeated.
+Unknown IDs still pass through the framing layer and the generic `dump(frame)`
+uses raw hex. Dumps are single-line text with fully expanded repeated groups,
+not a serialization contract. `SBF::inspect` keeps its lightweight status summary
+for QA, backed by the same typed parsers. Callers retain the original input and
+revision context; typed results own decoded byte fields. Successful parsing means the pinned schema could be read, **not** that every
 receiver/firmware revision, no-data sentinel or physical interpretation has been
 validated. The upstream dictionary is not a complete revision history. Native
 wire values are not silently converted to UTC or replacement no-data values.
+
+The flattened `Block.fields` decoder and unused Python `SbfParser` binding are
+removed. CommonNEX receiver telemetry and the GPS observation adapter use typed
+parsers directly. Dataset QA uses generated `inspect()` for status/header time;
+no scientific observation, RawBits, restart or clock-correction policy changes
+are implied by this parser migration.
 
 SBF `GEORawL1` is adapted from its eight little-endian words to the same 250-bit
 MSB-first SBAS L1 representation used by UBX. `CRCPassed`, raw `SVID`/`SigIdx`,

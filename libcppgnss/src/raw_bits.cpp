@@ -327,7 +327,7 @@ RawBitsResult decode(const FrameView &f) {
     } else {
         if (f.id != 0x0213)
             return {};
-        auto parsed = UBX::parse_subframe(UBX::ubx_frame(f.wire.subspan(2)));
+        auto parsed = UBX::parse_subframe(f);
         if (!parsed.subframe)
             return {RawBitsStatus::malformed, {}};
         const auto &s = *parsed.subframe;

@@ -19,10 +19,4 @@ bool ubx_nav_eoe_semantically_valid(const ubx_nav_eoe &eoe);
 
 std::string ubx_nav_pvt_fix_type(const ubx_nav_pvt &pvt);
 
-void ubx_nav_pvt_dump(const ubx_nav_pvt &pvt, FILE *fp);
-void ubx_nav_eoe_dump(const ubx_nav_eoe &eoe, FILE *fp);
-
-// Returns true when the frame is a NAV message with a custom dump function.
-bool ubx_nav_dump_custom(const ubx_frame &frame, FILE *fp);
-
 } // namespace UBX

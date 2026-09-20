@@ -41,10 +41,10 @@ std::optional<uint16_t> SignalKey::prn() const {
         return std::nullopt;
     }
 }
-SubframeResult parse_subframe(const ubx_frame &frame) {
-    if (!frame.valid || frame.payload.size() != frame.length)
+SubframeResult parse_subframe(const cppgnss::FrameView &frame) {
+    if (frame.protocol != cppgnss::Protocol::ubx)
         return {SubframeStatus::invalid_frame, std::nullopt};
-    if (frame.class_id != UBX_CLASS_RXM || frame.msg_id != UBX_RXM_SFRBX)
+    if (frame.id != static_cast<uint16_t>(cppgnss::UbxMessageId::RXM_SFRBX))
         return {SubframeStatus::not_sfrbx, std::nullopt};
     if (frame.payload.size() < 8)
         return {SubframeStatus::invalid_length, std::nullopt};
@@ -53,9 +53,10 @@ SubframeResult parse_subframe(const ubx_frame &frame) {
     const size_t n = frame.payload[4];
     if (n == 0 || n > 16 || frame.payload.size() != 8 + 4 * n)
         return {SubframeStatus::invalid_length, std::nullopt};
-    const ubx_rxm_sfrbx decoded(frame);
-    if (!decoded.valid)
+    auto parsed = cppgnss::parse<ubx_rxm_sfrbx>(frame);
+    if (!parsed)
         return {SubframeStatus::invalid_frame, std::nullopt};
+    const auto &decoded = parsed.value();
     NavigationSubframe result;
     result.signal = {decoded.gnssId, decoded.svId, decoded.sigId,
                      uint8_t(decoded.gnssId == 6 ? decoded.freqId : 0)};
@@ -68,7 +69,7 @@ SubframeResult parse_subframe(const ubx_frame &frame) {
         result.words.push_back(word.dwrd);
     return {SubframeStatus::decoded, std::move(result)};
 }
-SubframeResult SubframeDemultiplexer::dispatch(const ubx_frame &frame,
+SubframeResult SubframeDemultiplexer::dispatch(const cppgnss::FrameView &frame,
                                                const Sink &sink) {
     auto result = parse_subframe(frame);
     if (result.subframe) {

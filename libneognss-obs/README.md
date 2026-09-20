@@ -30,7 +30,7 @@ ngo-sbas-grid-parquet --input-dir /data/cnex --output /data/sbas-grid
 ```
 
 No `--worker` or `--indexer` executable paths are used. The old internal
-executables are removed; the independent `neoubxlogger` application remains.
+executables are removed; the independent UBX/SBF `neognsslogger` application remains.
 For a C++-only root build, use `-DNEOGNSS_BUILD_BINDINGS=OFF`.
 
 Clang with an installed libc++/libc++abi can be verified in a separate build
@@ -60,7 +60,6 @@ The experimental extension is `neognss_observatory._native`:
 | `SegmentPlanner(joins, timeout_ms)` | Source index buffers to GPST segments/quarantined spans |
 | `SubframeProcessor(sbas_only=True)` | UBX chunks to decoded navigation-frame records |
 | `GridProcessor(correction_age=600, mask_age=1200, gap_timeout=0)` | Protocol-neutral timed SBAS batches to valid IGP intervals |
-| `SbfParser(block_ids=[])` | SBF chunks to typed block records, optionally filtered by block ID, with GEORawL1 SBAS extraction |
 | `ObservationReader(protocol="ubx")` | UBX RAWX / SBF MeasEpoch chunks to opaque GPS observation batches |
 | `CnexObservationReader(protocol, setup_id, antenna, period_seconds, period_ps)` | UBX/SBF chunks to seven CommonNEX Arrow batches: observations, events, RawBits, measurement-clock, receiver-status, receiver-clock and pulse-timing |
 | `CnexTimeProbe(protocol)` | Independent head-sample framing and first valid observation/navigation GPST anchors; no Arrow science output |

@@ -348,20 +348,20 @@ def generate_parser_header(msg_name, fields, ubx_class):
     fixed = is_fixed_size(fields) and compute_struct_size(fields) > 0
 
     lines = []
-    lines.append(f"class {cls} : public ubx_any_msg")
+    lines.append(f"class {cls}")
     lines.append("{")
     lines.append("public:")
+    lines.append(f"\tstatic constexpr auto protocol = cppgnss::Protocol::ubx;")
+    lines.append(f"\tstatic constexpr auto message_id = cppgnss::UbxMessageId::{msg_name.replace('-', '_')};")
+    lines.append(f'\tstatic constexpr std::string_view message_name = "{msg_name}";')
     if fixed:
-        lines.append(f"\tstruct {struct} data;")
+        lines.append(f"\tstruct {struct} data{{}};")
     else:
         lines.extend(gen_struct_inner(fields, struct, packed=False))
     lines.append("")
 
-    lines.append(f"\t{cls}();")
-    lines.append(f"\t{cls}(const ubx_frame &frame);")
-    lines.append(f"\tbool parse(const ubx_frame &frame);")
-    lines.append(f"\tvoid clear();")
-    lines.append(f"\tvoid dump(FILE *fp) const;")
+    lines.append(f"\tstatic cppgnss::ParseResult<{cls}> decode_payload(const cppgnss::FrameView &frame);")
+    lines.append(f"\tstd::string dump() const;")
     lines.append("")
     lines.append("};")
     return "\n".join(lines)
@@ -392,6 +392,32 @@ def gen_read_field(f, prefix, tab):
     return lines
 
 
+def generate_dump_fields(fields, prefix, depth=0):
+    lines = []
+    for f in fields:
+        if f.is_reserved:
+            continue
+        member = prefix + f.name
+        if f.is_repeating:
+            lines += [f'out.begin("{f.name}", {{}}, true);', f'for(const auto &item{depth}: {member}) {{ out.begin("");']
+            lines.extend(generate_dump_fields(f.nested_fields, f"item{depth}.", depth + 1))
+            lines += ["out.end(); } out.end();"]
+        elif f.pytype:
+            if f.arr_size:
+                lines += [
+                    f'out.begin("{f.name}", {{}}, true);',
+                    f'for(auto value: {member}) {{ out.separator(); out.text += std::format("{{}}", +value); }}',
+                    "out.end();",
+                ]
+            else:
+                fmt = "{}"
+                if f.pytype[:4].startswith("X"):
+                    width = X_HEX_WIDTH.get(f.pytype[:4], 2)
+                    fmt = f"0x{{:0{width}x}}"
+                lines.append(f'out.field("{f.name}", std::format("{fmt}", +{member}));')
+    return lines
+
+
 def generate_parser_impl(msg_name, fields, ubx_class):
     cls = parser_class_name(msg_name)
     struct = struct_name(msg_name)
@@ -400,50 +426,16 @@ def generate_parser_impl(msg_name, fields, ubx_class):
 
     lines = []
 
-    # Constructor
-    lines.append(f"{cls}::{cls}() {{ clear(); }}")
-    lines.append("")
-    lines.append(f"{cls}::{cls}(const ubx_frame &frame) {{ parse(frame); }}")
-    lines.append("")
-
-    # clear()
-    lines.append(f"void {cls}::clear()")
+    lines.append(f"cppgnss::ParseResult<{cls}> {cls}::decode_payload(const cppgnss::FrameView &frame)")
     lines.append("{")
-    if fixed:
-        lines.append("\tmemset(&this->data, 0, sizeof(this->data));")
-    else:
-        for f in fields:
-            if f.is_repeating and not isinstance(f.repeat_count, int):
-                continue  # handled below
-            if f.is_repeating:
-                lines.append(f"\tmemset(&this->{f.name}, 0, sizeof(this->{f.name}));")
-                continue
-            if f.pytype is None:
-                continue
-            if f.arr_size:
-                lines.append(f"\tmemset(&this->{f.name}, 0, sizeof(this->{f.name}));")
-            else:
-                lines.append(f"\tthis->{f.name} = 0;")
-    for f in fields:
-        if f.is_repeating and not isinstance(f.repeat_count, int):
-            lines.append(f"\tthis->{f.name}.clear();")
-    lines.append("\tubx_any_msg::clear();")
-    lines.append("}")
-    lines.append("")
-
-    # parse()
-    lines.append(f"bool {cls}::parse(const ubx_frame &frame)")
-    lines.append("{")
-    lines.append("\tthis->clear();")
-    lines.append("\tif(!frame.valid || frame.payload.size() != frame.length) return false;")
-    lines.append("")
-    cc = class_id_const(ubx_class)
-    mc = msg_id_const(msg_name)
-    lines.append(f"\tif(frame.class_id != {cc} || frame.msg_id != {mc}) return false;")
-    lines.append("")
-
+    lines.append(f"    {cls} message{{}};")
+    lines.append("    auto *self = &message;")
+    lines.append("    size_t off = 0;")
+    lines.append("    std::string error_detail;")
     if msg_name in VARIANTS:
-        lines.append(f"\tif(!({variant_condition(msg_name, fields)})) return false;")
+        lines.append(
+            f'\tif(!({variant_condition(msg_name, fields)})) return cppgnss::ParseError{{cppgnss::ParseErrorCode::UNSUPPORTED_LAYOUT, {VARIANTS[msg_name].offset if VARIANTS[msg_name].offset is not None else "std::nullopt"}, "Unsupported payload variant"}};'
+        )
 
     if fixed and total_sz > 0:
         lines.append(f"\tif(frame.length != sizeof(this->data))")
@@ -454,11 +446,11 @@ def generate_parser_impl(msg_name, fields, ubx_class):
         lines.append("\t\treturn false;")
         lines.append("\t}")
         lines.append("")
-        lines.append("\tsize_t off = 0;")
+
         lines.extend(gen_read_fields(fields, "this->data.", "\t"))
     else:
         # Field-by-field parsing for variable-size messages
-        lines.append("\tsize_t off = 0;")
+
         lines.append("")
         for f in fields:
             if f.is_repeating:
@@ -508,51 +500,25 @@ def generate_parser_impl(msg_name, fields, ubx_class):
     if not fixed:
         lines.append("\tif(off != frame.length) return false;")
         lines.append("")
-    lines.append("\tthis->valid = true;")
-    lines.append("\treturn true;")
+    lines.append(f"\treturn cppgnss::ParsedMessage<{cls}>{{std::move(message), off}};")
     lines.append("}")
     lines.append("")
 
-    # dump()
-    lines.append(f"void {cls}::dump(FILE *fp) const")
-    lines.append("{")
-    lines.append(f'\tstd::string output = "({msg_name}";')
-    if fixed:
-        for f in fields:
-            if f.is_reserved:
-                continue
-            if f.is_repeating and isinstance(f.repeat_count, int):
-                lines.append(f'\toutput += std::format(", {f.name}={{}} items x {{}} bytes", {f.repeat_count}, {f.size});')
-            elif not f.is_repeating and f.pytype:
-                pt = f.pytype[:4]
-                if f.arr_size:
-                    lines.append(f'\toutput += std::format(", {f.name}={{}} bytes", sizeof(data.{f.name}));')
-                elif pt.startswith("X"):
-                    width = X_HEX_WIDTH.get(pt, 2)
-                    lines.append(f'\toutput += std::format(", {f.name}=0x{{:0{width}x}}", +data.{f.name});')
-                else:
-                    lines.append(f'\toutput += std::format(", {f.name}={{}}", +data.{f.name});')
-    else:
-        for f in fields:
-            if f.is_reserved:
-                continue
-            if f.is_repeating and not isinstance(f.repeat_count, int):
-                lines.append(f'\toutput += std::format(", {f.name}={{}} items", this->{f.name}.size());')
-            elif f.is_repeating and isinstance(f.repeat_count, int):
-                continue
-            elif not f.is_repeating and f.pytype:
-                pt = f.pytype[:4]
-                if f.arr_size:
-                    lines.append(f'\toutput += std::format(", {f.name}={{}} bytes", sizeof(this->{f.name}));')
-                elif pt.startswith("X"):
-                    width = X_HEX_WIDTH.get(pt, 2)
-                    lines.append(f'\toutput += std::format(", {f.name}=0x{{:0{width}x}}", +this->{f.name});')
-                else:
-                    lines.append(f'\toutput += std::format(", {f.name}={{}}", +this->{f.name});')
-    lines.append('\toutput += ")\\n";')
-    lines.append("\tfputs(output.c_str(), fp);")
-    lines.append("}")
-    lines.append("")
+    # The field emitter is shared with dump generation; qualify decoded members
+    # against the local result, and return structured payload failures.
+    lines = [
+        line.replace("this->", "self->")
+        .replace("frame.length", "frame.payload.size()")
+        .replace("report_parse_error(", "error_detail = (")
+        .replace(
+            "return false;",
+            'return cppgnss::ParseError{cppgnss::ParseErrorCode::INVALID_PAYLOAD, off, error_detail.empty() ? "Unexpected payload length" : error_detail};',
+        )
+        for line in lines
+    ]
+    lines += [f"std::string {cls}::dump() const {{", f'cppgnss::detail::TextDump out; out.text = "(UBX {msg_name}";']
+    lines.extend(generate_dump_fields(fields, "data." if fixed else "this->"))
+    lines += ["return std::move(out).finish();", "}"]
 
     return "\n".join(lines)
 
@@ -731,75 +697,26 @@ def write_parser_impl_file(class_name, msgs, ubx_payloads):
     return "\n".join(lines)
 
 
-def write_dump_gen_header():
-    lines = [HEADER]
-    lines.append("#ifndef UBX_DUMP_GEN_HPP")
-    lines.append("#define UBX_DUMP_GEN_HPP")
-    lines.append("")
-    lines.append("#include <cppgnss/ubx_def.hpp>")
-    lines.append("")
-    lines.append("#pragma once")
-    lines.append("")
-    lines.append("namespace UBX")
-    lines.append("{")
-    lines.append("void ubx_dump_any(const ubx_frame &frame, FILE *fp);")
-    lines.append("} // namespace UBX")
-    lines.append("")
-    lines.append("#endif // UBX_DUMP_GEN_HPP")
-    return "\n".join(lines)
-
-
 def write_dump_gen_impl(class_msgs, target_classes, ubx_payloads):
-    lines = [HEADER]
-    lines.append("#include <cppgnss/ubx_dump_gen.hpp>")
-    lines.append("#include <cppgnss/ubx_ids_gen.hpp>")
-    lines.append("")
-    for cls_name in target_classes:
-        if cls_name in class_msgs:
-            lines.append(f"#include <cppgnss/ubx_{cls_name.lower()}_gen.hpp>")
-    lines.append("")
-    lines.append("namespace UBX")
-    lines.append("{")
-    lines.append("")
-    lines.append("void ubx_dump_any(const ubx_frame &frame, FILE *fp)")
-    lines.append("{")
-    lines.append("    if (!frame.valid)")
-    lines.append("        return;")
-    lines.append("")
-    lines.append("    switch (frame.class_id)")
-    lines.append("    {")
-    for cls_name in target_classes:
-        if cls_name not in class_msgs:
-            continue
-        msgs = class_msgs[cls_name]
-        valid = [(n, c, i) for n, c, i in msgs if should_generate_dump_case(n, ubx_payloads)]
-        if not valid:
-            continue
-        cc = class_id_const(cls_name)
-        lines.append(f"    case {cc}:")
-        lines.append(f"        switch (frame.msg_id)")
-        lines.append(f"        {{")
-        by_id = {}
-        for name, _, msg_id in valid:
-            by_id.setdefault(msg_id, []).append(name)
-        for msg_id, names in by_id.items():
-            lines.append(f"        case 0x{msg_id:02x}:")
-            for name in names:
-                condition = variant_condition(name, ubx_payloads[name])
-                pc = parser_class_name(name)
-                lines.append(f"            if({condition}) {{ {pc} p(frame); if(p.valid) {{ p.dump(fp); return; }} }}")
-            lines.append("            break;")
-        lines.append(f"        default:")
-        lines.append(f"            break;")
-        lines.append(f"        }}")
-        lines.append(f"        break;")
-    lines.append("    default:")
-    lines.append("        break;")
-    lines.append("    }")
-    lines.append("    ubx_any_msg(frame).dump(fp);")
-    lines.append("}")
-    lines.append("")
-    lines.append("} // namespace UBX")
+    lines = [HEADER, "#include <cppgnss/parse.hpp>"]
+    for group in target_classes:
+        if group in class_msgs:
+            lines.append(f"#include <cppgnss/ubx_{group.lower()}_gen.hpp>")
+    lines += ["namespace cppgnss::detail {", "std::string dump_ubx(const FrameView& frame) {", "switch(frame.id) {"]
+    by_id = {}
+    for group in target_classes:
+        for name, cls_id, msg_id in class_msgs.get(group, []):
+            if should_generate_dump_case(name, ubx_payloads):
+                by_id.setdefault((cls_id << 8) | msg_id, []).append(name)
+    for identity, names in by_id.items():
+        lines.append(f"case {identity}: {{")
+        for name in names:
+            lines.append(f'if ({variant_condition(name, ubx_payloads[name]).replace("frame.length", "frame.payload.size()")}) {{')
+            lines.append(f"auto result = parse<UBX::{parser_class_name(name)}>(frame);")
+            lines.append("return dump_parsed(frame, result); }")
+        lines.append('ParseError error{ParseErrorCode::UNSUPPORTED_LAYOUT, {}, "Unsupported payload variant"};')
+        lines.append("return dump_raw(frame, &error); }")
+    lines += ["default: return dump_raw(frame);", "} } }"]
     return "\n".join(lines)
 
 
@@ -832,6 +749,15 @@ def write_ids_file(class_msgs, target_classes):
         lines.append("")
     lines.append("} // namespace UBX")
     lines.append("")
+    lines.append("namespace cppgnss { enum class UbxMessageId : uint16_t {")
+    enum_ids = {name.replace("-", "_").replace("/", "_"): key for key, name in get_name_tables()[1].items()}
+    for msgs in class_msgs.values():
+        for name, cls_id, msg_id in msgs:
+            if is_generated_msg_name(name):
+                enum_ids[name.replace("-", "_")] = (cls_id << 8) | msg_id
+    for name, value in sorted(enum_ids.items()):
+        lines.append(f"{name} = 0x{value:04x},")
+    lines.append("}; }")
     lines.append("#endif // UBX_IDS_GEN_HPP")
     lines.append("")
     return "\n".join(lines)
@@ -965,10 +891,6 @@ def generate(output_dir):
         write_output(cp, cpp)
 
     # Generate universal dump function
-    dump_hpp = write_dump_gen_header()
-    dp = os.path.join(OUTPUT_DIR, "ubx_dump_gen.hpp")
-    write_output(dp, dump_hpp)
-
     dump_cpp = write_dump_gen_impl(class_msgs, TARGET_CLASSES, schemas)
     dp = os.path.join(OUTPUT_DIR, "ubx_dump_gen.cpp")
     write_output(dp, dump_cpp)

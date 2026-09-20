@@ -164,7 +164,7 @@ hash chains are not generated.
 ## Native libraries
 
 [`libcppgnss/`](libcppgnss/README.md) contains the maintained C++20 UBX
-and SBF protocol library and the maintained logger as `examples/ubxlogger.cpp`.
+and SBF protocol library and the maintained logger as `examples/gnsslogger.cpp`.
 CMake exposes `cppgnss::cppgnss`; codegen covers UBX and all available pinned
 `contrib/pysbf2` block definitions. The generic library has no Python runtime
 dependency. SBAS L1 decoding accepts receiver-independent air-frame bits.
@@ -173,7 +173,7 @@ dependency. SBAS L1 decoding accepts receiver-independent air-frame bits.
 archive segmentation, clock reconstruction and SBAS grid state. Its pybind11
 extension passes batches directly to Python, releasing the GIL during native
 processing. Python owns orchestration, file/Parquet I/O and plotting.
-`neoubxlogger` is a standalone application.
+`neognsslogger` is a standalone application.
 
 See the [architecture guide](docs/native-architecture.md) for API boundaries
 and SBF schema limitations.
@@ -188,9 +188,11 @@ input traversal is recursive by default.
 
 ### Logger recording and diagnostics
 
-The maintained `neoubxlogger` supports file/stdin input and TCP with reconnection.
+The maintained `neognsslogger` supports UBX/SBF (`-p ubx|sbf`), file/stdin input
+and TCP with reconnection.
 Both logger and reconstruction outputs use
-`GPST-%Y-%m-%d--%H-%M-%S-mmm.ubx`, with exactly three millisecond digits.
+`GPST-%Y-%m-%d--%H-%M-%S-mmm.ubx`, with exactly three millisecond digits;
+SBF logger recordings use `.sbf` instead.
 
 - The logger's optional first positional argument selects the output root
   (default `./`); recordings retain their `YYYY-MM/` subdirectories.
@@ -203,9 +205,12 @@ Both logger and reconstruction outputs use
   also reported, with cumulative diagnostic totals.
 - Valid TIME-only solutions count toward `FIX` statistics alongside 2D/3D
   solutions; `gnssFixOK` is still required.
+- SBF records through EndOfPVT using its GPST WNc/TOW; EndOfMeas provides
+  independent measurement cadence diagnostics. `-d` displays decoded SBF fields
+  and raw hex for unsupported blocks without dropping CRC-valid recordings.
 
-Diagnostic warnings do not stop recording. Existing fatal TIMEGPS/EOE checks
-remain enforced. See the [logger guide](libcppgnss/README.md#overnight-continuity-diagnostics)
+Diagnostic warnings do not stop recording. Recording requires valid monotonic
+TIMEGPS/EOE (UBX) or EndOfPVT (SBF). See the [logger guide](libcppgnss/README.md#overnight-continuity-diagnostics)
 for an overnight TCP test example and the limits of attributing gaps to a
 receiver, transport bridge, or recording software.
 

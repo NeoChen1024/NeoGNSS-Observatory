@@ -77,18 +77,14 @@ bool ubx_frame::validate(std::span<const uint8_t> buf) {
     return true;
 }
 
-void ubx_frame::dump(FILE *fp) const {
-    fprintf(fp, "=========\n");
-    fprintf(fp, "class_id: %02x\n", this->class_id);
-    fprintf(fp, "msg_id: %02x\n", this->msg_id);
-    fprintf(fp, "length: %d\n", this->length);
-    fprintf(fp, "cksum: %04x\n", this->cksum);
-    fprintf(fp, "buf: ");
-    for (unsigned int i = 0; i < this->payload.size(); i++) {
-        fprintf(fp, "%02x ", this->payload[i]);
-    }
-    fprintf(fp, "\n");
-    fprintf(fp, "valid: %d\n", this->valid);
+std::string ubx_frame::dump() const {
+    auto output = std::format("=========\nclass_id: {:02x}\nmsg_id: "
+                              "{:02x}\nlength: {}\ncksum: {:04x}\nbuf: ",
+                              class_id, msg_id, length, cksum);
+    for (auto b : payload)
+        output += std::format("{:02x} ", b);
+    output += std::format("\nvalid: {}\n", int(valid));
+    return output;
 }
 
 // Returns EOF on error
@@ -133,15 +129,13 @@ bool ubx_any_msg::parse(const ubx_frame &frame) {
     return true;
 }
 
-void ubx_any_msg::dump(FILE *fp) const {
-    fprintf(fp, "%s (%zd)\t> ",
-            ("UBX-" + ubx_msg_name(this->class_id, this->msg_id, this->payload))
-                .c_str(),
-            this->payload.size());
-    for (auto i : this->payload) {
-        fprintf(fp, "%02x", i);
-    }
-    fprintf(fp, "\n");
+std::string ubx_any_msg::dump() const {
+    auto output =
+        std::format("UBX-{} ({})\t> ", ubx_msg_name(class_id, msg_id, payload),
+                    payload.size());
+    for (auto b : payload)
+        output += std::format("{:02x}", b);
+    return output + "\n";
 }
 
 } // namespace UBX

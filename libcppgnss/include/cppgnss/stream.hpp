@@ -16,6 +16,9 @@ struct FrameView {
 };
 // Frame spans are borrowed until the callback returns. Chunk/file boundaries
 // have no framing significance. The caller chooses when to finish a stream.
+// If the callback throws, that exception propagates and the decoder is
+// poisoned. Further feed()/finish() calls fail; construct a new decoder to
+// restart.
 class StreamDecoder {
   public:
     explicit StreamDecoder(Protocol protocol) : protocol_(protocol) {}
@@ -33,6 +36,7 @@ class StreamDecoder {
     Protocol protocol_;
     std::vector<uint8_t> pending_;
     uint64_t offset_ = 0;
+    bool failed_ = false;
 };
 uint16_t sbf_crc(std::span<const uint8_t>);
 } // namespace cppgnss

@@ -4,7 +4,7 @@ project(cppgnss VERSION 0.1.0 LANGUAGES CXX)
 if(PROJECT_IS_TOP_LEVEL)
     include(CTest)
 endif()
-option(CPPGNSS_BUILD_EXAMPLES "Build the UBX logger application" ON)
+option(CPPGNSS_BUILD_EXAMPLES "Build the UBX/SBF logger application" ON)
 if(NOT DEFINED Python3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../.venv/bin/python")
     set(Python3_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/../.venv/bin/python")
 endif()
@@ -28,14 +28,23 @@ endif()
 set(generated_include "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(generated_dir "${generated_include}/cppgnss")
 set(generated_sources "${generated_dir}/ubx_dump_gen.cpp" "${generated_dir}/ubx_names_gen.cpp")
-set(sbf_generated "${generated_dir}/sbf_schema_gen.cpp")
+set(sbf_generated "${generated_dir}/sbf_dispatch_gen.cpp")
+set(sbf_generated_headers "${generated_dir}/sbf_ids_gen.hpp")
+foreach(group measurement navigation_page gps_navigation glonass_navigation
+        galileo_navigation beidou_navigation navic_navigation qzss_navigation
+        sbas_navigation pvt attitude receiver_time external_event
+        differential_correction lband status miscellaneous)
+    list(APPEND sbf_generated "${generated_dir}/sbf_${group}_gen.cpp")
+    list(APPEND sbf_generated_headers "${generated_dir}/sbf_${group}_gen.hpp")
+endforeach()
 file(GLOB sbf_schema_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/pysbf2/src/pysbf2/sbftypes_*.py")
-add_custom_command(OUTPUT "${sbf_generated}"
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_sbf_parsers.py" --output "${sbf_generated}"
+add_custom_command(OUTPUT ${sbf_generated} ${sbf_generated_headers}
+    COMMAND "${CMAKE_COMMAND}" -E env PYTHONDONTWRITEBYTECODE=1
+        "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_sbf_parsers.py" --output-dir "${generated_dir}"
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_sbf_parsers.py" ${sbf_schema_sources}
     COMMENT "Generating complete pinned pysbf2 SBF schemas" VERBATIM)
 set(generated_headers "${generated_dir}/ubx_ids_gen.hpp"
-    "${generated_dir}/ubx_struct_gen.hpp" "${generated_dir}/ubx_dump_gen.hpp")
+    "${generated_dir}/ubx_struct_gen.hpp")
 foreach(cls nav rxm mon tim esf hnr log sec cfg ack)
     list(APPEND generated_sources "${generated_dir}/ubx_${cls}_gen.cpp")
     list(APPEND generated_headers "${generated_dir}/ubx_${cls}_gen.hpp")
@@ -49,8 +58,8 @@ add_custom_command(
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_ubx_parsers.py" ${schema_sources}
     COMMENT "Generating UBX parsers from the pinned pyubx2 schema"
     VERBATIM)
-add_custom_target(cppgnss_codegen DEPENDS ${generated_sources} ${generated_headers})
-add_library(cppgnss src/measurements.cpp src/observations.cpp src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/stream.cpp src/sbf.cpp
+add_custom_target(cppgnss_codegen DEPENDS ${generated_sources} ${generated_headers} ${sbf_generated} ${sbf_generated_headers})
+add_library(cppgnss src/parse.cpp src/measurements.cpp src/observations.cpp src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/stream.cpp src/sbf.cpp
     src/ubx_subframe.cpp src/sbas.cpp src/raw_bits.cpp ${sbf_generated}
     ${generated_sources} ${generated_headers})
 add_library(cppgnss::cppgnss ALIAS cppgnss)
@@ -66,10 +75,11 @@ endif()
 
 if(CPPGNSS_BUILD_EXAMPLES)
     if(NOT UNIX)
-        message(FATAL_ERROR "neoubxlogger requires POSIX; use -DCPPGNSS_BUILD_EXAMPLES=OFF")
+        message(FATAL_ERROR "neognsslogger requires POSIX; use -DCPPGNSS_BUILD_EXAMPLES=OFF")
     endif()
-    add_executable(neoubxlogger examples/ubxlogger.cpp)
-    target_link_libraries(neoubxlogger PRIVATE cppgnss::cppgnss)
+    add_executable(neognsslogger examples/gnsslogger.cpp)
+    find_package(Threads REQUIRED)
+    target_link_libraries(neognsslogger PRIVATE cppgnss::cppgnss Threads::Threads)
 endif()
 
 if(BUILD_TESTING)

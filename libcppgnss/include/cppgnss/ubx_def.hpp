@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <cppgnss/ubx_ids_gen.hpp>
+#include <cppgnss/parse.hpp>
 
 #pragma once
 
@@ -91,7 +92,7 @@ class ubx_frame {
     ubx_frame();
     ubx_frame(std::span<const uint8_t> buf);
     void clear();
-    void dump(FILE *fp) const;
+    std::string dump() const;
     int write(FILE *fp) const;
 
   private:
@@ -109,7 +110,7 @@ class ubx_any_msg {
     ubx_any_msg(const ubx_frame &frame);
     bool parse(const ubx_frame &frame);
     void clear();
-    void dump(FILE *fp) const;
+    std::string dump() const;
 };
 
 } // namespace UBX

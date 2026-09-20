@@ -140,7 +140,7 @@ Json SubframeProcessor::feed(std::span<const uint8_t> data) {
         if (sbas_only_ && f.payload.size() >= 8 && f.payload[6] == 2 &&
             f.payload[0] != 1)
             return;
-        auto parsed = UBX::parse_subframe(UBX::ubx_frame(f.wire.subspan(2)));
+        auto parsed = UBX::parse_subframe(f);
         if (!parsed.subframe) {
             ++malformed_;
             return;

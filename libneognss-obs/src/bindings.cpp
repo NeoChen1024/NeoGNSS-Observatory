@@ -95,24 +95,6 @@ template <class T, class F> py::object run(Guarded<T> &self, F &&f) {
     }
     return to_python(result);
 }
-struct SbfBatch {
-    explicit SbfBatch(std::vector<uint16_t> ids = {})
-        : block_ids(std::move(ids)) {}
-    std::vector<uint16_t> block_ids;
-    cppgnss::StreamDecoder reader{cppgnss::Protocol::sbf};
-    std::vector<cppgnss::SBF::Block> feed(std::span<const uint8_t> data) {
-        std::vector<cppgnss::SBF::Block> out;
-        reader.feed(data, [&](const cppgnss::FrameView &f) {
-            if (!block_ids.empty() &&
-                std::find(block_ids.begin(), block_ids.end(), f.id) ==
-                    block_ids.end())
-                return;
-            out.push_back(cppgnss::SBF::decode(f.id, f.revision, f.payload));
-            out.back().offset = f.offset;
-        });
-        return out;
-    }
-};
 struct RxMessageRatio {
     bool sbf;
     cppgnss::StreamDecoder reader;
@@ -266,104 +248,6 @@ PYBIND11_MODULE(_native, m) {
                         py::make_tuple(c->first, c->second);
         return out;
     });
-    using Sbf = Guarded<SbfBatch>;
-    py::class_<Sbf>(m, "SbfParser")
-        .def(py::init<std::vector<uint16_t>>(),
-             py::arg("block_ids") = std::vector<uint16_t>{})
-        .def(
-            "feed",
-            [](Sbf &self, py::buffer data) {
-                auto info = data.request();
-                auto b = view(info);
-                std::vector<cppgnss::SBF::Block> blocks;
-                {
-                    py::gil_scoped_release release;
-                    blocks = self.run([&](auto &p) { return p.feed(b); });
-                }
-                py::list out;
-                for (const auto &block : blocks) {
-                    py::dict row, fields;
-                    row["id"] = block.id;
-                    row["offset"] = py::cast(block.offset);
-                    row["revision"] = block.revision;
-                    row["name"] = block.name;
-                    const char *names[] = {"decoded", "unknown_block",
-                                           "unsupported_schema",
-                                           "invalid_payload"};
-                    row["status"] = names[int(block.status)];
-                    row["error"] = block.error;
-                    row["payload"] = py::bytes(
-                        reinterpret_cast<const char *>(block.payload.data()),
-                        block.payload.size());
-                    row["trailing"] = py::bytes(
-                        reinterpret_cast<const char *>(block.trailing.data()),
-                        block.trailing.size());
-                    for (auto &[name, value] : block.fields)
-                        fields[py::str(name)] = std::visit(
-                            [](const auto &v) -> py::object {
-                                if constexpr (std::is_same_v<
-                                                  std::decay_t<decltype(v)>,
-                                                  std::vector<uint8_t>>)
-                                    return py::bytes(
-                                        reinterpret_cast<const char *>(
-                                            v.data()),
-                                        v.size());
-                                else if constexpr (
-                                    std::is_same_v<std::decay_t<decltype(v)>,
-                                                   cppgnss::SBF::WideInteger>) {
-                                    return py::module_::import("builtins")
-                                        .attr("int")
-                                        .attr("from_bytes")(
-                                            py::bytes(
-                                                reinterpret_cast<const char *>(
-                                                    v.little_endian.data()),
-                                                v.little_endian.size()),
-                                            "little",
-                                            py::arg("signed") = v.is_signed);
-                                } else
-                                    return py::cast(v);
-                            },
-                            value);
-                    row["fields"] = fields;
-                    out.append(row);
-                    if (auto sbas = cppgnss::SBF::extract_sbas_l1(block)) {
-                        row["sbas"] =
-                            to_python(neognss_obs::sbas_message(sbas->decoded));
-                        row["constellation"] = "SBAS";
-                        row["prn"] = sbas->prn;
-                        row["signal"] = "L1CA";
-                        // This is a native SBF GPST timestamp, not a UBX
-                        // context estimate.
-                        row["gpst_ms"] =
-                            (sbas->week != 65535 && sbas->tow_ms < 604800000)
-                                ? py::object(
-                                      py::int_(int64_t(sbas->week) * 604800000 +
-                                               sbas->tow_ms))
-                                : py::object(py::none());
-                        row["receiver_crc_passed"] = sbas->receiver_crc_passed;
-                    }
-                }
-                return out;
-            })
-        .def("finish",
-             [](Sbf &self) {
-                 self.run([](auto &p) {
-                     p.reader.finish();
-                     return 0;
-                 });
-             })
-        .def("summary", [](Sbf &self) {
-            return run(self, [](auto &p) -> Json {
-                return {
-                    {"source_bytes", p.reader.bytes},
-                    {"frames", p.reader.frames},
-                    {"invalid", p.reader.invalid},
-                    {"skipped_protocol_frames",
-                     p.reader.skipped_protocol_frames},
-                    {"skipped_protocol_bytes", p.reader.skipped_protocol_bytes},
-                    {"noise", p.reader.noise}};
-            });
-        });
     m.def("sbf_schemas", [] {
         py::list out;
         for (auto &s : cppgnss::SBF::schemas())

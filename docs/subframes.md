@@ -124,7 +124,7 @@ overlay and map coastlines are illustrative, not precision coverage polygons.
 #include <cppgnss/ubx_subframe.hpp>
 
 UBX::SubframeDemultiplexer router;
-// frame is a checksum-validated UBX::ubx_frame.
+// frame is a checksum-validated cppgnss::FrameView for protocol UBX.
 auto result = router.dispatch(frame, [](const UBX::NavigationSubframe &s) {
     // Use s.signal as the key for application-owned per-signal state.
     if (s.signal.gnssId == 1) {
