@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
-#include <cppgnss/observations.hpp>
+#include <neognss_obs/observations.hpp>
 #include <neognss_obs/processing.hpp>
 
 namespace neognss_obs {
 struct ObservationBatch {
-    std::vector<cppgnss::ObservationEpoch> epochs;
+    std::vector<neognss_obs::ObservationEpoch> epochs;
 };
 class ObservationReader {
   public:

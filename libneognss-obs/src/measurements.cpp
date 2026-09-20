@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-#include <cppgnss/measurements.hpp>
 #include <cppgnss/sbf_measurement_gen.hpp>
 #include <cppgnss/ubx_rxm_gen.hpp>
 #include <map>
+#include <neognss_obs/measurements.hpp>
 #include <stdexcept>
 
-namespace cppgnss {
+namespace neognss_obs {
 namespace {
 double freq(const std::string &sys, const std::string &sig) {
     switch (sig[0]) {
@@ -81,12 +81,12 @@ void domain(Measurement &m) {
         m.doppler = NAN;
 }
 } // namespace
-std::optional<Measurements> decode_measurements(const FrameView &f) {
+std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
     Measurements e;
-    if (f.protocol == Protocol::ubx) {
-        if (f.id != uint16_t(UbxMessageId::RXM_RAWX))
+    if (f.protocol == cppgnss::Protocol::ubx) {
+        if (f.id != uint16_t(cppgnss::UbxMessageId::RXM_RAWX))
             return {};
-        auto parsed = parse<UBX::ubx_rxm_rawx>(f);
+        auto parsed = cppgnss::parse<UBX::ubx_rxm_rawx>(f);
         if (!parsed)
             throw std::runtime_error(parsed.error().detail);
         const auto &raw = parsed.value();
@@ -125,9 +125,9 @@ std::optional<Measurements> decode_measurements(const FrameView &f) {
         }
         return e;
     }
-    if (f.id != uint16_t(SbfMessageId::MEAS_EPOCH))
+    if (f.id != uint16_t(cppgnss::SbfMessageId::MEAS_EPOCH))
         return {};
-    auto parsed = parse<SBF::MeasEpoch>(f);
+    auto parsed = cppgnss::parse<cppgnss::SBF::MeasEpoch>(f);
     if (!parsed)
         throw std::runtime_error(parsed.error().detail);
     const auto &raw = parsed.value();
@@ -206,11 +206,12 @@ std::optional<Measurements> decode_measurements(const FrameView &f) {
     }
     return e;
 }
-std::optional<Measurements> decode_measurement_extras(const FrameView &f) {
-    if (f.protocol != Protocol::sbf ||
-        f.id != uint16_t(SbfMessageId::MEAS_EXTRA))
+std::optional<Measurements>
+decode_measurement_extras(const cppgnss::FrameView &f) {
+    if (f.protocol != cppgnss::Protocol::sbf ||
+        f.id != uint16_t(cppgnss::SbfMessageId::MEAS_EXTRA))
         return {};
-    auto parsed = parse<SBF::MeasExtra>(f);
+    auto parsed = cppgnss::parse<cppgnss::SBF::MeasExtra>(f);
     if (!parsed)
         throw std::runtime_error(parsed.error().detail);
     const auto &raw = parsed.value();
@@ -273,4 +274,4 @@ std::optional<Measurements> decode_measurement_extras(const FrameView &f) {
     }
     return e;
 }
-} // namespace cppgnss
+} // namespace neognss_obs

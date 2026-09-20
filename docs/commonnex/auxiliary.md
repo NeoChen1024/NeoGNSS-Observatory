@@ -1,146 +1,163 @@
-# CommonNEX auxiliary schemas
+# CommonNEX receiver telemetry
 
-Status: v0 contract. UBX/SBF MeasurementClock, ReceiverClock, ReceiverStatus
-and PulseTiming import are implemented. Receiver-clock analysis consumes these
-CommonNEX catalogs; raw parsing is confined to the importer.
+The implemented `receiver-telemetry` catalog replaces the four separate clock,
+measurement-clock, status and pulse catalogs. No legacy-reader fallback is
+provided. Re-import old products explicitly; tools never delete old data.
 
-[Overview](overview.md) · [Receiver time association](telemetry-time.md)
+## Row and timing contract
 
-## Scope
+One row collects a navigation epoch's receiver reports. UBX and SBF share the
+same delayed assembler in the Python-free native engine. A new PVT epoch
+publishes the preceding window with `collection_complete=true`. This indicates
+window closure, not that every report or signal was present. Chunk, ordinary
+file, midnight and live-delivery boundaries never finalize this state.
 
-Keep receiver-reported quantities at their own cadence, independently of
-Observation. Import normalizes units and documented signs but does not apply
-clock correction to observations, unwrap bias/counters, infer adjustment
-amounts, interpolate temperature or perform thermal fits. Those are downstream
-analysis tasks.
+UBX NAV-PVT is the trigger. Pending MON-SYS and RAWX clock evidence belong to
+the following PVT cycle. NAV-TIMEGPS with matching iTOW supplies full GPST,
+including fTOW; RAWX retains its own independent timestamp. TIM-TP belongs to
+the report cycle but retains its own target-pulse time. SBF PVT Cartesian and
+Geodetic with the same TOW/WNc are one epoch. Source-timed pre-PVT reports wait
+for their window; ReceiverStatus after EndOfPVT still belongs to that epoch.
 
-Use four typed catalogs: `receiver-clock`, `measurement-clock`,
-`pulse-timing`, and `receiver-status`. Temperature and uptime from the same
-status report belong together; do not duplicate temperature onto clock rows.
-Receiver solution import is a separate future feature, not a requirement here.
+Scalar duplicates with identical values merge; conflicting values raise.
+No status/temperature forward fill occurs. Lists retain every occurrence in
+acquisition order. Unknown times remain null, never inferred from host time or
+uptime. Undated partial windows use the last known archive day, initially the
+GPST origin. Measurements and pulse target time do not replace navigation time.
 
-## Common receiver context
+Explicit end/discontinuity emits partial pending rows with
+`collection_complete=false`. File import retains pending state in its checkpoint
+by default; `--finalize-telemetry` declares a true end and emits those rows.
+Live duration/EOF uses the same finalizer. The assembler checks its pending
+state budget every 128 report updates and emits partial rows above 4 MiB;
+summary `telemetry_partial_rows` exposes these cases. Repeated MON-SYS without
+intervening PVT retains older unassigned status in a partial row, rather than
+overwriting it. This is receiver-epoch assembly, not sensor interpolation.
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `setup_id` | string | Logical station |
-| `gpst` | GpstTimestamp? | Reliable sample/event time or navigation association; null when unavailable |
-| `receiver_uptime_s` | Duration? | Reported or freshly associated receiver uptime; no extrapolation/unwrap |
-| `time_basis` | enum | SOURCE, NAVIGATION, or UNKNOWN |
-| `uptime_basis` | enum? | REPORTED or ASSOCIATED; null without uptime |
-| `source_message` | string | Concrete protocol message name needed to interpret reporting semantics |
+## Common and navigation-clock fields
 
-Use the shared [association, restart and placement rules](telemetry-time.md).
-Pulse GPST denotes the target pulse, not message arrival. Nearby status uptime
-does not claim an exact future-pulse uptime. Observation/MeasurementClock time
-remains independent. No row IDs, epoch foreign keys or generic `reference`,
-`quality`, `source_identity` containers are required. Concrete reference and
-validity fields remain essential.
-
-All time quantities use DECIMAL(38,12) seconds: GpstTimestamp is seconds since
-1980-01-06 GPST, TimeDelta is signed, Duration is nonnegative. Convert small
-native time components directly; never form a large absolute binary64 time.
-Use round-half-to-even at 1 ps where necessary.
-
-## ReceiverClock
+All fields below are nullable except `setup_id` and `collection_complete`.
+All time types use DECIMAL(38,12) seconds; GPST origin is 1980-01-06.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `clock_bias_s` | TimeDelta? | Receiver time minus declared reference-system time |
-| `clock_frequency_offset` | int64? | Relative frequency; positive means faster; step = 0.000001 ppb |
-| `time_accuracy_s` | Duration? | Source time accuracy, not implicitly a standard deviation |
-| `frequency_accuracy` | uint64? | Source frequency accuracy; step = 0.000001 ppb |
-| `reference_time_scale` | enum | Reference of the estimates, not the sample time axis |
+| setup_id | string | Logical station |
+| gpst | GpstTimestamp? | Full navigation epoch time |
+| receiver_uptime_s | Duration? | Source uptime associated with this window |
+| receiver_temperature_c | float32? | Receiver internal temperature |
+| cpu_load_percent, cpu_load_max_percent | float32? | Source load and source maximum |
+| memory_usage_percent, memory_usage_max_percent | float32? | Source memory usage |
+| io_usage_percent, io_usage_max_percent | float32? | Source I/O usage |
+| fine_time | bool? | Explicit SBF fine-time status |
+| clock_bias_s | TimeDelta? | Receiver minus reference-system time |
+| clock_frequency_offset | int64? | Unit 0.000001 ppb |
+| time_accuracy_s | Duration? | Source accuracy, not assumed standard deviation |
+| frequency_accuracy | uint64? | Unit 0.000001 ppb |
+| clock_reference_time_scale | enum? | GPST, GST, BDT or UNKNOWN |
+| collection_complete | bool | Window closed by following PVT epoch |
 
-UBX NAV-CLOCK maps clkB ns to seconds, clkD ns/s to ppb, tAcc ns to
-seconds and fAcc ps/s to 0.001 ppb units before canonical integer scaling.
-SBF PVT RxClkBias uses milliseconds and RxClkDrift ppm; retain its TimeSystem.
-Missing or unusable estimates are null, never substituted from other quantities.
-NAV-TIMEGPS fTOW completes navigation time; it is not clock bias and needs no
-duplicate `navigation_time_offset_s` field here.
+UBX NAV-CLOCK supplies bias (ns), drift (ns/s), tAcc (ns), fAcc (ps/s).
+SBF PVT supplies bias (ms), drift (ppm) and TimeSystem; Error != 0 makes its
+estimates unavailable. MON-SYS supplies temperature, uptime and utilization;
+SBF ReceiverStatus supplies temperature (raw minus 100; zero is unavailable),
+uptime, CPU load and fine-time state. Missing data is never substituted with zero.
+`_archive_day` exists only on native batches for Python partition routing.
 
-## MeasurementClock
+## Ordered report lists
 
-One row per complete source measurement epoch, not per satellite.
-The current implemented context is `setup_id` and non-null measurement `gpst`.
+Lists are non-null, with non-null struct items. No report means `[]`, not null.
+Unknown fields inside reports are null. Explicit false/zero values are retained.
+
+`measurement_clock` items:
+
+| Field | Type | Mapping |
+| --- | --- | --- |
+| gpst | GpstTimestamp | Original measurement time |
+| adjustment_reported | bool? | RAWX recStat.clkReset |
+| cumulative_adjustment_ms | uint64? | MeasEpoch revision 1 CumClkJumps |
+
+The uint64 container does not remove the native modulo-256 behavior. Neither
+missing field is inferred from the other. No adjustment is applied to observations.
+
+`pulse_timing` items:
+
+| Field | Type |
+| --- | --- |
+| gpst | GpstTimestamp? |
+| reference_time_scale | enum? |
+| quantization_error_s | TimeDelta? |
+| quantization_error_valid, locked, utc_available | bool? |
+| raim_status | enum? |
+| utc_standard | uint8? |
+| sync_age_s | Duration? |
+| sync_age_saturated | bool? |
+
+Pulse error means actual edge minus ideal edge, positive late. SBF Offset is
+ns; negative means early. SyncAge=255 is capped; receiver-time mode's zero is
+not GNSS-lock evidence. UBX qErr maps as -qErr picoseconds; qErrInvalid makes
+the numeric error null without discarding other pulse fields. TIM-TP describes
+the next pulse. Only locked GPST-based TIM-TP currently has resolved target GPST;
+UTC/GST/BDT targets remain null without a supported conversion. Zero qErr alone
+is not invalid. UBX sign follows the previously adopted F9T experiment and is
+not independently verified on this station's hardware.
+
+## Vendor status structs
+
+A null struct means no report; null members mean unavailable quantities.
+`ubx_status`: boot_type uint8?, notice_count/warning_count/error_count uint16?.
+
+`sbf_status`: receiver_state_flags and receiver_error_flags uint32?,
+external_error_flags and command_count uint8?, frontends list<struct>.
+Flags preserve source bit definitions; external frequency/time are not duplicated
+as booleans. CmdCount zero means unavailable; the native counter wraps 255 to 1.
+Frontend items contain:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `adjustment_reported` | bool? | Explicit source adjustment flag, including false |
-| `cumulative_adjustment_ms` | uint64? | Source-reported cumulative millisecond count, including zero |
+| frontend_code | uint8 | FrontEndID bits 0-4, RF frontend code, not RINEX signal |
+| antenna_id | uint8 | FrontEndID bits 5-7 |
+| gain_db | int8? | Gain in dB; raw -128 becomes null |
+| pll_locked | bool | False for Gain=-128 sentinel |
+| sample_variance | uint8? | Normalized IF variance, nominal 100; raw zero becomes null |
+| blanking_percent | uint8 | Percentage of blanked samples |
 
-RAWX recStat.clkReset supplies only the boolean. SBF MeasEpoch revision 1
-CumClkJumps supplies only the cumulative count, natively modulo 256; revision 0
-does not define it. uint64 is the storage container, not a guarantee of a native
-64-bit, monotonic or nonwrapping counter. Preserve source values without
-deriving the missing field. Do not equate adjustment with reboot or loss of lock.
-Contradictory counters in one assembled measurement epoch remain errors.
+Blanking=0 also occurs without blanking hardware; do not infer capability.
+Frontend arrays retain source order and antenna identity, independently of
+the selected observation antenna.
 
-A future RINEX adapter may retain per-epoch `rinex_receiver_clock_offset_s`
-separately. Input declaring applied observation clock-offset correction is
-rejected; no generic correction-state workflow is required.
+## Processing boundary
 
-## PulseTiming
+Events remain separate. Receiver restart inference and RawBits time association
+use receiver evidence; no clock correction, unwrap or temperature interpolation
+is performed here. Receiver-clock analysis reads this table, flattens pulses
+with their own timestamps, and reduces each measurement list for its numerical
+unwrap: any reported reset, and the last available cumulative counter. The full
+ordered measurement list remains on derived clock rows.
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `pulse_quantization_error_s` | TimeDelta? | Actual edge minus ideal edge, quantization component only; positive late |
-| `quantization_error_valid` | bool? | Explicit source validity; invalid quantity is null |
-| `reference_time_scale` | enum | Pulse reference system |
-| `utc_standard` | uint8? | UBX standardized UTC realization code, when applicable |
-| `utc_available` | bool? | Explicit source UTC availability |
-| `locked` | bool? | Explicit GNSS pulse lock state |
-| `raim_status` | enum? | UNAVAILABLE, NOT_ACTIVE or ACTIVE, not pass/fail |
-| `sync_age_s` | Duration? | Reported time since synchronization |
-| `sync_age_saturated` | bool? | At source's capped upper value, hence a lower bound |
+## Sources
 
-Only one sawtooth quantity is stored; do not also create `pps_offset_s` for
-the same report. It is not total PPS error including antenna/cable/position
-effects. Downstream correction of a measured edge is `measured - error`;
-import only records the error.
+- [u-blox interface](https://content.u-blox.com/sites/default/files/documents/u-blox-F9-HPG-1.51_InterfaceDescription_UBXDOC-963802114-13124.pdf)
+- [F9T polarity experiment](https://www.anderswallin.net/2019/10/ublox-f9t-qerr-correction/)
+- [Septentrio reference, ReceiverStatus/AGCState pp. 402-405](https://docs.sparkfun.com/SparkFun_GNSS_mosaic-X5/assets/component_documentation/firmware/mosaic-X5_Firmware_v4.15.0_Reference_Guide.pdf)
 
-SBF xPPSOffset.Offset ns is negative for early pulses, so multiply by 1e-9.
-SyncAge=255 is capped; receiver-time mode reports zero, not proof of GNSS lock.
-The block is emitted after the pulse.
+## Deferred work
 
-UBX TIM-TP describes the next pulse. qErr is signed picoseconds;
-qErrInvalid makes the numerical value null. Zero alone is not invalid.
-TpNotLocked indicates local-time pulse generation and potentially invalid
-week/TOW. Preserve reference flags; do not treat UTC/GST/BDT as GPST without
-a valid conversion. The current TIM-TP adapter resolves target GPST only for
-locked GPST-based pulses; other time bases retain quantities/flags with null GPST.
-This conversion limitation is not a reason to replace pulse time with navigation time.
+### Deferred external-sensor raw text
 
-Canonical UBX mapping is `-qErr * 1e-12`: a first-hand F9T experiment found
-that qErr is added to an interval measured from reference to u-blox pulse.
-This supports positive qErr meaning early, opposite the canonical error sign.
-Evidence limitation: the cited manufacturer interface defines units/flags but
-does not explicitly state the polarity equation; this mapping has not been
-verified with this station's hardware.
+No station currently has the relevant external sensor hardware. Defer all
+parser, schema and importer implementation for this feature.
 
-Sources:
-- [u-blox interface](https://content.u-blox.com/sites/default/files/documents/u-blox-F9-HPG-1.51_InterfaceDescription_UBXDOC-963802114-13124.pdf#page=211)
-- [First-hand F9T polarity experiment](https://www.anderswallin.net/2019/10/ublox-f9t-qerr-correction/)
-- [Septentrio reference](https://docs.sparkfun.com/SparkFun_GNSS_mosaic-X5/assets/component_documentation/firmware/mosaic-X5_Firmware_v4.15.0_Reference_Guide.pdf#page=379)
-
-## ReceiverStatus
-
-Common uptime is normally directly reported here.
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `receiver_temperature_c` | float32? | Receiver internal temperature in degrees Celsius |
-| `fine_time` | bool? | Explicit source fine-time status, when provided |
-
-Use MON-SYS runTime/tempValue and SBF ReceiverStatus UpTime/Temperature.
-Do not claim ambient or oscillator-crystal temperature. Missing status remains
-absent/null. Temperature association for plotting belongs downstream.
-
-## Implementation tracking
-
-- [x] Import measurement-clock evidence independently of observations.
-- [x] Import all three additional telemetry catalogs through Arrow batches.
-- [x] Use the common nullable-GPST/uptime policy for RawBits and telemetry.
-- [x] Persist restart evidence and resume the same association state.
-- [x] Move receiver-clock analysis to CommonNEX input; retain derived unwrap,
-      temperature joins and adjustment inference downstream.
+- [ ] Investigate SBF ASCIIIn and raw NMEA as carriers for external temperature,
+      humidity and pressure sensor reports when hardware becomes available.
+- [ ] Define a separate `raw-txt` catalog associated with navigation epochs,
+      sharing the delayed epoch assembly used by telemetry in live and file
+      import. Preserve message order and original payload bytes; do not require
+      UTF-8, trim text, normalize line endings or deduplicate reports.
+- [ ] Verify ASCIIIn timestamp, input-port and fragmentation semantics, and
+      distinguish receiver-embedded text from mixed-stream NMEA or a separate
+      sensor connection before finalizing fields and record boundaries.
+- [ ] Preserve unknown times without synthesizing GPST. Navigation association
+      denotes reception context, not necessarily the sensor measurement time.
+- [ ] Keep sensor-value parsing, units and calibration downstream of raw-text
+      capture. The catalog name and direction are planned; no final schema is
+      specified yet.

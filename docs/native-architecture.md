@@ -6,13 +6,15 @@ The logger depends directly on `libcppgnss`.
 | Responsibility | Owner |
 | --- | --- |
 | UBX/SBF framing, checksums, field definitions and decoding | `libcppgnss` |
-| SFRBX/GEORawL1 extraction, SBAS L1 bits, MT18/26, IGP coordinate rules | `libcppgnss` |
+| Receiver-native SFRBX/GEORawL1 fields and word arrays | `libcppgnss` |
+| CommonNEX measurement normalization, RawBits repacking and family classification | `libneognss-obs` |
+| SBAS L1 content decoding, MT18/26 and IGP coordinate rules | `libneognss-obs` |
 | Full available SBF schema generation | `libcppgnss`, from pinned `contrib/pysbf2` |
 | GPST epoch association, archive segmentation and quarantine policy | `libneognss-obs` |
 | Receiver time association and restart evidence | `libneognss-obs` |
 | Clock unwrap, adjustment inference, temperature association | Python/NumPy over CommonNEX |
 | SBAS mask completeness, correction/mask ages, grid resets | `libneognss-obs` |
-| GPS observation normalization without RTKLIB types | `libcppgnss` |
+| GPS L1/L2 numerical-engine adapter over shared measurement normalization | `libneognss-obs` |
 | Static GPS Float PPP adapter, filter and residual batches | `libneognss-obs`, linked to RTKLIB-EX |
 | GPS STEC geometry, phase leveling and receiver DCB estimation | `libneognss-obs`, linked to RTKLIB-EX |
 | Batch Python binding | `libneognss-obs` |
@@ -24,7 +26,27 @@ RxTools and FFmpeg are external tools. `neognsslogger` is the standalone UBX/SBF
 application. CommonNEX-input STEC and raw-input PPP link RTKLIB as a library;
 they do not invoke conversion executables or write a RINEX observation intermediate.
 
+Receiver-protocol decoding ends at typed native message fields. Satellite
+air-interface decoding is separate: `neognss_obs::SBAS` parses canonical bodies,
+while Observatory Measurements and RawBits adapters normalize typed UBX/SBF
+messages. Generated SBF decoded-navigation blocks remain receiver messages and
+therefore stay in `libcppgnss`. No compatibility aliases expose Observatory
+records through the protocol namespace.
+
+The raw-input PPP adapter selects GPS L1/L2 from the shared Measurements
+decoder; it does not implement another RAWX/MeasEpoch reconstruction. Its
+validity and missing values follow that decoder, including invalid SBF lock
+sentinels and unavailable phase. The legacy nanosecond numerical interface is
+independent of CommonNEX's picosecond time representation.
+
 ## Batch and state semantics
+
+The Python-free `CnexEngine` and `CnexTimeProbe` are compiled into
+`libneognss-obs`. `cnex_bindings.cpp` owns only Python conversion and Arrow
+capsule transfer. Historical import and live acquisition share this engine;
+see [streaming infrastructure](commonnex/live.md) for batch groups, lifecycle
+and IPC. nanoarrow and native worker threads are engine dependencies, not
+binding-only dependencies.
 
 ### C++ toolchain portability
 
@@ -284,7 +306,7 @@ process because the core contains shared caches. No C++ plotting or
 Parquet dependency is introduced.
 
 `contrib/arrow-nanoarrow` retains its Apache-2.0 license. It is the selected
-interop helper dependency, linked by the native extension for CommonNEX import
+interop helper dependency, linked by the native engine for CommonNEX import
 and replay. Python retains Parquet I/O through PyArrow.
 
 `contrib/int128` supplies Boost.Int128 under BSL-1.0. It is header-only and

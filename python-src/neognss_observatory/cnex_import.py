@@ -21,6 +21,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
+from .cnex_stream import CATALOGS, batch_group
 from .setup_antex import select_antenna
 from .setup_metadata import component, validate_setup
 from .setup_tracking import populate_tracking
@@ -308,11 +309,16 @@ def list_parts(station):
     show_default=True,
     help="Native observation input to import into this station; RAWX requires 0.",
 )
-def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_workers, source_antenna, recursive):
+@click.option(
+    "--finalize-telemetry",
+    is_flag=True,
+    help="Declare a true stream end and emit incomplete telemetry tails; otherwise retain them for continuation.",
+)
+def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_workers, source_antenna, recursive, finalize_telemetry):
     """Head-probe and time-sort INPUTS, then import one continuous recording path.
 
     Catalogs: observations (including MeasExtra/smoothing state), raw-bits,
-    completion/restart events, measurement-clock evidence, receiver status,
+    completion/restart events and unified receiver telemetry,
     clock estimates and pulse timing. Unknown RawBits/telemetry time is retained
     as null; no time-waiting backlog. See the coverage table for adapter limits.
     No automatic overlap merging. Rebuild requires the complete replacement input.
@@ -393,9 +399,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
         )
         if state:
             reader.restore(state["navigation_context"])
-        counts = dict.fromkeys(
-            ("observations", "events", "raw-bits", "measurement-clock", "receiver-status", "receiver-clock", "pulse-timing"), 0
-        )
+        counts = dict.fromkeys(CATALOGS, 0)
         started = set()
         published = list(state["published_files"]) if state else []
         current_state_path = resume_from
@@ -454,7 +458,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
             return writers[key][0]
 
         def check_tail(key, batch):
-            if mode != "tail" or key[1] not in {"observations", "measurement-clock"}:
+            if mode != "tail" or key[1] != "observations":
                 return
             if key not in tail_limits:
                 maxima = []
@@ -576,6 +580,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="cnex-parquet") as writer_pool,
             tqdm(total=total, unit="B", unit_scale=True, desc="CommonNEX", file=sys.stderr) as progress,
         ):
+            group_sequence = 0
             for path, start, size in segments:
                 with path.open("rb") as source:
                     source.seek(start)
@@ -597,7 +602,8 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                             if reversal:
                                 raise ValueError(reversal_message(reversal, segments)) from error
                             raise RuntimeError(f"{path}: {error}") from error
-                        batches = tuple(pa.record_batch(batch) for batch in native_batches)
+                        batches = batch_group(group_sequence, native_batches, include_empty=True).ordered_batches()
+                        group_sequence += 1
                         summary = reader.summary()
                         processed[str(path)] = {"path": str(path), "size": size, "offset": size - remaining}
                         tail = []
@@ -628,6 +634,11 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                     raise ValueError(f"Input changed while reading: {path}")
             for future in pending_writes:
                 future.result()
+            if finalize_telemetry:
+                batches = batch_group(group_sequence, reader.finish_telemetry(), include_empty=True).ordered_batches()
+                snapshot["summary"] = reader.summary()
+                snapshot["checkpoint"] = reader.checkpoint()
+                write_batches(batches, snapshot)
         summary = reader.summary()
         if not started:
             raise ValueError(f"No completed supported records: {summary}")
@@ -642,6 +653,8 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
             click.echo("Warning: some MeasExtra records could not be associated; inspect summary", err=True)
         if summary["raw_bits_untimed"] or summary["raw_bits_unsupported"]:
             click.echo("Warning: RawBits includes retained null-time or unsupported records; inspect counts", err=True)
+        if summary["telemetry_partial_rows"]:
+            click.echo("Warning: partial telemetry windows were retained; inspect collection_complete", err=True)
     except (ValueError, KeyError, OSError, RuntimeError, pa.ArrowException) as exc:
         for writer, _, _ in writers.values():
             if writer is not None:

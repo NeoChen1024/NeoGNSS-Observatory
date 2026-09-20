@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace cppgnss {
+namespace neognss_obs {
 struct RawBitsCheck {
     std::string origin, kind, scope, result, evidence, source_field;
 };
@@ -35,5 +35,5 @@ struct RawBitsResult {
 };
 // Decode validated wire frames without temporal association or terminal output.
 // Failed navigation checks remain records. No error correction is applied.
-RawBitsResult decode_raw_bits(const FrameView &frame);
-} // namespace cppgnss
+RawBitsResult decode_raw_bits(const cppgnss::FrameView &frame);
+} // namespace neognss_obs

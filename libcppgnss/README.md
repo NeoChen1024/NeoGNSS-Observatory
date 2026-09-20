@@ -2,8 +2,8 @@
 
 C++20 UBX/SBF framing, generated message decoders, message names, and NAV semantic
 helpers, maintained in NeoGNSS Observatory. The POSIX logger is an application
-of this library, not its entry point. Navigation-subframe routing and SBAS L1
-decoding live in separate library modules, independent of transport and logging.
+of this library, not its entry point. CommonNEX normalization and satellite
+navigation-bit content decoding belong to `libneognss-obs`, not this library.
 
 ## Build and test
 
@@ -54,8 +54,7 @@ target_link_libraries(my_tool PRIVATE cppgnss::cppgnss)
 
 Public headers use `#include <cppgnss/ubx.hpp>` and the existing `UBX`
 namespace. Individual generated decoders are available through headers such
-as `<cppgnss/ubx_rxm_gen.hpp>`. SBAS content is under `cppgnss::SBAS`,
-and SBF descriptors/decoders under `cppgnss::SBF`.
+as `<cppgnss/ubx_rxm_gen.hpp>`. SBF descriptors/decoders are under `cppgnss::SBF`.
 
 - `read_ubx_frame()` in `ubx_reader.hpp` accepts a caller-owned byte reader,
   distinguishes EOF/truncation/timeout/error, and returns frame bytes without
@@ -83,11 +82,10 @@ and SBF descriptors/decoders under `cppgnss::SBF`.
 The generated schema covers NAV, RXM, MON, TIM, ESF, HNR, LOG, SEC, CFG, and ACK.
 Names also cover upstream messages without generated decoders. Debug dispatch
 falls back to the original payload for unsupported messages or wire variants.
-`ubx_subframe.hpp` provides RXM-SFRBX routing by constellation, satellite,
-signal, and GLONASS frequency slot. `sbas.hpp` decodes SBAS L1 frames with
-CRC-24Q validation. Other constellations retain their raw navigation words.
-See the [subframe guide](../docs/subframes.md) for supported SBAS message types,
-API examples, limitations, and the Python batch exporter.
+`ubx_subframe.hpp` provides stateless RXM-SFRBX word extraction with native
+constellation, satellite, signal and frequency-slot identity. It does not decode
+the satellite navigation content. See the [subframe guide](../docs/subframes.md)
+for the Observatory RawBits and SBAS processing layer.
 
 `stream.hpp` provides chunked UBX/SBF framing with checksum validation and
 borrowed frame views. `feed()` keeps incomplete frames across calls; call
@@ -179,10 +177,9 @@ Local codegen supplements preserve protocol details needed by these adapters:
 
 The pinned upstream submodules are not edited for these supplements.
 
-`cppgnss::SBAS::parse_l1()` accepts 32 MSB-first bytes holding 250 air bits.
-`UBX::parse_sbas()` adapts SFRBX; `cppgnss::SBF::extract_sbas_l1()` adapts
-GEORawL1 from a `FrameView`, preserving receiver CRC status and native SBF fields. GEORawL5 is
-never silently passed through the L1 decoder.
+Generated navigation-page messages expose native receiver fields and body words.
+Canonical repacking, independent navigation-body checks, service classification,
+and SBAS correction contents are handled in `libneognss-obs`.
 
 ## UBX/SBF logger
 

@@ -3,25 +3,25 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
-#include <cppgnss/measurements.hpp>
-#include <cppgnss/raw_bits.hpp>
 #include <exception>
 #include <mutex>
+#include <neognss_obs/measurements.hpp>
+#include <neognss_obs/raw_bits.hpp>
 #include <stdexcept>
 #include <thread>
 
 namespace neognss_obs {
 struct CnexDecodedFrame {
     cppgnss::FrameView frame;
-    std::optional<cppgnss::Measurements> measurements, extras;
-    cppgnss::RawBitsResult bits;
+    std::optional<neognss_obs::Measurements> measurements, extras;
+    neognss_obs::RawBitsResult bits;
     std::exception_ptr error;
 
     void decode() noexcept {
         try {
-            measurements = cppgnss::decode_measurements(frame);
-            bits = cppgnss::decode_raw_bits(frame);
-            extras = cppgnss::decode_measurement_extras(frame);
+            measurements = neognss_obs::decode_measurements(frame);
+            bits = neognss_obs::decode_raw_bits(frame);
+            extras = neognss_obs::decode_measurement_extras(frame);
         } catch (...) {
             error = std::current_exception();
         }

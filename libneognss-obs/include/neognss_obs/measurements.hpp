@@ -5,8 +5,9 @@
 #include <optional>
 #include <string>
 
-namespace cppgnss {
-// Protocol quantities retain their native time representation at this boundary.
+namespace neognss_obs {
+// cppgnss::Protocol quantities retain their native time representation at this
+// boundary.
 struct Measurement {
     std::string system, signal;
     uint16_t satellite = 0;
@@ -40,7 +41,8 @@ struct Measurements {
 };
 // Generated typed decoding followed by physical normalization: RAWX v1 and
 // MeasEpoch revisions 0/1. Completion policy belongs to the caller.
-std::optional<Measurements> decode_measurements(const FrameView &);
+std::optional<Measurements> decode_measurements(const cppgnss::FrameView &);
 // MeasExtra rows carry epoch-local channel/signal keys, not satellite identity.
-std::optional<Measurements> decode_measurement_extras(const FrameView &);
-} // namespace cppgnss
+std::optional<Measurements>
+decode_measurement_extras(const cppgnss::FrameView &);
+} // namespace neognss_obs

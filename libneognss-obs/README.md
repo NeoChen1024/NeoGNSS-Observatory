@@ -1,5 +1,19 @@
 # libneognss-obs
 
+`cnex_engine.hpp` exposes the Python-free `CnexEngine` and `CnexTimeProbe`.
+The engine accepts byte chunks and returns four owned Arrow C Data Interface
+batches. Python's `CnexObservationReader` delegates to it; binding code owns
+capsule transfer, not scientific state. See [live streaming](../docs/commonnex/live.md)
+for batch groups, the five-second delivery target and cross-process adapters.
+
+The library owns receiver-to-CommonNEX normalization (`measurements.hpp` and
+`raw_bits.hpp`), canonical navigation-body checks and service classification,
+and satellite-content decoding (`sbas.hpp`, namespace `neognss_obs::SBAS`).
+All receiver fields come from libcppgnss typed parsers. The GPS L1/L2 numerical
+adapter in `observations.hpp` selects shared normalized measurements rather
+than decoding receiver payloads again. Generated receiver navigation messages
+remain in libcppgnss; satellite air-interface algorithms do not.
+
 Observatory-specific C++20 processing on top of
 [libcppgnss](../libcppgnss/README.md). The protocol library does not depend on
 this component. CMake exposes `neognss_obs::neognss_obs`.
@@ -55,13 +69,12 @@ The experimental extension is `neognss_observatory._native`:
 
 | Entry point | Input and result |
 | --- | --- |
-| `DatasetScan(protocol="ubx", qa=True, gap_timeout=50)` | Read-only streaming QA; `qa=False` supplies timed UBX SBAS batches without diagnostics |
+| `DatasetScan(protocol="ubx", gap_timeout=50)` | Read-only streaming QA |
 | `archive_index(buffer)` | Read-only UBX buffer to a packed `UBXIDX04` index |
 | `SegmentPlanner(joins, timeout_ms)` | Source index buffers to GPST segments/quarantined spans |
-| `SubframeProcessor(sbas_only=True)` | UBX chunks to decoded navigation-frame records |
 | `GridProcessor(correction_age=600, mask_age=1200, gap_timeout=0)` | Protocol-neutral timed SBAS batches to valid IGP intervals |
 | `ObservationReader(protocol="ubx")` | UBX RAWX / SBF MeasEpoch chunks to opaque GPS observation batches |
-| `CnexObservationReader(protocol, setup_id, antenna, period_seconds, period_ps)` | UBX/SBF chunks to seven CommonNEX Arrow batches: observations, events, RawBits, measurement-clock, receiver-status, receiver-clock and pulse-timing |
+| `CnexObservationReader(protocol, setup_id, antenna, period_seconds, period_ps)` | UBX/SBF chunks to four CommonNEX Arrow batches: observations, events, RawBits and receiver-telemetry |
 | `CnexTimeProbe(protocol)` | Independent head-sample framing and first valid observation/navigation GPST anchors; no Arrow science output |
 | `PppFloat(settings)` | Observation batches and local precise products to Float solution/residual arrays |
 
@@ -101,12 +114,8 @@ receiver/signal-pair window from leveled residual batches, with coverage gates.
 RTKLIB adapters share the same process-wide lock. See [STEC conventions and
 limits](../docs/stec.md); GIM-constrained estimates are not independent calibration.
 
-For clocks, pass each file's name to `feed()` and retain one processor across
-files. Frame-start source attribution is preserved even for split frames.
-`end_file()` is an explicit framing reset for known complete streams, not
-required at ordinary file boundaries. Call `finish()` once at the end of the receiver
-stream. A `SubframeProcessor` spans a complete continuous group and is not
-finished at ordinary file/day boundaries. One `GridProcessor` represents one
+Receiver-clock consumes CommonNEX telemetry and Events, not raw receiver files.
+One `GridProcessor` represents one
 signal in one continuous group; `finish(end_gpst_ms)` stops at the last observed
 epoch, without inventing an extra second.
 

@@ -42,8 +42,8 @@ static std::string hex(std::span<const uint8_t> bytes) {
     }
     return s;
 }
-Json sbas_message(const cppgnss::SBAS::Result &result) {
-    namespace S = cppgnss::SBAS;
+Json sbas_message(const neognss_obs::SBAS::Result &result) {
+    namespace S = neognss_obs::SBAS;
     Json out = {{"status", S::status_name(result.status)}};
     if (!result.message)
         return out;
@@ -55,8 +55,6 @@ Json sbas_message(const cppgnss::SBAS::Result &result) {
                 {"computed_crc", m.computed_crc},
                 {"padding_bits", m.padding_bits},
                 {"hex", hex(m.bytes)}});
-    if (m.trailing_word)
-        out["trailing_word"] = *m.trailing_word;
     Json c = {{"kind", "unparsed"}};
     std::visit(
         [&](const auto &v) {
@@ -131,65 +129,5 @@ Json sbas_message(const cppgnss::SBAS::Result &result) {
         m.content);
     out["content"] = std::move(c);
     return out;
-}
-Json SubframeProcessor::feed(std::span<const uint8_t> data) {
-    Json rows = Json::array();
-    reader_.feed(data, [&](const cppgnss::FrameView &f) {
-        if (f.id != 0x0213)
-            return;
-        if (sbas_only_ && f.payload.size() >= 8 && f.payload[6] == 2 &&
-            f.payload[0] != 1)
-            return;
-        auto parsed = UBX::parse_subframe(f);
-        if (!parsed.subframe) {
-            ++malformed_;
-            return;
-        }
-        const auto &s = *parsed.subframe;
-        ++counts_[s.signal];
-        Json row = {{"offset", f.offset},
-                    {"gnssId", s.signal.gnssId},
-                    {"svId", s.signal.svId},
-                    {"sigId", s.signal.sigId},
-                    {"freqId", s.raw_freqId},
-                    {"chn", s.chn},
-                    {"version", s.version},
-                    {"reserved0", s.reserved0},
-                    {"words", s.words},
-                    {"prn", s.signal.prn() ? Json(*s.signal.prn()) : Json()}};
-        if (s.signal.gnssId == 1) {
-            auto result = UBX::parse_sbas(s);
-            ++statuses_[cppgnss::SBAS::status_name(result.status)];
-            if (result.message && result.message->crc_valid &&
-                result.message->preamble_valid)
-                ++types_[std::to_string(result.message->type)];
-            row["sbas"] = sbas_message(result);
-        }
-        rows.push_back(std::move(row));
-    });
-    return rows;
-}
-Json SubframeProcessor::finish() {
-    reader_.finish();
-    return Json::array();
-}
-Json SubframeProcessor::summary() const {
-    Json streams = Json::array();
-    for (auto &[k, n] : counts_)
-        streams.push_back({{"gnssId", k.gnssId},
-                           {"svId", k.svId},
-                           {"sigId", k.sigId},
-                           {"freqId", k.freqId},
-                           {"frames", n}});
-    return {{"status", "complete"},
-            {"source_bytes", reader_.bytes},
-            {"ubx_frames", reader_.frames},
-            {"malformed", malformed_ + reader_.invalid},
-            {"discarded_noise_bytes", reader_.noise},
-            {"skipped_protocol_frames", reader_.skipped_protocol_frames},
-            {"skipped_protocol_bytes", reader_.skipped_protocol_bytes},
-            {"streams", streams},
-            {"sbas_status", statuses_},
-            {"sbas_message_types", types_}};
 }
 } // namespace neognss_obs

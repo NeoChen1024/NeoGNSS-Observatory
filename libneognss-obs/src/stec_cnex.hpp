@@ -13,7 +13,7 @@ class StecCnexReader {
     using Tick = boost::int128::int128;
     std::string setup_, first_, second_;
     std::optional<Tick> last_;
-    std::optional<cppgnss::ObservationEpoch> pending_;
+    std::optional<neognss_obs::ObservationEpoch> pending_;
     uint64_t rounded_ = 0, smoothed_ = 0;
     struct View {
         ArrowArrayView value{};
@@ -137,7 +137,7 @@ class StecCnexReader {
                             "precision");
                     out.epochs.push_back(std::move(*pending_));
                 }
-                pending_ = cppgnss::ObservationEpoch{};
+                pending_ = neognss_obs::ObservationEpoch{};
                 pending_->gpst_ns = int64_t(ns);
                 last_ = t;
                 rounded_ += remainder != 0;
@@ -148,7 +148,7 @@ class StecCnexReader {
             if (sat->storage_type != NANOARROW_TYPE_UINT16 ||
                 ArrowArrayViewIsNull(sat, row))
                 throw std::runtime_error("Expected CommonNEX satellite number");
-            cppgnss::Observation m;
+            neognss_obs::Observation m;
             m.prn = static_cast<int>(ArrowArrayViewGetUIntUnsafe(sat, row));
             if (m.prn < 1 || m.prn > 32)
                 throw std::runtime_error("Unsupported GPS satellite number");

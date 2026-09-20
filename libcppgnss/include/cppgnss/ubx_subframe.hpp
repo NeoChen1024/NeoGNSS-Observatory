@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include <compare>
-#include <cppgnss/sbas.hpp>
+#include <cppgnss/stream.hpp>
 #include <cppgnss/ubx_def.hpp>
-#include <functional>
 #include <optional>
+#include <vector>
 
 namespace UBX {
 // These are wire identifiers, not NMEA/RINEX satellite numbers. Unknown GNSS
@@ -35,19 +35,4 @@ struct SubframeResult {
     std::optional<NavigationSubframe> subframe;
 };
 SubframeResult parse_subframe(const cppgnss::FrameView &frame);
-// UBX SFRBX v2 SBAS L1 C/A adapter. Other signals are never guessed from bits.
-cppgnss::SBAS::Result parse_sbas(const NavigationSubframe &subframe);
-
-class SubframeDemultiplexer {
-  public:
-    using Sink = std::function<void(const NavigationSubframe &)>;
-    // One callback per frame, with a key suitable for separate state machines.
-    // No per-stream frame history is retained; applications own retention/I/O.
-    SubframeResult dispatch(const cppgnss::FrameView &frame, const Sink &sink);
-    const std::map<SignalKey, uint64_t> &counts() const { return counts_; }
-    void clear() { counts_.clear(); }
-
-  private:
-    std::map<SignalKey, uint64_t> counts_;
-};
 } // namespace UBX

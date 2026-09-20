@@ -121,7 +121,7 @@ struct StecProcessor::State {
         int64_t id, start, last, emitted = -1, samples = 0;
         int reason;
         double gf;
-        cppgnss::Observation a, b;
+        neognss_obs::Observation a, b;
         std::vector<double> offsets, weights;
         int64_t first_level = -1, last_level = -1;
     };
@@ -425,8 +425,8 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
                 s.close(current->first, 1, out.arcs);
             }
         }
-        std::map<int, std::pair<const cppgnss::Observation *,
-                                const cppgnss::Observation *>>
+        std::map<int, std::pair<const neognss_obs::Observation *,
+                                const neognss_obs::Observation *>>
             pairs;
         for (const auto &m : epoch.signals)
             if (m.antenna == 0 &&
@@ -574,7 +574,7 @@ std::vector<StecArc> StecProcessor::preview() const {
 Json StecProcessor::checkpoint() const {
     const auto &s = *state_;
     Json tracks = Json::array();
-    auto tracking = [](const cppgnss::Observation &m) {
+    auto tracking = [](const neognss_obs::Observation &m) {
         return Json{{"lock_seconds", m.lock_seconds},
                     {"lock_valid", m.lock_valid},
                     {"sub_half_cycle", m.sub_half_cycle},
@@ -625,7 +625,7 @@ void StecProcessor::restore(const Json &j) {
     s.missing_gim = j.at("missing_gim");
     s.product_gaps = j.at("product_gaps").get<std::map<int, uint64_t>>();
     auto tracking = [](const Json &v) {
-        cppgnss::Observation m;
+        neognss_obs::Observation m;
         m.lock_seconds = v.at("lock_seconds");
         m.lock_valid = v.at("lock_valid");
         m.sub_half_cycle = v.at("sub_half_cycle");

@@ -78,7 +78,7 @@ special events retain their own typed mapping, not fabricated observations.
 
 Clock-corrected observation input is out of scope; there is no clock-correction
 application-state Event. Raw receiver adjustment evidence is independently
-stored in the [measurement-clock auxiliary catalog](auxiliary.md#measurement-clock-evidence).
+stored in the [receiver-telemetry measurement list](auxiliary.md#ordered-report-lists).
 Do not infer a restart, gap or loss of lock merely from a clock adjustment.
 
 ## Reading and persistence

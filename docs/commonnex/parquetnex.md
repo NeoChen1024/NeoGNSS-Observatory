@@ -43,10 +43,10 @@ the interchange helpers, not a Parquet encoder. Do not add a DataFrame conversio
 between native batches and the writer. Batch size and row-group size are separate
 tuning choices; neither requires buffering an entire GPST day.
 
-The implemented `measurement-clock` auxiliary catalog uses the same daily
-revision/part naming and Zstandard level 3 as the science catalogs. Its four
-columns and source mappings are defined in [Auxiliary](auxiliary.md#measurement-clock-evidence).
-It preserves measurement-clock evidence independently of navigation telemetry.
+The unified `receiver-telemetry` catalog follows the same daily revision/part
+names and Zstandard level 3. Its ordered measurement/pulse lists and status
+fields are defined in [Auxiliary](auxiliary.md). Pending navigation windows
+survive file boundaries and ordinary daily-import checkpoints.
 
 ## Storage initialization
 

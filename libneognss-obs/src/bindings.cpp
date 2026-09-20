@@ -173,8 +173,8 @@ PYBIND11_MODULE(_native, m) {
         });
     using Scan = Guarded<neognss_obs::DatasetScan>;
     py::class_<Scan>(m, "DatasetScan")
-        .def(py::init<std::string, bool, double>(), py::arg("protocol") = "ubx",
-             py::arg("qa") = true, py::arg("gap_timeout") = 50)
+        .def(py::init<std::string, double>(), py::arg("protocol") = "ubx",
+             py::arg("gap_timeout") = 50)
         .def("feed",
              [](Scan &s, py::buffer data) {
                  auto info = data.request();
@@ -200,22 +200,6 @@ PYBIND11_MODULE(_native, m) {
         return py::bytes(reinterpret_cast<const char *>(result.data()),
                          result.size());
     });
-    using Subframes = Guarded<neognss_obs::SubframeProcessor>;
-    py::class_<Subframes>(m, "SubframeProcessor")
-        .def(py::init<bool>(), py::arg("sbas_only") = true)
-        .def("feed",
-             [](Subframes &s, py::buffer data) {
-                 auto info = data.request();
-                 auto b = view(info);
-                 return run(s, [&](auto &p) { return p.feed(b); });
-             })
-        .def("finish",
-             [](Subframes &s) {
-                 return run(s, [](auto &p) { return p.finish(); });
-             })
-        .def("summary", [](Subframes &s) {
-            return run(s, [](auto &p) { return p.summary(); });
-        });
     using Grid = Guarded<neognss_obs::GridProcessor>;
     py::class_<Grid>(m, "GridProcessor")
         .def(py::init<double, double, double>(),
@@ -243,7 +227,7 @@ PYBIND11_MODULE(_native, m) {
         py::dict out;
         for (unsigned b = 0; b <= 10; ++b)
             for (unsigned p = 1; p <= 201; ++p)
-                if (auto c = cppgnss::SBAS::igp_coordinate(b, p))
+                if (auto c = neognss_obs::SBAS::igp_coordinate(b, p))
                     out[py::make_tuple(b, p)] =
                         py::make_tuple(c->first, c->second);
         return out;

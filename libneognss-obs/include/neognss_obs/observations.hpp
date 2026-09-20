@@ -4,9 +4,9 @@
 #include <optional>
 #include <string>
 
-namespace cppgnss {
-// Initial supported observation family: GPS L1/L2 RAWX and SBF MeasEpoch.
-// No RTKLIB types, filtering policy or terminal I/O in this representation.
+namespace neognss_obs {
+// GPS L1/L2 numerical-engine representation, selected from shared Measurements.
+// No RTKLIB types or terminal I/O in this representation.
 struct Observation {
     int prn = 0, antenna = 0;
     std::string signal;
@@ -27,5 +27,6 @@ struct ObservationEpoch {
 };
 // Other systems/signals are counted, never remapped to a supported identity.
 // Meas3 blocks are ignored here; the application diagnoses Meas3-only inputs.
-std::optional<ObservationEpoch> decode_gps_observations(const FrameView &frame);
-} // namespace cppgnss
+std::optional<ObservationEpoch>
+decode_gps_observations(const cppgnss::FrameView &frame);
+} // namespace neognss_obs

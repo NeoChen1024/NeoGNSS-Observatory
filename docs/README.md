@@ -22,6 +22,9 @@ only when they affect present interpretation or processing.
 
 ## Tools
 
+- [CommonNEX live streaming](commonnex/live.md): native engine, five-second batch
+  delivery, bounded TCP acquisition and Arrow IPC transport adapters.
+
 - [Mosaic push](mosaic-push.md): resumable receiver FTP mirroring, verified xz/SHA-512
   archives, optional storage limits and multiple FTPS targets.
 - [CommonNEX importer pilot](commonnex/importer.md): native UBX/SBF observations,

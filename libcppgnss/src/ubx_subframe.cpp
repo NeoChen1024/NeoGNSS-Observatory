@@ -3,26 +3,6 @@
 #include <cppgnss/ubx_subframe.hpp>
 
 namespace UBX {
-cppgnss::SBAS::Result parse_sbas(const NavigationSubframe &s) {
-    using namespace cppgnss::SBAS;
-    if (s.version != 2 || s.signal.gnssId != 1 || s.signal.sigId != 0)
-        return {Status::unsupported_signal, std::nullopt};
-    // Nine-word reports occur in the archive. Only the first eight words
-    // carry the standard frame; retain the unexplained ninth word verbatim.
-    if (s.words.size() != 8 && s.words.size() != 9)
-        return {Status::invalid_word_count, std::nullopt};
-    std::array<uint8_t, 32> bytes{};
-    // UBX transports little-endian U4 values. Their decoded values contain
-    // consecutive MSB-first SBAS bits, unlike the legacy RXM-SFRB last word.
-    for (size_t i = 0; i < 8; ++i)
-        for (size_t j = 0; j < 4; ++j)
-            bytes[4 * i + j] = uint8_t(s.words[i] >> (24 - 8 * j));
-    auto result = parse_l1(bytes);
-    if (result.message && s.words.size() == 9)
-        result.message->trailing_word = s.words[8];
-    return result;
-}
-
 std::optional<uint16_t> SignalKey::prn() const {
     switch (gnssId) {
     case 0:
@@ -68,14 +48,5 @@ SubframeResult parse_subframe(const cppgnss::FrameView &frame) {
     for (const auto &word : decoded.navdata_grp)
         result.words.push_back(word.dwrd);
     return {SubframeStatus::decoded, std::move(result)};
-}
-SubframeResult SubframeDemultiplexer::dispatch(const cppgnss::FrameView &frame,
-                                               const Sink &sink) {
-    auto result = parse_subframe(frame);
-    if (result.subframe) {
-        ++counts_[result.subframe->signal];
-        sink(*result.subframe);
-    }
-    return result;
 }
 } // namespace UBX

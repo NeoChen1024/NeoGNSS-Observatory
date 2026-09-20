@@ -25,7 +25,7 @@ ObservationBatch ObservationReader::feed(std::span<const uint8_t> bytes) {
         if (f.protocol == cppgnss::Protocol::sbf && f.id >= 4109 &&
             f.id <= 4113)
             ++meas3_;
-        auto e = cppgnss::decode_gps_observations(f);
+        auto e = neognss_obs::decode_gps_observations(f);
         if (e) {
             ++epochs_;
             unselected_ += e->unselected_signals;

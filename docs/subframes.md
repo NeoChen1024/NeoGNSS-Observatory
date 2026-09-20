@@ -120,49 +120,39 @@ overlay and map coastlines are illustrative, not precision coverage polygons.
 
 ## Library API and routing
 
-```cpp
-#include <cppgnss/ubx_subframe.hpp>
+Receiver framing and generated UBX/SBF message fields belong to libcppgnss.
+Observatory owns canonical RawBits normalization and satellite content decoding:
 
-UBX::SubframeDemultiplexer router;
-// frame is a checksum-validated cppgnss::FrameView for protocol UBX.
-auto result = router.dispatch(frame, [](const UBX::NavigationSubframe &s) {
-    // Use s.signal as the key for application-owned per-signal state.
-    if (s.signal.gnssId == 1) {
-        auto decoded = UBX::parse_sbas(s);
-        // Check decoded.status before consuming typed content.
-    }
-});
+```cpp
+#include <neognss_obs/raw_bits.hpp>
+#include <neognss_obs/sbas.hpp>
+
+// frame is a checksum-validated UBX or SBF cppgnss::FrameView.
+auto result = neognss_obs::decode_raw_bits(frame);
+if (result.record && result.record->family == "SBAS_L1") {
+    auto decoded = neognss_obs::SBAS::parse_l1(result.record->body);
+    // Check decoded.status before consuming typed correction content.
+}
 ```
 
-`parse_subframe(frame)` is the stateless alternative. Only SFRBX version 2
-is currently supported, with exact payload-length validation. The routing key
-contains raw `gnssId`, `svId`, and `sigId`, plus `freqId` for GLONASS. The latter
-is encoded as frequency slot + 7, not a signed channel number. Other systems
-normalize the key's frequency to zero but retain `raw_freqId`. Receiver tracking
-channel `chn` is preserved, not used as satellite identity.
+The importer attaches receiver-time context separately. Grid reads the resulting
+CommonNEX records rather than invoking a raw receiver adapter. Add future
+constellation content parsers in libneognss-obs, beside neognss_obs/sbas.hpp;
+do not reinterpret another GNSS merely because its frame resembles SBAS.
 
-GPS, SBAS, Galileo, BeiDou, QZSS, GLONASS, NavIC, and unknown numeric identifiers
-remain separate. `prn()` provides a convenience mapping (including QZSS
-`svId + 192`); GLONASS retains slot/frequency identity and returns no PRN.
-Different PRNs and signals never share a routing key. Unknown GLONASS slot 255
-cannot be resolved to a physical satellite by this API.
-
-The router retains counts, not a growing history. Callers own buffering, files,
-and parser state. Add future constellation parsers beside `sbas.hpp`; do not
-reinterpret another GNSS merely because its frame resembles SBAS.
-
-RXM-SFRBX supplies no reception timestamp. Source offsets are not time.
-The input adapter resolves navigation-epoch context before writing frame
-Parquet; filenames alone are insufficient.
+UBX::parse_subframe(frame) remains a stateless receiver-native SFRBX v2 word
+extractor. Its signal key retains constellation, satellite and signal identity,
+plus the GLONASS frequency slot; it owns no routing history or SBAS decoder.
+RXM-SFRBX has no reception timestamp. Source offsets and filenames are not time.
 
 ## SBAS L1 content support
 
 Scope is `gnssId=1, sigId=0` (L1 C/A), not SBAS L5 or QZSS L1S. Decode the
 first eight U4 words MSB-first into 250 over-air bits. Six trailing padding bits
 are retained separately and excluded from CRC-24Q. Validate the preamble and
-24-bit CRC before exposing typed content. The Era A sample also has nine-word
-reports: the ninth word is retained as `Message::trailing_word` and in exported
-`words`, but its meaning is deliberately unspecified. Other lengths are rejected.
+24-bit CRC before exposing typed content. Some UBX reports contain a ninth
+container word; it is outside the canonical 250-bit body and remains in the raw
+archive, not the receiver-independent SBAS content record.
 
 | Message type | Typed content |
 | --- | --- |

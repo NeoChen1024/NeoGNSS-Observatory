@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <algorithm>
-#include <cppgnss/sbas.hpp>
+#include <neognss_obs/sbas.hpp>
 
-namespace cppgnss::SBAS {
+namespace neognss_obs::SBAS {
 BitView::BitView(std::span<const uint8_t> bytes, size_t count)
     : bytes_(bytes), bit_count_(count) {
     if (count > bytes.size() * 8)
@@ -154,8 +154,6 @@ const char *status_name(Status s) {
     switch (s) {
     case Status::decoded:
         return "decoded";
-    case Status::unsupported_signal:
-        return "unsupported_signal";
     case Status::invalid_word_count:
         return "invalid_word_count";
     case Status::invalid_preamble:
@@ -206,4 +204,4 @@ std::optional<std::pair<int, int>> igp_coordinate(unsigned band,
     }
     return std::nullopt;
 }
-} // namespace cppgnss::SBAS
+} // namespace neognss_obs::SBAS

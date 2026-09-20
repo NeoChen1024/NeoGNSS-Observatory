@@ -59,8 +59,8 @@ add_custom_command(
     COMMENT "Generating UBX parsers from the pinned pyubx2 schema"
     VERBATIM)
 add_custom_target(cppgnss_codegen DEPENDS ${generated_sources} ${generated_headers} ${sbf_generated} ${sbf_generated_headers})
-add_library(cppgnss src/parse.cpp src/measurements.cpp src/observations.cpp src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/stream.cpp src/sbf.cpp
-    src/ubx_subframe.cpp src/sbas.cpp src/raw_bits.cpp ${sbf_generated}
+add_library(cppgnss src/parse.cpp src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/stream.cpp
+    src/ubx_subframe.cpp ${sbf_generated}
     ${generated_sources} ${generated_headers})
 add_library(cppgnss::cppgnss ALIAS cppgnss)
 add_dependencies(cppgnss cppgnss_codegen)
@@ -83,15 +83,12 @@ if(CPPGNSS_BUILD_EXAMPLES)
 endif()
 
 if(BUILD_TESTING)
-    add_executable(cppgnss_subframe_test tests/test_subframe.cpp)
-    target_link_libraries(cppgnss_subframe_test PRIVATE cppgnss::cppgnss)
-    add_test(NAME cppgnss.subframe COMMAND cppgnss_subframe_test)
     add_executable(cppgnss_test tests/test_ubx.cpp)
     target_link_libraries(cppgnss_test PRIVATE cppgnss::cppgnss)
     add_executable(cppgnss_reader_test tests/test_reader.cpp)
     target_link_libraries(cppgnss_reader_test PRIVATE cppgnss::cppgnss)
     # Assertions perform checks (and some I/O) in these inherited tests.
-    foreach(test_target cppgnss_test cppgnss_reader_test cppgnss_subframe_test)
+    foreach(test_target cppgnss_test cppgnss_reader_test)
         if(MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()

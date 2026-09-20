@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
-#include <cppgnss/sbas.hpp>
 #include <cppgnss/stream.hpp>
 #include <cstdio>
+#include <optional>
 #include <string>
 
 namespace cppgnss::SBF {
@@ -51,14 +51,4 @@ struct BlockInfo {
 // caller.
 BlockInfo inspect(uint16_t id, uint8_t revision,
                   std::span<const uint8_t> payload);
-struct SbasFrame {
-    uint32_t tow_ms;
-    uint16_t week, prn;
-    uint8_t svid, signal_index, frequency_number, receiver_channel,
-        viterbi_count;
-    bool receiver_crc_passed;
-    cppgnss::SBAS::Result decoded;
-};
-// GEORawL1 only. GEORawL5 is deliberately not interpreted as an L1 message.
-std::optional<SbasFrame> extract_sbas_l1(const FrameView &);
 } // namespace cppgnss::SBF

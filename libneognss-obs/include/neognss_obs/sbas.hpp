@@ -10,7 +10,7 @@
 #include <variant>
 #include <vector>
 
-namespace cppgnss::SBAS {
+namespace neognss_obs::SBAS {
 // Offsets are zero-based, most-significant-bit first, in the over-air message.
 class BitView {
   public:
@@ -81,8 +81,6 @@ using Content = std::variant<std::monostate, TestMode, NullMessage, PrnMask,
                              FastCorrections, Integrity, FastDegradation,
                              GeoNavigation, IonosphericMask, IonosphericDelay>;
 struct Message {
-    std::optional<uint32_t>
-        trailing_word; // Observed nine-word receiver variant.
     std::array<uint8_t, 32>
         bytes{}; // 250 over-air bits; bottom 6 bits cleared.
     uint8_t padding_bits = 0, preamble = 0, type = 0;
@@ -92,7 +90,6 @@ struct Message {
 };
 enum class Status {
     decoded,
-    unsupported_signal,
     invalid_word_count,
     invalid_preamble,
     invalid_crc,
@@ -108,4 +105,4 @@ Result parse_l1(std::span<const uint8_t> bytes);
 std::optional<std::pair<int, int>> igp_coordinate(unsigned band,
                                                   unsigned mask_bit);
 const char *status_name(Status status);
-} // namespace cppgnss::SBAS
+} // namespace neognss_obs::SBAS

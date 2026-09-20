@@ -2,13 +2,12 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <cppgnss/raw_bits.hpp>
-#include <cppgnss/sbas.hpp>
 #include <cppgnss/sbf_navigation_page_gen.hpp>
 #include <cppgnss/ubx_subframe.hpp>
 #include <map>
+#include <neognss_obs/raw_bits.hpp>
 
-namespace cppgnss {
+namespace neognss_obs {
 namespace {
 // Borrow receiver words; extract only the requested fields. No byte-per-bit
 // expansion or temporary BCH codeword vectors are needed.
@@ -159,8 +158,9 @@ struct NavigationPage {
     std::vector<uint8_t> bits;
 };
 template <class T>
-ParseResult<NavigationPage> navigation_page(const FrameView &frame) {
-    auto parsed = parse<T>(frame);
+cppgnss::ParseResult<NavigationPage>
+navigation_page(const cppgnss::FrameView &frame) {
+    auto parsed = cppgnss::parse<T>(frame);
     if (!parsed)
         return parsed.error();
     auto &v = parsed.value();
@@ -187,65 +187,66 @@ ParseResult<NavigationPage> navigation_page(const FrameView &frame) {
         page.bits = std::move(v.NavBits);
     else
         page.bits = std::move(v.NAVBits);
-    return ParsedMessage<NavigationPage>{std::move(page), parsed.consumed()};
+    return cppgnss::ParsedMessage<NavigationPage>{std::move(page),
+                                                  parsed.consumed()};
 }
-std::optional<ParseResult<NavigationPage>>
-navigation_page(const FrameView &frame) {
+std::optional<cppgnss::ParseResult<NavigationPage>>
+navigation_page(const cppgnss::FrameView &frame) {
     switch (frame.id) {
-    case uint16_t(SBF::GPSRawCA::message_id):
-        return navigation_page<SBF::GPSRawCA>(frame);
-    case uint16_t(SBF::GPSRawL2C::message_id):
-        return navigation_page<SBF::GPSRawL2C>(frame);
-    case uint16_t(SBF::GPSRawL5::message_id):
-        return navigation_page<SBF::GPSRawL5>(frame);
-    case uint16_t(SBF::GEORawL1::message_id):
-        return navigation_page<SBF::GEORawL1>(frame);
-    case uint16_t(SBF::GEORawL5::message_id):
-        return navigation_page<SBF::GEORawL5>(frame);
-    case uint16_t(SBF::GALRawFNAV::message_id):
-        return navigation_page<SBF::GALRawFNAV>(frame);
-    case uint16_t(SBF::GALRawINAV::message_id):
-        return navigation_page<SBF::GALRawINAV>(frame);
-    case uint16_t(SBF::GALRawCNAV::message_id):
-        return navigation_page<SBF::GALRawCNAV>(frame);
-    case uint16_t(SBF::BDSRaw::message_id):
-        return navigation_page<SBF::BDSRaw>(frame);
-    case uint16_t(SBF::QZSRawL1CA::message_id):
-        return navigation_page<SBF::QZSRawL1CA>(frame);
-    case uint16_t(SBF::QZSRawL2C::message_id):
-        return navigation_page<SBF::QZSRawL2C>(frame);
-    case uint16_t(SBF::QZSRawL5::message_id):
-        return navigation_page<SBF::QZSRawL5>(frame);
-    case uint16_t(SBF::QZSRawL6::message_id):
-        return navigation_page<SBF::QZSRawL6>(frame);
-    case uint16_t(SBF::BDSRawB1C::message_id):
-        return navigation_page<SBF::BDSRawB1C>(frame);
-    case uint16_t(SBF::BDSRawB2a::message_id):
-        return navigation_page<SBF::BDSRawB2a>(frame);
-    case uint16_t(SBF::GPSRawL1C::message_id):
-        return navigation_page<SBF::GPSRawL1C>(frame);
-    case uint16_t(SBF::QZSRawL1C::message_id):
-        return navigation_page<SBF::QZSRawL1C>(frame);
-    case uint16_t(SBF::QZSRawL1S::message_id):
-        return navigation_page<SBF::QZSRawL1S>(frame);
-    case uint16_t(SBF::BDSRawB2b::message_id):
-        return navigation_page<SBF::BDSRawB2b>(frame);
-    case uint16_t(SBF::QZSRawL5S::message_id):
-        return navigation_page<SBF::QZSRawL5S>(frame);
-    case uint16_t(SBF::QZSRawL6D::message_id):
-        return navigation_page<SBF::QZSRawL6D>(frame);
-    case uint16_t(SBF::QZSRawL6E::message_id):
-        return navigation_page<SBF::QZSRawL6E>(frame);
+    case uint16_t(cppgnss::SBF::GPSRawCA::message_id):
+        return navigation_page<cppgnss::SBF::GPSRawCA>(frame);
+    case uint16_t(cppgnss::SBF::GPSRawL2C::message_id):
+        return navigation_page<cppgnss::SBF::GPSRawL2C>(frame);
+    case uint16_t(cppgnss::SBF::GPSRawL5::message_id):
+        return navigation_page<cppgnss::SBF::GPSRawL5>(frame);
+    case uint16_t(cppgnss::SBF::GEORawL1::message_id):
+        return navigation_page<cppgnss::SBF::GEORawL1>(frame);
+    case uint16_t(cppgnss::SBF::GEORawL5::message_id):
+        return navigation_page<cppgnss::SBF::GEORawL5>(frame);
+    case uint16_t(cppgnss::SBF::GALRawFNAV::message_id):
+        return navigation_page<cppgnss::SBF::GALRawFNAV>(frame);
+    case uint16_t(cppgnss::SBF::GALRawINAV::message_id):
+        return navigation_page<cppgnss::SBF::GALRawINAV>(frame);
+    case uint16_t(cppgnss::SBF::GALRawCNAV::message_id):
+        return navigation_page<cppgnss::SBF::GALRawCNAV>(frame);
+    case uint16_t(cppgnss::SBF::BDSRaw::message_id):
+        return navigation_page<cppgnss::SBF::BDSRaw>(frame);
+    case uint16_t(cppgnss::SBF::QZSRawL1CA::message_id):
+        return navigation_page<cppgnss::SBF::QZSRawL1CA>(frame);
+    case uint16_t(cppgnss::SBF::QZSRawL2C::message_id):
+        return navigation_page<cppgnss::SBF::QZSRawL2C>(frame);
+    case uint16_t(cppgnss::SBF::QZSRawL5::message_id):
+        return navigation_page<cppgnss::SBF::QZSRawL5>(frame);
+    case uint16_t(cppgnss::SBF::QZSRawL6::message_id):
+        return navigation_page<cppgnss::SBF::QZSRawL6>(frame);
+    case uint16_t(cppgnss::SBF::BDSRawB1C::message_id):
+        return navigation_page<cppgnss::SBF::BDSRawB1C>(frame);
+    case uint16_t(cppgnss::SBF::BDSRawB2a::message_id):
+        return navigation_page<cppgnss::SBF::BDSRawB2a>(frame);
+    case uint16_t(cppgnss::SBF::GPSRawL1C::message_id):
+        return navigation_page<cppgnss::SBF::GPSRawL1C>(frame);
+    case uint16_t(cppgnss::SBF::QZSRawL1C::message_id):
+        return navigation_page<cppgnss::SBF::QZSRawL1C>(frame);
+    case uint16_t(cppgnss::SBF::QZSRawL1S::message_id):
+        return navigation_page<cppgnss::SBF::QZSRawL1S>(frame);
+    case uint16_t(cppgnss::SBF::BDSRawB2b::message_id):
+        return navigation_page<cppgnss::SBF::BDSRawB2b>(frame);
+    case uint16_t(cppgnss::SBF::QZSRawL5S::message_id):
+        return navigation_page<cppgnss::SBF::QZSRawL5S>(frame);
+    case uint16_t(cppgnss::SBF::QZSRawL6D::message_id):
+        return navigation_page<cppgnss::SBF::QZSRawL6D>(frame);
+    case uint16_t(cppgnss::SBF::QZSRawL6E::message_id):
+        return navigation_page<cppgnss::SBF::QZSRawL6E>(frame);
     default:
         return {};
     }
 }
-RawBitsResult decode(const FrameView &f) {
+RawBitsResult decode(const cppgnss::FrameView &f) {
     RawBits r;
     Bits b;
     size_t length = 0;
     unsigned width = 32;
-    bool sbf = f.protocol == Protocol::sbf;
+    bool sbf = f.protocol == cppgnss::Protocol::sbf;
     std::vector<uint8_t> navigation_bytes;
     std::vector<uint32_t> navigation_words;
     uint8_t source = 0, crc1 = 0, crc2 = 0;
@@ -256,7 +257,8 @@ RawBitsResult decode(const FrameView &f) {
         if (!parsed)
             return {};
         if (!*parsed)
-            return {parsed->error().code == ParseErrorCode::UNSUPPORTED_REVISION
+            return {parsed->error().code ==
+                            cppgnss::ParseErrorCode::UNSUPPORTED_REVISION
                         ? RawBitsStatus::unsupported
                         : RawBitsStatus::malformed,
                     {}};
@@ -597,11 +599,11 @@ RawBitsResult decode(const FrameView &f) {
     return {RawBitsStatus::decoded, std::move(r)};
 }
 } // namespace
-RawBitsResult decode_raw_bits(const FrameView &frame) {
+RawBitsResult decode_raw_bits(const cppgnss::FrameView &frame) {
     try {
         return decode(frame);
     } catch (const std::out_of_range &) {
         return {RawBitsStatus::malformed, {}};
     }
 }
-} // namespace cppgnss
+} // namespace neognss_obs

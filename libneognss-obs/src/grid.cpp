@@ -33,7 +33,7 @@ struct GridProcessor::State {
         const auto end = std::min({time, c.expiry, deadline()});
         if (end > c.start) {
             auto coordinate =
-                cppgnss::SBAS::igp_coordinate(key.first, key.second);
+                neognss_obs::SBAS::igp_coordinate(key.first, key.second);
             if (!coordinate)
                 throw std::runtime_error("Invalid IGP coordinate");
             const double delay = c.delay * 0.125;
@@ -95,7 +95,7 @@ struct GridProcessor::State {
                     positions.size();
             for (auto p : positions)
                 valid =
-                    valid && cppgnss::SBAS::igp_coordinate(band, p).has_value();
+                    valid && neognss_obs::SBAS::igp_coordinate(band, p).has_value();
             if (!valid) {
                 reset(time);
                 ++diagnostics["invalid_mask"];
@@ -188,7 +188,7 @@ Json GridProcessor::process_frames(const Json &rows) {
         if (bytes.size() != 32 || (bytes.back() & 63))
             throw std::runtime_error(
                 "Expected canonical 250-bit SBAS frame with zero padding");
-        auto message = sbas_message(cppgnss::SBAS::parse_l1(bytes));
+        auto message = sbas_message(neognss_obs::SBAS::parse_l1(bytes));
         if (message.value("crc_valid", false) !=
             row.at("crc_valid").get<bool>())
             throw std::runtime_error("SBAS frame CRC metadata mismatch");

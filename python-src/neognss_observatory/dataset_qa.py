@@ -44,7 +44,7 @@ def cli(context, protocol, profile, input_dir, recursive, gap_timeout, state_dir
         if state_dir is not None or output_dir is not None or plan_only:
             raise ValueError("Scan is read-only; state/output/plan options apply only to --profile restitch")
         paths = recordings(input_dir.resolve(), protocol, recursive)
-        scanner = _native.DatasetScan(protocol=protocol, qa=True, gap_timeout=gap_timeout)
+        scanner = _native.DatasetScan(protocol=protocol, gap_timeout=gap_timeout)
         with tqdm(total=sum(p.stat().st_size for p in paths), desc="Dataset QA", unit="B", unit_scale=True) as progress:
             for path in paths:
                 warnings = ProtocolWarnings(path, protocol, scanner.summary())

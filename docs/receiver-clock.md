@@ -32,11 +32,8 @@ Read completed CommonNEX publications; concurrent import/publication is not supp
 
 | CommonNEX catalog | Use |
 | --- | --- |
-| receiver-clock | Reported bias, drift and accuracy; canonical reference and time |
-| measurement-clock | Exact-epoch adjustment flag or reported cumulative count |
-| receiver-status | Temperature, uptime and original timing association |
+| receiver-telemetry | Integrated navigation clock, status and ordered measurement/pulse reports |
 | events | Receiver restart evidence and boundaries |
-| pulse-timing | Canonical sawtooth error, reference, lock and validity |
 
 The native importer owns protocol interpretation and time association. Analysis
 uses vectorized NumPy/Arrow batches, with state carried across rows, row groups,
@@ -45,11 +42,11 @@ Load at most one day's catalog data at a time; the restart prepass retains only
 compact boundary/index information. Temperature statistics read the small
 derived clock/status tables after publication staging has completed.
 
-Adjustment evidence is joined only where the original decimal measurement GPST
-equals the clock sample GPST. No nearest-second or nearest-epoch matching is
-performed. A flag at a different measurement instant is not silently promoted
-to confirmation; bias-based inference remains possible. Duplicate matching
-measurement epochs are rejected rather than arbitrarily choosing evidence.
+Adjustment evidence comes from each row's acquisition-cycle measurement list,
+without changing its recorded measurement times. The unwrap adapter uses any
+explicit reset and the last reported cumulative counter; the complete list is
+retained in derived clock output. Pulse reports are flattened at their own times.
+There is no old-catalog fallback or source-selection option.
 
 ## Restart and missing time
 

@@ -22,8 +22,7 @@ as a lossless replacement for raw archives.
   buffered until matching EndOfMeas; a different epoch before closure is counted
   as incomplete and the previous pending group is omitted. File/chunk boundaries
   do not reset framing or the pending group.
-- Python writes `observations`, `raw-bits`, `events`, `measurement-clock`,
-  `receiver-status`, `receiver-clock` and `pulse-timing` catalogs with
+- Python writes `observations`, `raw-bits`, `events` and `receiver-telemetry` catalogs with
   Zstandard level 3 compression. Dictionary encoding is enabled only for
   string/binary columns, including nested fields; numeric, boolean and decimal
   columns do not use dictionaries. This is lossless physical encoding, not a
@@ -68,15 +67,14 @@ Status import retains float32 Celsius, receiver uptime and fine-time state.
 Clock and pulse estimates use the [auxiliary field mappings](auxiliary.md).
 Receiver restart Events retain uptime-decrease or fresh-pair offset-jump
 inference; nullable GPST never suppresses these records. The native batch order
-is observations, events, raw-bits, measurement-clock, receiver-status,
-receiver-clock, pulse-timing. `_archive_day` is Python routing only and is
-removed before storage. TIM-TP target-time conversion currently covers locked
-GPST-based pulses; other references retain flags and error with null target time.
+is observations, events, raw-bits, receiver-telemetry. `_archive_day` is Python
+routing only and is removed before persistence. Telemetry is assembled one PVT
+epoch late; see [Auxiliary](auxiliary.md) for fields, ordered report lists and
+explicit end-of-stream behavior. Pending telemetry is included in checkpoints.
+Use `--finalize-telemetry` only at a true stream end, not each daily continuation.
 
-The fourth `measurement-clock` batch/catalog preserves RAWX adjustment flags
-and MeasEpoch revision 1 cumulative clock counters without inference or correction.
-SBF Type1/Type2 smoothing state is retained in `receiver_corrections` independently
-of MeasExtra amounts; UBX uses null for unavailable smoothing state.
+SBF Type1/Type2 smoothing state remains in Observation receiver_corrections;
+UBX uses null for unavailable smoothing state.
 
 Not yet implemented: undefined future RawBits representations, DecodedNav,
 cadence events,

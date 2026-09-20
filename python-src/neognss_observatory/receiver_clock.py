@@ -70,6 +70,38 @@ def catalog(day, name, setup_id):
     return pa.concat_tables(tables) if tables else None
 
 
+def telemetry_status(table):
+    if table is None:
+        return None
+    selected = pc.or_(pc.is_valid(table["ubx_status"]), pc.is_valid(table["sbf_status"]))
+    return table.filter(selected).select(
+        ["setup_id", "gpst", "receiver_uptime_s", "receiver_temperature_c", "fine_time", "ubx_status", "sbf_status"]
+    )
+
+
+def telemetry_pulses(table):
+    if table is None:
+        return None
+    values = pc.list_flatten(table["pulse_timing"]).combine_chunks()
+    return pa.Table.from_arrays(
+        [values.field(f.name) for f in values.type],
+        names=["pulse_quantization_error_s" if f.name == "quantization_error_s" else f.name for f in values.type],
+    )
+
+
+def measurement_evidence(column):
+    # Reduce only for the unwrap algorithm; the complete ordered source list
+    # remains on the derived clock rows. Any explicit reset flags the cycle;
+    # the last reported counter describes its final reported adjustment state.
+    flags, counters = [], []
+    for reports in column.to_pylist():
+        reported = [r["adjustment_reported"] for r in reports if r["adjustment_reported"] is not None]
+        cumulative = [r["cumulative_adjustment_ms"] for r in reports if r["cumulative_adjustment_ms"] is not None]
+        flags.append(any(reported) if reported else None)
+        counters.append(cumulative[-1] if cumulative else None)
+    return pa.array(flags, pa.bool_()), pa.array(counters, pa.uint64())
+
+
 class Sessions:
     """Compact restart boundaries; never guess GPST from receiver uptime."""
 
@@ -79,14 +111,14 @@ class Sessions:
         self.status_changes = {}
         session, last_time, pending = 0, -1, None
         for day in tqdm(days, desc="Receiver restart context", unit="day"):
-            status = catalog(day, "receiver-status", setup_id)
+            status = telemetry_status(catalog(day, "receiver-telemetry", setup_id))
             events = catalog(day, "events", setup_id)
             changes = []
             if events is not None:
                 events = events.filter(pc.equal(events["kind"], "RECEIVER_RESTART"))
             if status is None or not len(status):
                 if events is not None and len(events):
-                    raise ValueError(f"Restart Event without receiver-status context: {day}")
+                    raise ValueError(f"Restart Event without receiver-telemetry status context: {day}")
                 self.status_changes[day] = (session, changes)
                 continue
             t, valid = ns(status["gpst"])
@@ -98,7 +130,7 @@ class Sessions:
                 et, ev = ns(events["gpst"])
                 eu, euv = ns(events["receiver_uptime_s"])
                 for stamp, has_time, uptime, has_uptime in zip(et, ev, eu, euv):
-                    match = (valid == has_time) & (t == stamp) & uv & (u == uptime)
+                    match = uv & (u == uptime)
                     found = np.flatnonzero(match[cursor:]) if has_uptime else []
                     if not len(found):
                         raise ValueError(f"Cannot associate restart Event with its status report: {day}")
@@ -262,14 +294,13 @@ def statistics(output, max_age):
     help="CommonNEX logical station containing setup.json and GPST day catalogs.",
 )
 @click.option("--output", type=click.Path(path_type=Path), required=True)
-@click.option("--clock-source", help="Select one source_message if multiple navigation-clock sources exist.")
 @click.option("--reference-time-scale", default="GPST", show_default=True, help="Clock estimate reference, not its GPST time axis.")
 @click.option("--max-gap", type=click.FloatRange(min=0, min_open=True), default=50.0, show_default=True)
 @click.option("--jump-tolerance-ns", type=click.IntRange(1, 499999), default=50000, show_default=True)
 @click.option("--temperature-max-age", type=click.FloatRange(min=0), default=5.0, show_default=True)
 @click.option("--overwrite", is_flag=True, help="Replace output after success, retaining a backup.")
 @staged_output
-def cli(input_dir, output, clock_source, reference_time_scale, max_gap, jump_tolerance_ns, temperature_max_age):
+def cli(input_dir, output, reference_time_scale, max_gap, jump_tolerance_ns, temperature_max_age):
     """Analyze receiver clock from CommonNEX; no UBX/SBF parsing or timestamp reconstruction."""
     try:
         root = input_dir.resolve()
@@ -280,7 +311,6 @@ def cli(input_dir, output, clock_source, reference_time_scale, max_gap, jump_tol
         sessions = Sessions(days, setup["setup_id"])
         tracker = BatchUnwrapper(max_gap, jump_tolerance_ns)
         counts = Counter(status=0, pps=0, excluded_clock_rows=0)
-        selected_source = clock_source
         config = dict(
             max_gap=max_gap,
             jump_tolerance_ns=jump_tolerance_ns,
@@ -294,7 +324,8 @@ def cli(input_dir, output, clock_source, reference_time_scale, max_gap, jump_tol
             for writer in writers.values():
                 stack.callback(writer.close)
             for day in tqdm(days, desc="Receiver clock", unit="day"):
-                status = catalog(day, "receiver-status", setup["setup_id"])
+                telemetry = catalog(day, "receiver-telemetry", setup["setup_id"])
+                status = telemetry_status(telemetry)
                 if status is not None:
                     t, valid = ns(status["gpst"])
                     base, changes = sessions.status_changes[day]
@@ -305,31 +336,23 @@ def cli(input_dir, output, clock_source, reference_time_scale, max_gap, jump_tol
                     status = add(status, "restart", np.isin(np.arange(len(status)), changes), pa.bool_())
                     writers["status"].write(status)
                     counts["status"] += len(status)
-                pulses = catalog(day, "pulse-timing", setup["setup_id"])
+                pulses = telemetry_pulses(telemetry)
                 if pulses is not None:
                     t, valid = ns(pulses["gpst"])
                     pulses = add(pulses, "gpst_ns", t, pa.int64(), ~valid)
                     pulses = add(pulses, "quantization_error_ns", nanoseconds(pulses, "pulse_quantization_error_s"), pa.float64())
                     writers["pps"].write(pulses)
                     counts["pps"] += len(pulses)
-                clock = catalog(day, "receiver-clock", setup["setup_id"])
-                if clock is None or not len(clock):
+                if telemetry is None or not len(telemetry):
                     continue
-                selected = pc.equal(clock["reference_time_scale"], reference_time_scale)
-                if clock_source:
-                    selected = pc.and_(selected, pc.equal(clock["source_message"], clock_source))
+                clock = telemetry.rename_columns(
+                    ["reference_time_scale" if n == "clock_reference_time_scale" else n for n in telemetry.column_names]
+                )
+                selected = pc.fill_null(pc.equal(clock["reference_time_scale"], reference_time_scale), False)
                 counts["excluded_clock_rows"] += len(clock) - pc.sum(pc.cast(selected, pa.int64())).as_py()
                 clock = clock.filter(selected)
                 if not len(clock):
                     continue
-                names = pc.unique(clock["source_message"]).to_pylist()
-                if selected_source is None:
-                    selected_source = names[0]
-                if names != [selected_source]:
-                    raise ValueError("Multiple clock sources; select --clock-source explicitly to avoid mixing estimates")
-                measurement = catalog(day, "measurement-clock", setup["setup_id"])
-                # Evidence is associated only at an identical reported epoch,
-                # never by rounding RAWX time to a navigation epoch.
                 for batch in clock.to_batches(max_chunksize=65536):
                     table = pa.Table.from_batches([batch])
                     t, valid = ns(table["gpst"])
@@ -341,15 +364,7 @@ def cli(input_dir, output, clock_source, reference_time_scale, max_gap, jump_tol
                     table = add(table, "clock_drift_ns_s", numeric(table, "clock_frequency_offset") / 1e6, pa.float64())
                     table = add(table, "time_accuracy_ns", nanoseconds(table, "time_accuracy_s"), pa.float64())
                     table = add(table, "frequency_accuracy_ps_s", numeric(table, "frequency_accuracy") / 1e3, pa.float64())
-                    if measurement is None:
-                        flags = pa.nulls(len(table), pa.bool_())
-                        counters = pa.nulls(len(table), pa.uint64())
-                    else:
-                        index = pc.index_in(table["gpst"], value_set=measurement["gpst"])
-                        if len(pc.unique(measurement["gpst"])) != len(measurement):
-                            raise ValueError("Duplicate measurement-clock epochs; cannot choose adjustment evidence")
-                        flags = pc.take(measurement["adjustment_reported"], index)
-                        counters = pc.take(measurement["cumulative_adjustment_ms"], index)
+                    flags, counters = measurement_evidence(table["measurement_clock"])
                     table = add(table, "rawx_clock_reset", flags)
                     table = add(table, "cumulative_clock_jumps_ms", counters)
                     for name, dtype in (
@@ -368,7 +383,6 @@ def cli(input_dir, output, clock_source, reference_time_scale, max_gap, jump_tol
                 writers["status"].write(empty_status())
             if writers["pps"].writer is None:
                 writers["pps"].write(empty_pps())
-        config["clock_source"] = selected_source
         summary = dict(
             status="complete",
             input_format="CommonNEX",
