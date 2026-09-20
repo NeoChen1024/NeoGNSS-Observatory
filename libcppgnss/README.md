@@ -98,8 +98,9 @@ becomes unusable: subsequent `feed()` and `finish()` calls throw `std::logic_err
 Construct a new decoder to restart; callback side effects are not rolled back,
 and pending bytes from the failed decoder must not be replayed automatically.
 
-SBF codegen covers all 125 pinned blocks in 17 functional groups: 117 have
-payload definitions and eight explicitly remain unsupported. Generated headers
+SBF codegen covers all 125 pinned blocks plus the retained legacy QZSRawL6
+layout in 17 functional groups: 118 have payload definitions and eight explicitly
+remain unsupported. Generated headers
 such as `sbf_measurement_gen.hpp`, `sbf_pvt_gen.hpp` and `sbf_status_gen.hpp`
 expose a concrete type per message. Both protocols use the same API:
 
@@ -155,6 +156,28 @@ stable serialization format. `schemas()` remains descriptor
 introspection, not the runtime parsing engine. The former `Block.fields` /
 dynamic `decode()` API is removed. The schema does not describe every firmware
 revision, and structural decoding is not semantic validation.
+
+Measurements and RawBits adapters use these same generated typed decoders; they
+do not maintain a second receiver-payload byte-offset parser. Their remaining
+work is signal identity, units, missing-value interpretation, observation
+reconstruction and navigation-body normalization/integrity checks. RawBits
+navigation checks are distinct from the receiver-frame checksum.
+
+Local codegen supplements preserve protocol details needed by these adapters:
+
+- RAWX exposes its version byte separately from the remaining reserved bytes.
+- MeasEpoch accepts revisions 0/1; CumClkJumps is reserved in revision 0 and
+  is interpreted as clock-adjustment evidence only for revision 1.
+- MeasExtra accepts revisions 0–3. Optional `revision1`, `revision2` and
+  `revision3` groups contain fields introduced at those revisions; absent
+  groups are not populated with invented zero values. `N` retains its uint8
+  wire value, while `group.size()` is the actual count reconstructed using
+  sub-block length, payload size and the permitted trailing alignment padding.
+- Navigation-page layouts used by RawBits accept revision 0 and require exact
+  payload consumption. Legacy QZSRawL6 (4069) uses the retained L6 header/body
+  layout, including the unspecified Source=0 case.
+
+The pinned upstream submodules are not edited for these supplements.
 
 `cppgnss::SBAS::parse_l1()` accepts 32 MSB-first bytes holding 250 air bits.
 `UBX::parse_sbas()` adapts SFRBX; `cppgnss::SBF::extract_sbas_l1()` adapts

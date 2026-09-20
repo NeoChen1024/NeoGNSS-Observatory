@@ -7,6 +7,7 @@ sub-block length padding remain structural rather than flattened byte offsets.
 """
 
 import json
+import copy
 import re
 import sys
 import types
@@ -122,7 +123,8 @@ def members(definition, prefix=""):
 
 
 class Parser:
-    def __init__(self):
+    def __init__(self, message):
+        self.message = message
         self.lines = []
         self.serial = 0
 
@@ -130,6 +132,8 @@ class Parser:
         self.lines.append(line)
 
     def ref(self, name, env):
+        if name == "__revision":
+            return "frame.revision"
         parts = name.split("+")
         depth = int(parts[1]) if len(parts) > 1 else 0
         expression = env[(parts[0], depth)]
@@ -172,7 +176,13 @@ class Parser:
                     count = str(repeat) if isinstance(repeat, int) else self.ref(repeat, env)
                     if repeat == "RLMLength":
                         count = f"({count} == 160 ? 5 : 3)"
+                    if self.message == "MeasExtra" and name == "group":
+                        count = "detail::measextra_count(frame.payload.size(), message.N, message.SBLength, frame.revision)"
                     self.add(f"auto count{unique} = cursor.count({count});")
+                    if self.message in ("MeasEpoch", "MeasExtra"):
+                        # MeasEpoch counters are uint8; MeasExtra is bounded
+                        # by verified sub-block capacity above.
+                        self.add(f"{member}.reserve(count{unique});")
                     self.add(f"detail::Group<Sink> group{unique}(sink, {json.dumps(name)});")
                     # Do not reserve attacker-controlled counts before checking payload reads.
                     self.add(f"for(size_t i{unique}=0;i{unique}<count{unique};++i{unique}) {{")
@@ -255,10 +265,20 @@ def generate_group(group, blocks, ids):
         header += [
             f"struct {name} {{\nstatic constexpr auto protocol = Protocol::sbf;\nstatic constexpr auto message_id = SbfMessageId::{enum_name(name)};\nstatic constexpr std::string_view message_name = {json.dumps(name)};\n{members(definition)}\nstd::string dump() const;\nstatic ParseResult<{name}> decode_payload(const FrameView &frame);\n}};",
         ]
-        parser = Parser()
+        parser = Parser(name)
         parser.sequence(definition, "message", {})
+        navigation_supported = group == "navigation_page" and name not in ("GLORawCA", "NAVICRaw")
+        maximum_revision = 3 if name == "MeasExtra" else 1 if name == "MeasEpoch" else 0 if navigation_supported else None
+        revision_guard = (
+            []
+            if maximum_revision is None
+            else [
+                f'if (frame.revision > {maximum_revision}) return ParseError{{ParseErrorCode::UNSUPPORTED_REVISION, {{}}, "Unsupported {name} revision"}};'
+            ]
+        )
         source += [
             f"ParseResult<{name}> {name}::decode_payload(const FrameView &frame) {{",
+            *revision_guard,
             f"[[maybe_unused]] {name} message{{}}; detail::Cursor cursor{{frame.payload}}; [[maybe_unused]] detail::NoFields sink;",
             "[[maybe_unused]] const size_t base0=0; const std::string suffix0;",
             "try {",
@@ -268,6 +288,10 @@ def generate_group(group, blocks, ids):
         if not definition:
             source.append('return ParseError{ParseErrorCode::UNSUPPORTED_LAYOUT, {}, "Unsupported schema"};')
         else:
+            if navigation_supported:
+                source.append(
+                    'if (cursor.offset != frame.payload.size()) return ParseError{ParseErrorCode::INVALID_PAYLOAD, cursor.offset, "Unexpected navigation payload length"};'
+                )
             source.append(f"return ParsedMessage<{name}>{{std::move(message), cursor.offset}};")
         source += [
             "}",
@@ -302,6 +326,9 @@ def cli(output_dir):
     from pysbf2.sbftypes_core import SBF_MSGIDS
 
     ids = {value[0]: key for key, value in SBF_MSGIDS.items()}
+    # Legacy block retained by the existing RawBits adapter; same header/body
+    # layout as L6D, with Source=0 allowing an unspecified L6 service.
+    ids["QZSRawL6"] = 4069
     outputs = {
         "sbf_ids_gen.hpp": NOTICE
         + "\n#pragma once\n#include <cstdint>\nnamespace cppgnss { enum class SbfMessageId : uint16_t {\n"
@@ -311,13 +338,24 @@ def cli(output_dir):
     seen = []
     dispatch = [NOTICE]
     for group, attr in GROUPS.items():
-        blocks = getattr(sbftypes_blocks, "SBF_" + attr + "_BLOCKS")
+        blocks = copy.deepcopy(getattr(sbftypes_blocks, "SBF_" + attr + "_BLOCKS"))
+        if group == "navigation_page":
+            blocks["QZSRawL6"] = copy.deepcopy(blocks["QZSRawL6D"])
+        if group == "measurement":
+            _, fields = blocks["MeasExtra"]["group"]
+            tail = {key: fields.pop(key) for key in ("CumLossCont", "CarMPCorr", "Info", "Misc")}
+            # Keep padding last regardless of the upstream PAD field spelling.
+            pads = {key: fields.pop(key) for key in list(fields) if fields[key] == "SBLength"}
+            fields["revision1"] = (("__revision", [1, 2, 3]), {key: tail[key] for key in ("CumLossCont", "CarMPCorr")})
+            fields["revision2"] = (("__revision", [2, 3]), {"Info": tail["Info"]})
+            fields["revision3"] = (("__revision", 3), {"Misc": tail["Misc"]})
+            fields.update(pads)
         seen.extend(blocks)
         hpp, cpp = generate_group(group, blocks, ids)
         outputs[f"sbf_{group}_gen.hpp"] = hpp
         outputs[f"sbf_{group}_gen.cpp"] = cpp
         dispatch.append(f"#include <cppgnss/sbf_{group}_gen.hpp>")
-    if seen != list(SBF_BLOCKS):
+    if [name for name in seen if name != "QZSRawL6"] != list(SBF_BLOCKS):
         raise ValueError("SBF group coverage/order differs from SBF_BLOCKS")
     dispatch.append("namespace cppgnss::SBF {")
     for group in GROUPS:

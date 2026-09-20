@@ -846,6 +846,18 @@ def generate(output_dir):
     OUTPUT_DIR = os.fspath(output_dir)
     from pyubx2.ubxtypes_get import UBX_PAYLOADS_GET
 
+    # RAWX v1 uses the first byte of the older reserved triplet as version.
+    # Keep the correction local rather than editing the pinned definitions.
+    UBX_PAYLOADS_GET = dict(UBX_PAYLOADS_GET)
+    rawx = {}
+    for name, definition in UBX_PAYLOADS_GET["RXM-RAWX"].items():
+        if name == "reserved1":
+            rawx["version"] = "U001"
+            rawx[name] = "U002"
+        else:
+            rawx[name] = definition
+    UBX_PAYLOADS_GET["RXM-RAWX"] = rawx
+
     class_msgs = get_interesting_classes()
     print(f"Found {len(class_msgs)} classes:")
     for cls_name, msgs in sorted(class_msgs.items()):

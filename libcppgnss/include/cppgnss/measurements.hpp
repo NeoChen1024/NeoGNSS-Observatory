@@ -38,7 +38,8 @@ struct Measurements {
     uint64_t unsupported = 0;
     uint64_t excluded = 0;
 };
-// RAWX v1 and MeasEpoch revisions 0/1. Completion policy belongs to the caller.
+// Generated typed decoding followed by physical normalization: RAWX v1 and
+// MeasEpoch revisions 0/1. Completion policy belongs to the caller.
 std::optional<Measurements> decode_measurements(const FrameView &);
 // MeasExtra rows carry epoch-local channel/signal keys, not satellite identity.
 std::optional<Measurements> decode_measurement_extras(const FrameView &);

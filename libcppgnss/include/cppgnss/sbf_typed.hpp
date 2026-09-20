@@ -13,6 +13,22 @@ namespace detail {
 struct PayloadError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
+inline size_t measextra_count(size_t size, uint8_t count, uint8_t stride,
+                              uint8_t revision) {
+    const size_t minimum = revision == 0   ? 12
+                           : revision == 1 ? 14
+                           : revision == 2 ? 15
+                                           : 16;
+    if (size < 12 || stride < minimum)
+        throw PayloadError("Short MeasExtra sub-block");
+    const size_t capacity = (size - 12) / stride;
+    if (capacity < count)
+        throw PayloadError("Invalid MeasExtra count");
+    const size_t total = count + 256 * ((capacity - count) / 256);
+    if (size - 12 - total * stride > 3)
+        throw PayloadError("MeasExtra count/length mismatch");
+    return total;
+}
 struct Cursor {
     std::span<const uint8_t> bytes;
     size_t offset = 0;

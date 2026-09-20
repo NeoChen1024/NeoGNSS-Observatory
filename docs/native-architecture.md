@@ -175,8 +175,8 @@ and [nanoarrow](https://arrow.apache.org/nanoarrow/latest/index.html).
 
 Generated typed parsers, grouped into 17 functional translation units, cover
 every block in the pinned `SBF_BLOCKS`
-dictionary: currently 125 named blocks, including 117 defined payloads and eight
-empty definitions. Generation supports nested repetition, field-controlled
+dictionary plus the retained legacy QZSRawL6 layout: currently 126 named blocks,
+including 118 defined payloads and eight empty definitions. Generation supports nested repetition, field-controlled
 counts, conditional groups, LSB-first bitfields, sub-block length padding,
 remaining-payload byte fields, floating point and wide integers. Generated
 files stay in the build directory and are never edited manually. Each message
@@ -201,6 +201,13 @@ revision context; typed results own decoded byte fields. Successful parsing mean
 receiver/firmware revision, no-data sentinel or physical interpretation has been
 validated. The upstream dictionary is not a complete revision history. Native
 wire values are not silently converted to UTC or replacement no-data values.
+
+Measurements and RawBits normalization consume generated typed messages, not
+separate byte-offset decoders. MeasExtra revision-dependent optional groups and
+wrapped counts, RAWX's version byte, and the retained QZSRawL6 layout are local
+codegen supplements. The adapter layer owns physical reconstruction and
+canonical navigation-body processing; the generated parser owns receiver wire
+layout and bounds. See the libcppgnss README for the supported revision contracts.
 
 The flattened `Block.fields` decoder and unused Python `SbfParser` binding are
 removed. CommonNEX receiver telemetry and the GPS observation adapter use typed

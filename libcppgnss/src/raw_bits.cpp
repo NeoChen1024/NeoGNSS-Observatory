@@ -4,6 +4,7 @@
 #include <bit>
 #include <cppgnss/raw_bits.hpp>
 #include <cppgnss/sbas.hpp>
+#include <cppgnss/sbf_navigation_page_gen.hpp>
 #include <cppgnss/ubx_subframe.hpp>
 #include <map>
 
@@ -13,6 +14,7 @@ namespace {
 // expansion or temporary BCH codeword vectors are needed.
 struct Bits {
     std::span<const uint8_t> bytes;
+    std::span<const uint32_t> words;
     unsigned width = 32;
     size_t length = 0;
     bool inav_pair = false;
@@ -32,7 +34,10 @@ struct Bits {
             size_t count = std::min(end - begin, size_t(width - offset));
             if (inav_pair && begin < 114)
                 count = std::min(count, 114 - begin);
-            auto word = UBX::read_le<uint32_t>(bytes, (physical / width) * 4);
+            auto word =
+                words.empty()
+                    ? UBX::read_le<uint32_t>(bytes, (physical / width) * 4)
+                    : words[physical / width];
             uint64_t mask = (uint64_t(1) << count) - 1;
             result =
                 (result << count) | ((word >> (width - offset - count)) & mask);
@@ -42,7 +47,7 @@ struct Bits {
     }
 };
 Bits unpack(std::span<const uint8_t> bytes, unsigned width = 32) {
-    return {bytes, width, bytes.size() / 4 * width};
+    return {bytes, {}, width, bytes.size() / 4 * width};
 }
 uint32_t value(const Bits &b, size_t begin, size_t end) {
     return b.get(begin, end);
@@ -145,28 +150,121 @@ void integrity(RawBits &r, const Bits &b) {
     else if (r.format != "L6_2000_V1" && r.format != "QZS_L5S_250_V1")
         crc(r, b, 0, b.size(), r.unit);
 }
+// Normalize typed receiver headers; navigation-body decoding remains separate.
+struct NavigationPage {
+    uint32_t tow;
+    uint16_t week;
+    uint8_t satellite, source, channel, crc1, crc2 = 0;
+    std::optional<uint8_t> viterbi, rs;
+    std::vector<uint8_t> bits;
+};
+template <class T>
+ParseResult<NavigationPage> navigation_page(const FrameView &frame) {
+    auto parsed = parse<T>(frame);
+    if (!parsed)
+        return parsed.error();
+    auto &v = parsed.value();
+    NavigationPage page{};
+    page.tow = v.TOW;
+    page.week = v.WNc;
+    page.satellite = v.SVID;
+    page.source = v.Source.SigIdx;
+    page.channel = v.RxChannel;
+    if constexpr (requires { v.Source.L1BCFlag; })
+        page.source |= v.Source.L1BCFlag << 5;
+    if constexpr (requires { v.CRCSF2; }) {
+        page.crc1 = v.CRCSF2;
+        page.crc2 = v.CRCSF3;
+    } else if constexpr (requires { v.Parity; })
+        page.crc1 = v.Parity;
+    else
+        page.crc1 = v.CRCPassed;
+    if constexpr (requires { v.ViterbiCnt; })
+        page.viterbi = v.ViterbiCnt;
+    if constexpr (requires { v.RSCnt; })
+        page.rs = v.RSCnt;
+    if constexpr (requires { v.NavBits; })
+        page.bits = std::move(v.NavBits);
+    else
+        page.bits = std::move(v.NAVBits);
+    return ParsedMessage<NavigationPage>{std::move(page), parsed.consumed()};
+}
+std::optional<ParseResult<NavigationPage>>
+navigation_page(const FrameView &frame) {
+    switch (frame.id) {
+    case uint16_t(SBF::GPSRawCA::message_id):
+        return navigation_page<SBF::GPSRawCA>(frame);
+    case uint16_t(SBF::GPSRawL2C::message_id):
+        return navigation_page<SBF::GPSRawL2C>(frame);
+    case uint16_t(SBF::GPSRawL5::message_id):
+        return navigation_page<SBF::GPSRawL5>(frame);
+    case uint16_t(SBF::GEORawL1::message_id):
+        return navigation_page<SBF::GEORawL1>(frame);
+    case uint16_t(SBF::GEORawL5::message_id):
+        return navigation_page<SBF::GEORawL5>(frame);
+    case uint16_t(SBF::GALRawFNAV::message_id):
+        return navigation_page<SBF::GALRawFNAV>(frame);
+    case uint16_t(SBF::GALRawINAV::message_id):
+        return navigation_page<SBF::GALRawINAV>(frame);
+    case uint16_t(SBF::GALRawCNAV::message_id):
+        return navigation_page<SBF::GALRawCNAV>(frame);
+    case uint16_t(SBF::BDSRaw::message_id):
+        return navigation_page<SBF::BDSRaw>(frame);
+    case uint16_t(SBF::QZSRawL1CA::message_id):
+        return navigation_page<SBF::QZSRawL1CA>(frame);
+    case uint16_t(SBF::QZSRawL2C::message_id):
+        return navigation_page<SBF::QZSRawL2C>(frame);
+    case uint16_t(SBF::QZSRawL5::message_id):
+        return navigation_page<SBF::QZSRawL5>(frame);
+    case uint16_t(SBF::QZSRawL6::message_id):
+        return navigation_page<SBF::QZSRawL6>(frame);
+    case uint16_t(SBF::BDSRawB1C::message_id):
+        return navigation_page<SBF::BDSRawB1C>(frame);
+    case uint16_t(SBF::BDSRawB2a::message_id):
+        return navigation_page<SBF::BDSRawB2a>(frame);
+    case uint16_t(SBF::GPSRawL1C::message_id):
+        return navigation_page<SBF::GPSRawL1C>(frame);
+    case uint16_t(SBF::QZSRawL1C::message_id):
+        return navigation_page<SBF::QZSRawL1C>(frame);
+    case uint16_t(SBF::QZSRawL1S::message_id):
+        return navigation_page<SBF::QZSRawL1S>(frame);
+    case uint16_t(SBF::BDSRawB2b::message_id):
+        return navigation_page<SBF::BDSRawB2b>(frame);
+    case uint16_t(SBF::QZSRawL5S::message_id):
+        return navigation_page<SBF::QZSRawL5S>(frame);
+    case uint16_t(SBF::QZSRawL6D::message_id):
+        return navigation_page<SBF::QZSRawL6D>(frame);
+    case uint16_t(SBF::QZSRawL6E::message_id):
+        return navigation_page<SBF::QZSRawL6E>(frame);
+    default:
+        return {};
+    }
+}
 RawBitsResult decode(const FrameView &f) {
     RawBits r;
     Bits b;
     size_t length = 0;
     unsigned width = 32;
     bool sbf = f.protocol == Protocol::sbf;
-    auto p = f.payload;
-    uint8_t source = 0;
+    std::vector<uint8_t> navigation_bytes;
+    std::vector<uint32_t> navigation_words;
+    uint8_t source = 0, crc1 = 0, crc2 = 0;
     if (sbf) {
         if (f.id == 4026 || f.id == 4093)
             return {RawBitsStatus::excluded, {}};
-        const std::array<uint16_t, 22> ids{
-            4017, 4018, 4019, 4020, 4021, 4022, 4023, 4024, 4047, 4066, 4067,
-            4068, 4069, 4218, 4219, 4221, 4227, 4228, 4242, 4246, 4270, 4271};
-        if (std::find(ids.begin(), ids.end(), f.id) == ids.end())
+        auto parsed = navigation_page(f);
+        if (!parsed)
             return {};
-        if (p.size() < 12)
-            return {RawBitsStatus::malformed, {}};
-        if (f.revision != 0)
-            return {RawBitsStatus::unsupported, {}};
-        source = p[9];
-        r.receiver_channel = p[11];
+        if (!*parsed)
+            return {parsed->error().code == ParseErrorCode::UNSUPPORTED_REVISION
+                        ? RawBitsStatus::unsupported
+                        : RawBitsStatus::malformed,
+                    {}};
+        auto page = std::move(*parsed).value();
+        source = page.source;
+        crc1 = page.crc1;
+        crc2 = page.crc2;
+        r.receiver_channel = page.channel;
         switch (f.id) {
         case 4018:
         case 4019:
@@ -179,12 +277,12 @@ RawBitsResult decode(const FrameView &f) {
         case 4068:
         case 4228:
         case 4246:
-            r.viterbi_count = p[8];
+            r.viterbi_count = page.viterbi;
             break;
         case 4069:
         case 4270:
         case 4271:
-            r.rs_corrected_symbols = p[8];
+            r.rs_corrected_symbols = page.rs;
             break;
         }
         // Source is a full byte in modern blocks, a five-bit signal plus
@@ -205,9 +303,9 @@ RawBitsResult decode(const FrameView &f) {
             std::find(it->second.begin(), it->second.end(), sig) ==
                 it->second.end())
             return {RawBitsStatus::unsupported, {}};
-        auto sv = p[6];
-        auto tow = UBX::read_le<uint32_t>(p, 0);
-        auto week = UBX::read_le<uint16_t>(p, 4);
+        auto sv = page.satellite;
+        auto tow = page.tow;
+        auto week = page.week;
         if (tow < 604800000 && week != 65535)
             r.gpst_ms = int64_t(week) * 604800000 + tow;
         if (sv >= 1 && sv <= 37) {
@@ -323,7 +421,8 @@ RawBitsResult decode(const FrameView &f) {
                 r.signals = {source == 1 ? "QZS_L6D" : "QZS_L6E"};
             break;
         }
-        b = unpack(p.subspan(12), width);
+        navigation_bytes = std::move(page.bits);
+        b = unpack(navigation_bytes, width);
     } else {
         if (f.id != 0x0213)
             return {};
@@ -382,7 +481,8 @@ RawBitsResult decode(const FrameView &f) {
         }
         if (r.family.empty())
             return {RawBitsStatus::unsupported, {}};
-        b = unpack(p.subspan(8), width);
+        navigation_words = std::move(parsed.subframe->words);
+        b = {{}, navigation_words, width, navigation_words.size() * width};
     }
     if (r.family.ends_with("_LNAV")) {
         r.format = "LNAV_300_V1";
@@ -441,10 +541,11 @@ RawBitsResult decode(const FrameView &f) {
         r.format == "LNAV_300_V1" || (!sbf && r.format == "D1D2_300_V1") ? 10
         : !sbf && r.format == "INAV_228_V1"                              ? 8
                                             : (length + 31) / 32;
-    const size_t expected = (sbf ? 12 : 8) + words * 4;
-    if (p.size() != expected &&
+    const size_t actual_words =
+        sbf ? navigation_bytes.size() / 4 : navigation_words.size();
+    if (actual_words != words &&
         !(!sbf && (r.family == "SBAS_L1" || r.family == "QZS_L1S") &&
-          p.size() == expected + 4))
+          actual_words == words + 1))
         return {RawBitsStatus::malformed, {}};
     if (r.family.substr(0, r.family.find('_')) != r.system)
         return {RawBitsStatus::unsupported, {}};
@@ -453,7 +554,7 @@ RawBitsResult decode(const FrameView &f) {
     b.resize(length);
     pack(r, b);
     integrity(r, b);
-    if (sbf && r.family == "BDS_B2B_UNCLASSIFIED" && p[7] == 1 &&
+    if (sbf && r.family == "BDS_B2B_UNCLASSIFIED" && crc1 == 1 &&
         value(b, 0, 6) == r.satellite &&
         std::any_of(r.checks.begin(), r.checks.end(), [](const auto &c) {
             return c.origin == "independent" && c.kind == "crc" &&
@@ -470,15 +571,15 @@ RawBitsResult decode(const FrameView &f) {
     }
     if (sbf) {
         if (length == 1800) {
-            receiver(r, "crc", "sf2", p[7], "CRCSF2");
-            receiver(r, "crc", "sf3", p[8], "CRCSF3");
+            receiver(r, "crc", "sf2", crc1, "CRCSF2");
+            receiver(r, "crc", "sf3", crc2, "CRCSF3");
         } else
             receiver(r,
                      length == 2000              ? "reed_solomon"
                      : r.format == "LNAV_300_V1" ? "parity"
                      : r.format == "D1D2_300_V1" ? "bch"
                                                  : "crc",
-                     r.unit, p[7], length == 2000 ? "Parity" : "CRCPassed");
+                     r.unit, crc1, length == 2000 ? "Parity" : "CRCPassed");
     }
     if (r.system == "GPS")
         r.system = "G";

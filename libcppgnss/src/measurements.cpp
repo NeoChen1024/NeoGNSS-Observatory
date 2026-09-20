@@ -1,25 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
-#include <bit>
 #include <cppgnss/measurements.hpp>
+#include <cppgnss/sbf_measurement_gen.hpp>
+#include <cppgnss/ubx_rxm_gen.hpp>
 #include <map>
 #include <stdexcept>
 
 namespace cppgnss {
 namespace {
-uint64_t u(std::span<const uint8_t> p, size_t o, size_t n) {
-    if (o + n > p.size())
-        throw std::runtime_error("Truncated measurement payload");
-    uint64_t v = 0;
-    for (size_t i = 0; i < n; ++i)
-        v |= uint64_t(p[o + i]) << (8 * i);
-    return v;
-}
-int64_t s(std::span<const uint8_t> p, size_t o, size_t n) {
-    auto v = u(p, o, n);
-    return (v & (uint64_t(1) << (n * 8 - 1)))
-               ? int64_t(v) - int64_t(uint64_t(1) << (n * 8))
-               : int64_t(v);
-}
 double freq(const std::string &sys, const std::string &sig) {
     switch (sig[0]) {
     case '1':
@@ -95,65 +82,71 @@ void domain(Measurement &m) {
 }
 } // namespace
 std::optional<Measurements> decode_measurements(const FrameView &f) {
-    auto p = f.payload;
     Measurements e;
     if (f.protocol == Protocol::ubx) {
-        if (f.id != 0x0215)
+        if (f.id != uint16_t(UbxMessageId::RXM_RAWX))
             return {};
-        if (p.size() < 16 || p[13] != 1 || p.size() != 16 + 32u * p[11])
-            throw std::runtime_error(
-                "Unsupported or malformed RAWX (requires version 1)");
-        e.week = u(p, 8, 2);
-        e.tow_seconds = std::bit_cast<double>(u(p, 0, 8));
-        e.adjustment_reported = bool(p[12] & 2);
-        for (size_t o = 16; o < p.size(); o += 32) {
+        auto parsed = parse<UBX::ubx_rxm_rawx>(f);
+        if (!parsed)
+            throw std::runtime_error(parsed.error().detail);
+        const auto &raw = parsed.value();
+        if (raw.version != 1)
+            throw std::runtime_error("RAWX requires version 1");
+        e.week = raw.week;
+        e.tow_seconds = raw.rcvTow;
+        e.adjustment_reported = bool(raw.recStat_bit & 2);
+        e.rows.reserve(raw.meas_grp.size());
+        for (const auto &v : raw.meas_grp) {
             Measurement m;
-            if (!identify(m, ubx_codes, p[o + 20] * 100 + p[o + 22], p[o + 21],
+            if (!identify(m, ubx_codes, v.gnssId * 100 + v.sigId, v.svId,
                           true)) {
-                if (p[o + 20] == 6 || p[o + 20] == 7)
+                if (v.gnssId == 6 || v.gnssId == 7)
                     ++e.excluded;
                 else
                     ++e.unsupported;
                 continue;
             }
-            m.code = std::bit_cast<double>(u(p, o, 8));
-            m.phase = std::bit_cast<double>(u(p, o + 8, 8));
-            m.doppler = std::bit_cast<float>(uint32_t(u(p, o + 16, 4)));
-            m.cn0 = p[o + 26];
-            m.code_status = (p[o + 30] & 1) ? 0 : 1;
-            m.phase_status = (p[o + 30] & 2) ? 0 : 1;
-            m.half_ambiguity = !(p[o + 30] & 4);
-            m.half_subtracted = bool(p[o + 30] & 8);
-            m.lock_ms = u(p, o + 24, 2);
+            m.code = v.prMes;
+            m.phase = v.cpMes;
+            m.doppler = v.doMes;
+            m.cn0 = v.cno;
+            m.code_status = (v.trkStat_bit & 1) ? 0 : 1;
+            m.phase_status = (v.trkStat_bit & 2) ? 0 : 1;
+            m.half_ambiguity = !(v.trkStat_bit & 4);
+            m.half_subtracted = bool(v.trkStat_bit & 8);
+            m.lock_ms = v.locktime;
             m.lock_lower_bound = *m.lock_ms == 64500;
-            m.code_sigma = std::ldexp(.01f, p[o + 27] & 15);
-            if ((p[o + 28] & 15) != 15)
-                m.phase_sigma = .004f * (p[o + 28] & 15);
-            m.doppler_sigma = std::ldexp(.002f, p[o + 29] & 15);
+            m.code_sigma = std::ldexp(.01f, v.prStdev_bit & 15);
+            if ((v.cpStdev_bit & 15) != 15)
+                m.phase_sigma = .004f * (v.cpStdev_bit & 15);
+            m.doppler_sigma = std::ldexp(.002f, v.doStdev_bit & 15);
             domain(m);
             e.rows.push_back(std::move(m));
         }
         return e;
     }
-    if (f.id != 4027)
+    if (f.id != uint16_t(SbfMessageId::MEAS_EPOCH))
         return {};
-    if (p.size() < 12 || f.revision > 1 || (p[6] && p[7] < 20) || (p[9] & 128))
-        throw std::runtime_error("Unsupported/malformed/scrambled MeasEpoch");
-    e.week = u(p, 4, 2);
-    e.tow_ms = u(p, 0, 4);
+    auto parsed = parse<SBF::MeasEpoch>(f);
+    if (!parsed)
+        throw std::runtime_error(parsed.error().detail);
+    const auto &raw = parsed.value();
+    if (raw.CommonFlags.Scrambling)
+        throw std::runtime_error("Scrambled MeasEpoch");
+    e.week = raw.WNc;
+    e.tow_ms = raw.TOW;
     e.tow_seconds = *e.tow_ms * .001;
     if (f.revision >= 1)
-        e.cumulative_adjustment_ms_mod256 = p[10];
-    size_t o = 12;
-    auto make = [&](size_t q, int sv, bool type1) {
+        e.cumulative_adjustment_ms_mod256 = raw.CumClkJumps;
+    auto make = [&](const auto &v, int sv, bool type1) {
         Measurement m;
-        size_t type = q + (type1 ? 1 : 0), info = q + (type1 ? 18 : 5);
-        int sig = u(p, type, 1) & 31;
+        int sig = v.Type.SigIdxLo;
         if (sig == 31)
-            sig = 32 + (u(p, info, 1) >> 3);
-        m.antenna = u(p, type, 1) >> 5;
+            sig = 32 + v.ObsInfo.SigIdxHi;
+        m.antenna = v.Type.AntennaID;
         m.native_signal = sig;
-        m.receiver_channel = type1 ? u(p, q, 1) : 0;
+        if constexpr (requires { v.RxChannel; })
+            m.receiver_channel = v.RxChannel;
         if (!identify(m, sbf_codes, sig, sv, false)) {
             if ((sig >= 8 && sig <= 12) || sig == 15 || sig == 36 || sig == 37)
                 ++e.excluded;
@@ -161,109 +154,83 @@ std::optional<Measurements> decode_measurements(const FrameView &f) {
                 ++e.unsupported;
             return m;
         }
-        if (m.system == "E" && m.signal == "6C" && (p[9] & 64))
+        if (m.system == "E" && m.signal == "6C" && raw.CommonFlags.E6BUsed)
             m.signal = "6B";
-        auto cn = u(p, q + (type1 ? 15 : 2), 1);
-        if (cn != 255)
-            m.cn0 = cn * .25 + ((sig == 1 || sig == 2) ? 0 : 10);
-        m.half_ambiguity = u(p, info, 1) & 4;
-        m.code_smoothing_applied = bool(u(p, info, 1) & 1);
-        auto lock = u(p, q + (type1 ? 16 : 1), type1 ? 2 : 1);
+        if (v.CN0 != 255)
+            m.cn0 = v.CN0 * .25 + ((sig == 1 || sig == 2) ? 0 : 10);
+        m.half_ambiguity = v.ObsInfo.HalfCycleAmbiguity;
+        m.code_smoothing_applied = bool(v.ObsInfo.PRSmoothed);
+        auto lock = v.LockTime;
         if (lock != (type1 ? 65535u : 255u))
             m.lock_ms = lock * 1000;
         m.lock_lower_bound = lock == (type1 ? 65534u : 254u);
         return m;
     };
-    for (unsigned i = 0; i < p[6]; ++i) {
-        if (o + 20 > p.size())
-            throw std::runtime_error("Truncated MeasEpoch Type1");
-        auto n = u(p, o + 19, 1);
-        if (n && p[8] < 12)
-            throw std::runtime_error("Invalid MeasEpoch Type2 length");
-        int sv = u(p, o + 2, 1);
-        auto m = make(o, sv, true);
-        double pr =
-            ((u(p, o + 3, 1) & 15) * 4294967296.0 + u(p, o + 4, 4)) * .001;
-        double d = s(p, o + 8, 4) == INT32_MIN ? NAN : s(p, o + 8, 4) * .0001;
+    for (const auto &v : raw.MeasEpochChannelType1) {
+        auto m = make(v, v.SVID, true);
+        double pr = (v.Misc.CodeMSB * 4294967296.0 + v.CodeLSB) * .001;
+        double d = v.Doppler == INT32_MIN ? NAN : v.Doppler * .0001;
         double f1 = m.signal.empty() ? 0 : freq(m.system, m.signal);
         m.code = pr == 0 ? NAN : pr;
         m.doppler = d;
-        if (f1 && m.lock_ms &&
-            !(s(p, o + 14, 1) == -128 && u(p, o + 12, 2) == 0))
-            m.phase =
-                m.code * f1 / 299792458.0 +
-                (s(p, o + 14, 1) * 65536 + int64_t(u(p, o + 12, 2))) * .001;
+        if (f1 && m.lock_ms && !(v.CarrierMSB == -128 && v.CarrierLSB == 0))
+            m.phase = m.code * f1 / 299792458.0 +
+                      (v.CarrierMSB * 65536 + int64_t(v.CarrierLSB)) * .001;
         if (!m.signal.empty()) {
             domain(m);
             e.rows.push_back(m);
         }
-        o += p[7];
-        for (unsigned j = 0; j < n; ++j, o += p[8]) {
-            if (o + 12 > p.size())
-                throw std::runtime_error("Truncated MeasEpoch Type2");
-            auto a = make(o, sv, false);
+        for (const auto &w : v.MeasEpochChannelType2) {
+            auto a = make(w, v.SVID, false);
             a.receiver_channel = m.receiver_channel;
-            int cm = u(p, o + 3, 1) & 7;
+            int cm = w.OffsetsMSB.CodeOffsetMSB;
             if (cm >= 4)
                 cm -= 8;
-            int dm = u(p, o + 3, 1) >> 3;
+            int dm = w.OffsetsMSB.DopplerOffsetMSB;
             if (dm >= 16)
                 dm -= 32;
-            if (pr != 0 && !(cm == -4 && u(p, o + 6, 2) == 0))
-                a.code = pr + (cm * 65536 + int64_t(u(p, o + 6, 2))) * .001;
+            if (pr != 0 && !(cm == -4 && w.CodeOffsetLSB == 0))
+                a.code = pr + (cm * 65536 + int64_t(w.CodeOffsetLSB)) * .001;
             double f2 = a.signal.empty() ? 0 : freq(a.system, a.signal);
-            if (f2 && a.lock_ms &&
-                !(s(p, o + 4, 1) == -128 && u(p, o + 8, 2) == 0))
-                a.phase =
-                    a.code * f2 / 299792458.0 +
-                    (s(p, o + 4, 1) * 65536 + int64_t(u(p, o + 8, 2))) * .001;
-            if (f1 && f2 && !(dm == -16 && u(p, o + 10, 2) == 0))
+            if (f2 && a.lock_ms && !(w.CarrierMSB == -128 && w.CarrierLSB == 0))
+                a.phase = a.code * f2 / 299792458.0 +
+                          (w.CarrierMSB * 65536 + int64_t(w.CarrierLSB)) * .001;
+            if (f1 && f2 && !(dm == -16 && w.DopplerOffsetLSB == 0))
                 a.doppler = d * f2 / f1 +
-                            (dm * 65536 + int64_t(u(p, o + 10, 2))) * .0001;
+                            (dm * 65536 + int64_t(w.DopplerOffsetLSB)) * .0001;
             if (!a.signal.empty()) {
                 domain(a);
                 e.rows.push_back(std::move(a));
             }
         }
     }
-    if (o > p.size())
-        throw std::runtime_error("MeasEpoch sub-block length exceeds payload");
     return e;
 }
 std::optional<Measurements> decode_measurement_extras(const FrameView &f) {
-    if (f.protocol != Protocol::sbf || f.id != 4000)
+    if (f.protocol != Protocol::sbf ||
+        f.id != uint16_t(SbfMessageId::MEAS_EXTRA))
         return {};
-    auto p = f.payload;
-    if (p.size() < 12 || f.revision > 3)
-        throw std::runtime_error("Unsupported/malformed MeasExtra revision");
-    size_t length = p[7], minimum = f.revision == 0   ? 12
-                                    : f.revision == 1 ? 14
-                                    : f.revision == 2 ? 15
-                                                      : 16;
-    if (length < minimum)
-        throw std::runtime_error("Short MeasExtra sub-block");
-    size_t capacity = (p.size() - 12) / length;
-    if (capacity < p[6])
-        throw std::runtime_error("Invalid MeasExtra count");
-    size_t count = p[6] + 256 * ((capacity - p[6]) / 256);
-    if (p.size() - 12 - count * length > 3)
-        throw std::runtime_error("MeasExtra count/length mismatch");
+    auto parsed = parse<SBF::MeasExtra>(f);
+    if (!parsed)
+        throw std::runtime_error(parsed.error().detail);
+    const auto &raw = parsed.value();
     Measurements e;
-    e.week = u(p, 4, 2);
-    e.tow_ms = u(p, 0, 4);
+    e.week = raw.WNc;
+    e.tow_ms = raw.TOW;
     e.tow_seconds = *e.tow_ms * .001;
-    float factor = std::bit_cast<float>(uint32_t(u(p, 8, 4)));
-    for (size_t i = 0, o = 12; i < count; ++i, o += length) {
+    float factor = raw.DopplerVarFactor;
+    e.rows.reserve(raw.group.size());
+    for (const auto &v : raw.group) {
         Measurement m;
         m.has_extra = true;
-        m.receiver_channel = p[o];
-        m.antenna = p[o + 1] >> 5;
-        int sig = p[o + 1] & 31;
+        m.receiver_channel = v.RxChannel;
+        m.antenna = v.Type.AntennaID;
+        int sig = v.Type.SigIdxLo;
         if (sig == 31) {
-            if (f.revision < 3)
+            if (!v.revision3)
                 throw std::runtime_error(
                     "Extended MeasExtra signal before revision 3");
-            sig = 32 + (p[o + 15] >> 3);
+            sig = 32 + v.revision3->Misc.SigIdxHi;
         }
         m.native_signal = sig;
         if ((sig >= 8 && sig <= 12) || sig == 15 || sig == 36 || sig == 37) {
@@ -274,9 +241,9 @@ std::optional<Measurements> decode_measurement_extras(const FrameView &f) {
             ++e.unsupported;
             continue;
         }
-        m.code_multipath_m = s(p, o + 2, 2) * .001;
-        m.code_smoothing_m = s(p, o + 4, 2) * .001;
-        auto cv = u(p, o + 6, 2), pv = u(p, o + 8, 2), lock = u(p, o + 10, 2);
+        m.code_multipath_m = v.MPCorrection * .001;
+        m.code_smoothing_m = v.SmoothingCorr * .001;
+        auto cv = v.CodeVar, pv = v.CarrierVar, lock = v.LockTime;
         if (cv != 65535) {
             m.code_sigma = std::sqrt(cv * 1e-4);
             m.code_sigma_lower_bound = cv == 65534;
@@ -296,12 +263,12 @@ std::optional<Measurements> decode_measurement_extras(const FrameView &f) {
             m.lock_ms = lock * 1000;
             m.lock_lower_bound = lock == 65534;
         }
-        if (f.revision >= 1) {
-            m.continuity_counter = p[o + 12];
-            m.phase_multipath_cycles = s(p, o + 13, 1) / 512.0;
+        if (v.revision1) {
+            m.continuity_counter = v.revision1->CumLossCont;
+            m.phase_multipath_cycles = v.revision1->CarMPCorr / 512.0;
         }
-        if (f.revision >= 3)
-            m.cn0_increment = (p[o + 15] & 7) / 32.0;
+        if (v.revision3)
+            m.cn0_increment = v.revision3->Misc.CN0HighRes / 32.0;
         e.rows.push_back(m);
     }
     return e;
