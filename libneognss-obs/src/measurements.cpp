@@ -38,7 +38,8 @@ const std::map<int, std::string> sbf_codes{
     {5, "G1L"},  {6, "J1C"},  {7, "J2L"},  {13, "C1P"}, {14, "C5P"},
     {17, "E1C"}, {19, "E6C"}, {20, "E5Q"}, {21, "E7Q"}, {22, "E8Q"},
     {24, "S1C"}, {25, "S5I"}, {26, "J5Q"}, {27, "J6L"}, {28, "C2I"},
-    {29, "C7I"}, {30, "C6I"}, {32, "J1L"}, {33, "J1Z"}, {34, "C7D"}};
+    {29, "C7I"}, {30, "C6I"}, {32, "J1L"}, {33, "J1Z"}, {34, "C7D"},
+    {38, "J1E"}};
 bool identify(Measurement &m, const std::map<int, std::string> &codes, int sig,
               int sv, bool ubx) {
     auto it = codes.find(sig);

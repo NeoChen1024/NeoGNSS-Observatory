@@ -19,7 +19,7 @@ version 2. Other revisions/signals are counted, never guessed from payload size.
 | Galileo I/NAV | 4023 | E1-B, E5b-I | `INAV_228_V1` | Actual UBX/SBF |
 | Galileo F/NAV | 4022 | E5a-I | `FNAV_238_V1` | Actual SBF; UBX documentary mapping |
 | Galileo C/NAV | 4024 | Not mapped | `CNAV_PAGE_486_V1` | Actual SBF |
-| BeiDou D1/D2 | 4047, unclassified subtype | Explicit D1/D2 sigId | `D1D2_300_V1` | Actual UBX/SBF |
+| BeiDou D1/D2 | 4047, documented satellite assignment | Explicit D1/D2 sigId | `D1D2_300_V1` | Actual UBX/SBF |
 | BeiDou B-CNAV1 | 4218 | Not mapped | `BCNAV1_1800_V1` | Actual SBF |
 | BeiDou B-CNAV2 | 4219 | Not mapped | `BCNAV2_576_V1` | Actual SBF |
 | BeiDou B2b, B-CNAV3 / PPP-B2b / unclassified | 4242 | Not mapped | `B2B_984_V1` | Actual SBF; guarded type routing |
@@ -40,8 +40,13 @@ representation remain outside this implementation. GLONASS/NavIC are excluded.
 
 ## Unclassified semantics
 
-- `BDS_D1D2_UNCLASSIFIED` retains SBF legacy bits when no explicit subtype is
-  supplied. UBX sigId explicitly distinguishes D1/D2 and is mapped accordingly.
+- SBF `BDSRaw` maps C01-C05 and C59-C63 to `BDS_D2`, and C06-C58 to
+  `BDS_D1`, following the GEO versus MEO/IGSO ranging-code assignments in
+  B1I ICD 3.0 and B3I ICD 1.0. Unknown assignments retain
+  `BDS_D1D2_UNCLASSIFIED`; do not infer a subtype from reception cadence.
+  Both use unchanged `D1D2_300_V1` bodies. Family identity and BCH/parity
+  validity are independent: failed checks remain attached to classified bits.
+  UBX sigId explicitly distinguishes D1/D2 and is mapped accordingly.
 - B2b routing requires both receiver and independent message CRC success and
   agreement between the body prefix PRN and SBF satellite identity. Under the
   July 2020 ICD assignments, types 10/30/40 select `BDS_BCNAV3`, while 1-7/63

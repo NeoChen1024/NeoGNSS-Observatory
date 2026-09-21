@@ -380,7 +380,14 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
             r.signals = {"GAL_E6_B"};
             break;
         case 4047:
-            r.family = "BDS_D1D2_UNCLASSIFIED";
+            // B1I 3.0 / B3I 1.0 ranging-code tables assign 1-5 and
+            // 59-63 to GEO (D2), and 6-58 to MEO/IGSO (D1).
+            // Family identity does not imply that the BCH check passed.
+            r.family = r.satellite >= 6 && r.satellite <= 58 ? "BDS_D1"
+                       : (r.satellite >= 1 && r.satellite <= 5) ||
+                               (r.satellite >= 59 && r.satellite <= 63)
+                           ? "BDS_D2"
+                           : "BDS_D1D2_UNCLASSIFIED";
             r.signals = {source == 28   ? "BDS_B1I"
                          : source == 29 ? "BDS_B2I"
                                         : "BDS_B3I"};

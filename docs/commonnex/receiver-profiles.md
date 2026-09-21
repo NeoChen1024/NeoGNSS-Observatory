@@ -167,6 +167,10 @@ Companion-block association must use matching epoch, antenna and signal context;
 missing MeasExtra does not discard usable MeasEpoch observables. Additional
 quality remains null. Preserve association across physical file boundaries.
 
+SBF signal number 38 (QZSS L1C/B) maps to RINEX signal identity `J1E`,
+distinct from L1 C/A (`J1C`) and L1C (`J1L`). This mapping also applies to
+MeasExtra companion association; the carrier frequency remains 1575.42 MHz.
+
 ## Progress
 
 ### Selected contracts

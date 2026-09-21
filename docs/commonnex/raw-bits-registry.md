@@ -92,7 +92,7 @@ mappings may emit records, regardless of this registry status.
 | `SBAS_L5` | `SBAS_L5_250_V1` | 250 | CHECKED in full SBF recording |
 | `GPS_CNAV2` | `CNAV2_1800_V1` | 1800 | DOCUMENTED; no current sample |
 | `QZS_CNAV2` | `CNAV2_1800_V1` | 1800 | DOCUMENTED common framing/FEC dimensions; no current sample |
-| `BDS_D1D2_UNCLASSIFIED` | `D1D2_300_V1` | 300 | CHECKED layout; source did not establish subtype |
+| `BDS_D1D2_UNCLASSIFIED` | `D1D2_300_V1` | 300 | CHECKED layout; neither source subtype nor documented satellite assignment establishes D1/D2 |
 | `BDS_B2B_UNCLASSIFIED` | `B2B_984_V1` | 984 | CHECKED layout; service unresolved |
 | `QZS_L1S` | `QZS_L1S_250_V1` | 250 | CHECKED UBX; DOCUMENTED SBF |
 | `QZS_L5S` | `QZS_L5S_250_V1` | 250 | DOCUMENTED; not SBAS L5 |
@@ -191,6 +191,7 @@ distinction between actual-recording checks and documentary/synthetic checks.
 | HAS | [Galileo HAS SIS ICD](https://www.gsc-europa.eu/sites/default/files/sites/all/files/Galileo_HAS_SIS_ICD_v1.0.pdf), E6-B C/NAV page |
 | BLEG | [CSNO BDS open-service ICD, official CNSA copy](https://www.cnsa.gov.cn/n6758823/n6758839/c6796160/part/6776242.pdf), B1I/B2I D1/D2 |
 | B3 | [B3I ICD](https://en.beidou.gov.cn/SYSTEMS/ICD/201806/P020180608516798097666.pdf), legacy navigation and BCH |
+| B1I3 | [B1I ICD 3.0](http://en.beidou.gov.cn/SYSTEMS/ICD/201902/P020190227702348791891.pdf), section 4.3 ranging-code assignments and section 5.1.1 D1/D2 classification |
 | B1C | [B1C ICD 1.0](https://en.beidou.gov.cn/SYSTEMS/ICD/201806/P020180608519640359959.pdf), section 6 |
 | B2A | [B2a ICD 1.0](https://en.beidou.gov.cn/SYSTEMS/ICD/201806/P020180608518432765621.pdf), B-CNAV2 |
 | B2B | CSNO, **BDS-SIS-ICD-B2b-1.0**, July 2020, formal Chinese edition, sections 6 and 7.2; supplied PDF `P020200803362056878157.pdf` |
