@@ -2,18 +2,18 @@
 """Produce daily GPST grid intervals from protocol-neutral SBAS streams."""
 
 import json
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 
 import click
+import numpy as np
 import pyarrow as pa
-import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
+from .batch_pipeline import prefetched
 from .cnex_import import ORIGIN, day_directories, latest_parts
 from .gpst import label
 from .research_output import staged_output, write_json
@@ -54,23 +54,35 @@ class DailySink:
         self.staging.mkdir()
         self.buffer = defaultdict(list)
         self.count = 0
+        self.total_rows = 0
         self.parts = defaultdict(list)
 
-    def add(self, row):
-        start, end = row["start_gpst_ms"], row["end_gpst_ms"]
-        while start < end:
-            day = start // 86400000 * 86400000
-            stop = min(end, day + 86400000)
-            self.buffer[day].append(dict(row, start_gpst_ms=start, end_gpst_ms=stop))
-            self.count += 1
-            start = stop
-        if self.count >= 8192:
+    def add(self, rows):
+        if not len(rows):
+            return
+        # Expand midnight crossings in original row order, then split by day.
+        start, end = rows["start_gpst_ms"], rows["end_gpst_ms"]
+        counts = (end - 1) // 86400000 - start // 86400000 + 1
+        indices = np.repeat(np.arange(len(rows)), counts)
+        first = np.repeat(np.cumsum(counts) - counts, counts)
+        days = start[indices] // 86400000 + np.arange(len(indices)) - first
+        columns = {name: pa.array(rows[name][indices]) for name in SCHEMA.names if name in rows.dtype.names}
+        columns["start_gpst_ms"] = pa.array(np.maximum(start[indices], days * 86400000))
+        columns["end_gpst_ms"] = pa.array(np.minimum(end[indices], (days + 1) * 86400000))
+        columns["satellite_system"] = pa.repeat("S", len(indices))
+        columns["signal"] = pa.repeat("L1CA", len(indices))
+        table = pa.table(columns, schema=SCHEMA)
+        for day in np.unique(days):
+            self.buffer[int(day) * 86400000].append(table.filter(pa.array(days == day)))
+        self.count += len(indices)
+        self.total_rows += len(indices)
+        if self.count >= 65536:
             self.flush()
 
     def flush(self):
-        for day, rows in self.buffer.items():
+        for day, tables in self.buffer.items():
             path = self.staging / f"{day}-{len(self.parts[day])}.parquet"
-            pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), path, compression="zstd", compression_level=3)
+            pq.write_table(pa.concat_tables(tables), path, compression="zstd", compression_level=3)
             self.parts[day].append(path)
         self.buffer.clear()
         self.count = 0
@@ -80,26 +92,30 @@ class DailySink:
         directory = self.output / "daily"
         directory.mkdir()
         manifest = []
-        for day, parts in tqdm(sorted(self.parts.items()), desc="Write GPST days", unit="day"):
-            path = directory / (label(day // 1000)[:15] + ".parquet")
-            count = 0
-            schema = SCHEMA.with_metadata(
-                {
-                    **SCHEMA.metadata,
-                    b"day_gpst_ms": str(day).encode(),
-                    b"correction_age_seconds": b"600",
-                    b"mask_age_seconds": b"1200",
-                    b"tail_policy": b"stop at final observed epoch; no extrapolation",
-                }
-            )
-            with pq.ParquetWriter(path, schema, compression="zstd", compression_level=3) as writer:
+        with tqdm(total=self.total_rows, desc="Write SBAS intervals", unit="row", unit_scale=True, mininterval=1) as progress:
+            for day, parts in sorted(self.parts.items()):
+                progress.set_postfix_str(label(day // 1000)[:15], refresh=False)
+                path = directory / (label(day // 1000)[:15] + ".parquet")
+                count = 0
+                schema = SCHEMA.with_metadata(
+                    {
+                        **SCHEMA.metadata,
+                        b"day_gpst_ms": str(day).encode(),
+                        b"correction_age_seconds": b"600",
+                        b"mask_age_seconds": b"1200",
+                        b"tail_policy": b"stop at final observed epoch; no extrapolation",
+                    }
+                )
+                with pq.ParquetWriter(path, schema, compression="zstd", compression_level=3) as writer:
+                    for part in parts:
+                        with pq.ParquetFile(part) as source:
+                            for batch in source.iter_batches():
+                                writer.write_table(pa.Table.from_batches([batch]).replace_schema_metadata(schema.metadata))
+                                count += batch.num_rows
+                                progress.update(batch.num_rows)
+                manifest.append(dict(path=str(path.relative_to(self.output)), day_gpst_ms=day, rows=count))
                 for part in parts:
-                    for batch in pq.ParquetFile(part).iter_batches():
-                        writer.write_table(pa.Table.from_batches([batch]).replace_schema_metadata(schema.metadata))
-                        count += batch.num_rows
-            manifest.append(dict(path=str(path.relative_to(self.output)), day_gpst_ms=day, rows=count))
-            for part in parts:
-                part.unlink()  # Only temporary shards created by this sink.
+                    part.unlink()  # Only temporary shards created by this sink.
         self.staging.rmdir()
         return manifest
 
@@ -109,129 +125,79 @@ def build_grid(input_dir, output, gap_timeout=50):
     days = list(day_directories(input_dir))
     if not any(latest_parts(day, "raw-bits") for day in days):
         raise ValueError("No ParquetNEX RawBits inputs in this station")
-    sink = DailySink(output)
-    states, identities, pending = {}, {}, {}
-    last_frame = {}
-    next_stream = next_frame = 0
-    previous_nav = previous_raw = None
-    gap_ms = round(gap_timeout * 1000)
-    diagnostics = Counter()
-
-    def emit(key, rows):
-        for row in rows:
-            frame_id = row.pop("frame_offset")
-            sink.add(dict(row, **identities[key], frame_id=frame_id))
-
-    def flush(key):
-        if pending[key]:
-            emit(key, states[key].process_frames(pending[key]))
-            pending[key].clear()
-
-    def close(key, time):
-        flush(key)
-        emit(key, states[key].finish(time))
-        diagnostics.update(states[key].diagnostics)
-        del states[key], pending[key], identities[key], last_frame[key]
-
-    def advance(time):
-        nonlocal previous_nav
-        if previous_nav is not None:
-            if time < previous_nav:
-                raise ValueError("Reversed navigation context; select a non-overlapping recording path")
-            if time - previous_nav > gap_ms:
-                for key in list(states):
-                    close(key, max(previous_nav, last_frame[key]))
-                diagnostics["navigation_gaps"] += 1
-        previous_nav = time
-        for key in list(states):
-            if time - last_frame[key] > gap_ms:
-                close(key, last_frame[key])
-                diagnostics["signal_gaps"] += 1
-
-    def rows(day, catalog):
-        start = Decimal((date.fromisoformat("-".join(day.relative_to(input_dir).parts)) - ORIGIN).days * 86400)
-        time_field = "nav_epoch_gpst" if catalog == "raw-bits" else "gpst"
-        for path in latest_parts(day, catalog):
+    inputs = {(day, catalog): latest_parts(day, catalog) for day in days for catalog in ("events", "raw-bits")}
+    total_rows = 0
+    for paths in inputs.values():
+        for path in paths:
             with pq.ParquetFile(path) as source:
-                info = source.schema_arrow.metadata or {}
-                if info.get(b"commonnex.catalog") != catalog.encode() or info.get(b"setup_id") != metadata["setup_id"].encode():
-                    raise ValueError(f"Unexpected ParquetNEX identity/catalog: {path}")
-                if info.get(b"time.scale") != b"GPST" or source.schema_arrow.field(time_field).type != pa.decimal128(38, 12):
-                    raise ValueError(f"Expected CommonNEX GPST decimal seconds: {path}")
-                for batch in source.iter_batches(batch_size=8192):
-                    if catalog == "events":
-                        batch = batch.filter(pc.equal(batch.column("scope"), "NAVIGATION"))
-                    else:
-                        batch = batch.filter(pc.equal(batch.column("message_family"), "SBAS_L1"))
-                    for row in batch.to_pylist():
-                        if row["setup_id"] != metadata["setup_id"]:
-                            raise ValueError(f"Mixed Setup identity: {path}")
-                        if row[time_field] is not None and not start <= row[time_field] < start + 86400:
-                            raise ValueError(f"Record outside its GPST day: {path}")
-                        yield row
+                total_rows += source.metadata.num_rows
+    sink = DailySink(output)
+    processor = _native.GridCnexProcessor(metadata["setup_id"], round(gap_timeout * 1000))
 
-    for day in tqdm(days, desc="ParquetNEX SBAS days", unit="day"):
-        # Completion context is independent of measurement timestamps. Read one
-        # day's small navigation event catalog, not all observations or RawBits.
-        times = []
-        for event in rows(day, "events"):
-            if event["kind"] == "EPOCH_COMPLETION":
-                if event["payload"]["epoch_completion"]["completion"] != "COMPLETE":
-                    raise ValueError("Incomplete navigation closure requires an explicit downstream policy")
-                times.append(int(event["gpst"] * Decimal(1000)))
-            else:
-                raise ValueError(f"Unsupported navigation event: {event['kind']}")
-        times = iter(sorted(set(times)))
-        context = next(times, None)
-        for row in rows(day, "raw-bits"):
-            if row["nav_epoch_gpst"] is None:
-                continue
-            time = int(row["nav_epoch_gpst"] * Decimal(1000))
-            if previous_raw is not None and time < previous_raw:
-                raise ValueError("Reversed SBAS occurrence time; select non-overlapping inputs")
-            previous_raw = time
-            while context is not None and context <= time:
-                advance(context)
-                context = next(times, None)
-            if row["satellite_system"] != "S" or row["body_format"] != "SBAS_L1_250_V1" or row["bit_length"] != 250:
-                raise ValueError("Grid requires canonical SBAS L1 250-bit bodies")
-            if row["completeness"] != "complete" or len(row["body"]) != 32 or row["body"][-1] & 63:
-                raise ValueError("Invalid complete SBAS body")
-            key = row["satellite_number"]
-            if key in states and time - last_frame[key] > gap_ms:
-                close(key, last_frame[key])
-                diagnostics["signal_gaps"] += 1
-            if key not in states:
-                states[key], pending[key] = _native.GridProcessor(), []
-                identities[key] = dict(satellite_system="S", satellite_number=key, signal="L1CA", stream_id=next_stream)
-                next_stream += 1
-            checks = {(c["origin"], c["kind"], c["scope"]): c["result"] for c in row["checks"]}
-            independent = checks.get(("independent", "crc", "message"))
-            if independent not in ("pass", "fail"):
-                raise ValueError("Missing independently checked SBAS CRC")
-            receiver = checks.get(("receiver", "crc", "message"))
-            pending[key].append(
-                dict(
-                    gpst_ms=time,
-                    frame_id=next_frame,
-                    frame=row["body"],
-                    crc_valid=independent == "pass",
-                    accepted=receiver == "pass" if receiver in ("pass", "fail") else None,
+    def batches():
+        for day in days:
+            day_label = "-".join(day.relative_to(input_dir).parts)
+            day_ms = (date.fromisoformat(day_label) - ORIGIN).days * 86400000
+            yield "begin", day_label, day_ms, None
+            for catalog in ("events", "raw-bits"):
+                time_field = "nav_epoch_gpst" if catalog == "raw-bits" else "gpst"
+                columns = (
+                    ["setup_id", "kind", "scope", "gpst", "payload.epoch_completion.completion"]
+                    if catalog == "events"
+                    else [
+                        "setup_id",
+                        "nav_epoch_gpst",
+                        "satellite_system",
+                        "satellite_number",
+                        "message_family",
+                        "body_format",
+                        "bit_length",
+                        "body",
+                        "completeness",
+                        "checks.list.element.origin",
+                        "checks.list.element.kind",
+                        "checks.list.element.scope",
+                        "checks.list.element.result",
+                    ]
                 )
-            )
-            next_frame += 1
-            last_frame[key] = time
-            if len(pending[key]) >= 8192:
-                flush(key)
-        while context is not None:
-            advance(context)
-            context = next(times, None)
-        for key in states:
-            flush(key)
-    for key in list(states):
-        close(key, max(last_frame[key], previous_nav if previous_nav is not None else last_frame[key]))
-    diagnostics["raw_bits_frames"] = next_frame
-    return sink.finish(), dict(diagnostics)
+                for path in inputs[day, catalog]:
+                    with pq.ParquetFile(path) as source:
+                        info = source.schema_arrow.metadata or {}
+                        if (
+                            info.get(b"commonnex.catalog") != catalog.encode()
+                            or info.get(b"setup_id") != metadata["setup_id"].encode()
+                        ):
+                            raise ValueError(f"Unexpected ParquetNEX identity/catalog: {path}")
+                        if info.get(b"time.scale") != b"GPST" or source.schema_arrow.field(time_field).type != pa.decimal128(
+                            38, 12
+                        ):
+                            raise ValueError(f"Expected CommonNEX GPST decimal seconds: {path}")
+                        for batch in source.iter_batches(batch_size=65536, columns=columns):
+                            yield catalog, day_label, path, batch
+            yield "end", day_label, None, None
+
+    with tqdm(total=total_rows, desc="SBAS input rows", unit="row", unit_scale=True, mininterval=1) as progress:
+        source = prefetched(batches(), thread_name="sbas-read")
+        try:
+            for catalog, day_label, context, batch in source:
+                if catalog == "begin":
+                    processor.begin_day(context)
+                elif catalog == "end":
+                    sink.add(processor.end_day())
+                else:
+                    progress.set_postfix_str(f"GPST {day_label} {catalog}", refresh=False)
+                    try:
+                        if catalog == "events":
+                            processor.events(batch)
+                        else:
+                            sink.add(processor.feed(batch))
+                    except (ValueError, RuntimeError) as error:
+                        raise ValueError(f"{error}: {context}") from error
+                    progress.update(batch.num_rows)
+            sink.add(processor.finish())
+        finally:
+            source.close()
+    return sink.finish(), processor.diagnostics
 
 
 @click.command()

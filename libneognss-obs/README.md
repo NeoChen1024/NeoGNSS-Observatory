@@ -125,10 +125,22 @@ epoch, without inventing an extra second.
 `GridProcessor.process_frames()` accepts batches with `gpst_ms`, `frame_id`,
 `frame` (32 bytes carrying 250 MSB-first bits with six zero padding bits),
 `crc_valid`, and nullable `accepted`. It re-decodes SBAS content and verifies
-CRC in C++ without any knowledge of the source transport. The Python adapter
-constructs these batches from ParquetNEX RawBits and navigation Events; this
-internal batch interface is not an additional storage format. Grid frame IDs
+CRC in C++ without any knowledge of the source transport. This dictionary
+interface remains available for direct callers, alongside typed C++ frame and
+interval batches; it is not used by the Parquet hot path. Grid frame IDs
 are run-local occurrence counters, not raw byte offsets or Parquet foreign keys.
+
+`GridCnexProcessor(setup_id, gap_timeout_ms)` is the station-level Arrow adapter
+used by `ngo-sbas-grid-parquet`. `begin_day(day_gpst_ms)` opens a day;
+`events(batch)` gathers its navigation completion context before `feed(batch)`
+consumes RawBits. `end_day()` drains the day's pending frames without resetting
+signal state, and `finish()` closes streams at the final available context.
+Arrow types, Setup identity, canonical bodies, CRC evidence, day membership and
+time ordering are checked in native code. Millisecond time projection retains
+the existing truncation policy. Feed/drain methods return owned, read-only
+structured NumPy interval arrays; no per-frame Python callbacks or JSON
+conversion are involved. Native processing releases the GIL and rejects
+concurrent use of the same processor. Diagnostics remain a small dictionary.
 
 The decoded-content interface `GridProcessor.process()` accepts `gpst_ms`, `offset` and `sbas`
 keys. These times are continuous milliseconds since 1980-01-06 GPST. For UBX,

@@ -5,7 +5,6 @@ import json
 import os
 import shutil
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import date, timedelta
 from decimal import localcontext
@@ -16,6 +15,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from .batch_pipeline import prefetched
 from .cnex_import import day_directories, latest_parts
 from .setup_metadata import validate_setup
 
@@ -77,19 +77,7 @@ def _observation_batches(paths, setup_id):
 
 def observation_batches(paths, setup_id):
     """One read owner and at most one prefetched batch; preserve input order."""
-    source = _observation_batches(paths, setup_id)
-    end = object()
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="stec-read") as pool:
-        future = pool.submit(next, source, end)
-        try:
-            while (batch := future.result()) is not end:
-                future = pool.submit(next, source, end)
-                yield batch
-        finally:
-            # A running generator must finish its current next() before close().
-            future.cancel()
-            pool.shutdown(wait=True, cancel_futures=True)
-            source.close()
+    yield from prefetched(_observation_batches(paths, setup_id), thread_name="stec-read")
 
 
 def validate_events(paths, setup_id):

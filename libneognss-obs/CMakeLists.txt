@@ -25,7 +25,7 @@ if(NEOGNSS_BUILD_BINDINGS)
     execute_process(COMMAND "${Python_EXECUTABLE}" -m pybind11 --cmakedir
         OUTPUT_VARIABLE pybind11_DIR OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
     find_package(pybind11 CONFIG REQUIRED)
-    pybind11_add_module(_native src/bindings.cpp src/ppp_bindings.cpp src/stec_bindings.cpp src/cnex_bindings.cpp)
+    pybind11_add_module(_native src/bindings.cpp src/ppp_bindings.cpp src/stec_bindings.cpp src/grid_bindings.cpp src/cnex_bindings.cpp)
     target_include_directories(_native PRIVATE ../contrib/int128/include)
     target_include_directories(_native PRIVATE ../contrib/json/include)
     target_link_libraries(_native PRIVATE neognss_obs::neognss_obs)

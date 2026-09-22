@@ -21,6 +21,31 @@ Import, grid calculation and plotting are separate commands. Grid reads the
 ParquetNEX station's latest RawBits and Events revisions and all their parts.
 It has no protocol selection, raw-data path or reconstruction dependency.
 
+Grid reads only the required catalog columns in batches of up to 65,536 rows.
+The `SBAS input rows` progress bar counts all scanned RawBits and Events rows,
+including non-SBAS frames and non-navigation events that are filtered out. Its
+total comes from the selected Parquet footers, not compressed file sizes or
+the number of days. It advances after each consumed batch and shows row rate,
+ETA, GPST partition date and catalog, with display refreshes at most once per
+second. Native frame processing remains bounded to 8,192 frames per stream.
+The separate `Write SBAS intervals` bar counts output interval rows during
+daily compaction and updates after each written batch. Neither bar represents
+elapsed GNSS time or memory consumption.
+
+One background reader prefetches at most one batch while the ordered native
+processor works on the current batch. Arrow may also use its internal column
+decode threads. Read errors propagate to the caller; early termination joins
+the reader and closes its input before returning. This read-ahead mechanism is
+shared with STEC. No days or streams are reordered to gain parallelism.
+
+The grid processor consumes Arrow buffers directly and keeps frame decoding,
+navigation/gap boundaries and interval generation in C++ with the GIL released.
+Its hot path uses typed frames and intervals instead of Python dictionaries or
+JSON. Owned, read-only structured NumPy batches carry intervals back to Python,
+which splits midnight crossings and builds Arrow tables in batches. Small
+diagnostic summaries still use JSON. Writing remains under one owner; there is
+no asynchronous writer queue or per-day parallel state machine.
+
 ### Explicit wire protocol
 
 Only `ngo-cnex-import run` uses `--protocol/-p ubx|sbf` (default UBX).

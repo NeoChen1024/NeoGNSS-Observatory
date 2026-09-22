@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "arrow_batch.hpp"
 #include <bitset>
 #include <boost/int128/int128.hpp>
 #include <cstring>
@@ -30,22 +31,7 @@ class StecCnexReader {
     std::optional<Tick> last_;
     std::optional<neognss_obs::ObservationEpoch> pending_;
     uint64_t rounded_ = 0, smoothed_ = 0;
-    struct View {
-        ArrowArrayView value{};
-        View(ArrowSchema *schema, ArrowArray *array) {
-            ArrowError error{};
-            if (ArrowArrayViewInitFromSchema(&value, schema, &error) ||
-                ArrowArrayViewSetArray(&value, array, &error) ||
-                ArrowArrayViewValidate(&value, NANOARROW_VALIDATION_LEVEL_FULL,
-                                       &error)) {
-                ArrowArrayViewReset(&value);
-                throw std::runtime_error(
-                    std::string("Invalid CommonNEX Arrow batch: ") +
-                    error.message);
-            }
-        }
-        ~View() { ArrowArrayViewReset(&value); }
-    };
+    using View = ArrowBatchView;
     static ArrowArrayView *child(ArrowArrayView *v, const ArrowSchema *s,
                                  const char *name) {
         for (int64_t k = 0; k < s->n_children; ++k)

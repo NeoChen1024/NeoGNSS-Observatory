@@ -52,7 +52,7 @@ binding-only dependencies.
 ### C++ toolchain portability
 
 Binding helper types live in component-qualified namespaces under
-`neognss_obs::python_bindings` (core, cnex, ppp and stec). Do not replace these
+`neognss_obs::python_bindings` (core, cnex, grid, ppp and stec). Do not replace these
 with same-named anonymous-namespace classes across translation units. Those
 are distinct C++ types, but pybind11's libc++ registration path compares RTTI
 names, which can collide for such helpers. Changing only the Python class name

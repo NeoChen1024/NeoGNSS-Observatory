@@ -3,6 +3,83 @@
 #include <set>
 
 namespace neognss_obs {
+namespace {
+struct GridUpdate {
+    struct Correction {
+        int delay, givei;
+        std::string_view status;
+    };
+    int type = -1, count = 0, band = 0, iodi = 0, block = 0;
+    std::vector<int> positions;
+    std::vector<Correction> corrections;
+};
+GridUpdate update(const SBAS::Result &r, bool accepted) {
+    GridUpdate u;
+    if (!accepted || r.status != SBAS::Status::decoded)
+        return u;
+    const auto &m = *r.message;
+    u.type = m.type;
+    if (auto p = std::get_if<SBAS::IonosphericMask>(&m.content)) {
+        u.count = p->number_of_bands_raw;
+        u.band = p->band;
+        u.iodi = p->iodi;
+        for (size_t i = 0; i < p->mask.size(); ++i)
+            if (p->mask[i])
+                u.positions.push_back(int(i + 1));
+    } else if (auto p = std::get_if<SBAS::IonosphericDelay>(&m.content)) {
+        u.band = p->band;
+        u.block = p->block;
+        u.iodi = p->iodi;
+        for (const auto &c : p->corrections) {
+            auto status = c.status();
+            u.corrections.push_back(
+                {c.delay_raw, c.givei,
+                 status == SBAS::IgpStatus::usable       ? "usable"
+                 : status == SBAS::IgpStatus::do_not_use ? "do_not_use"
+                                                         : "not_monitored"});
+        }
+    }
+    return u;
+}
+GridUpdate update(const Json &m) {
+    GridUpdate u;
+    if (m.value("status", "") != "decoded")
+        return u;
+    u.type = m.at("type");
+    const auto &c = m.at("content");
+    if (u.type == 18) {
+        u.count = c.at("number_of_bands_raw");
+        u.band = c.at("band");
+        u.iodi = c.at("iodi");
+        u.positions = c.at("active_mask_positions").get<std::vector<int>>();
+    } else if (u.type == 26) {
+        u.band = c.at("band");
+        u.block = c.at("block");
+        u.iodi = c.at("iodi");
+        for (const auto &v : c.at("corrections"))
+            u.corrections.push_back(
+                {v.at("delay_raw"), v.at("givei"),
+                 v.at("status").get_ref<const std::string &>()});
+    }
+    return u;
+}
+Json json_intervals(const std::vector<GridInterval> &rows) {
+    Json out = Json::array();
+    for (const auto &r : rows)
+        out.push_back({{"start_gpst_ms", r.start_gpst_ms},
+                       {"end_gpst_ms", r.end_gpst_ms},
+                       {"band", r.band},
+                       {"mask_bit", r.mask_bit},
+                       {"iodi", r.iodi},
+                       {"givei", r.givei},
+                       {"frame_offset", r.frame_id},
+                       {"latitude", r.latitude},
+                       {"longitude", r.longitude},
+                       {"delay_m", r.delay_m},
+                       {"vtec_tecu", r.vtec_tecu}});
+    return out;
+}
+} // namespace
 struct GridProcessor::State {
     struct Mask {
         std::vector<int> positions;
@@ -20,7 +97,7 @@ struct GridProcessor::State {
     int iodi = -1, count = -1;
     std::optional<int64_t> last;
     std::map<std::string, uint64_t> diagnostics;
-    Json rows = Json::array();
+    std::vector<GridInterval> rows;
     int64_t deadline() const {
         if (masks.empty() || int(masks.size()) != count)
             return -1;
@@ -37,18 +114,11 @@ struct GridProcessor::State {
             if (!coordinate)
                 throw std::runtime_error("Invalid IGP coordinate");
             const double delay = c.delay * 0.125;
-            rows.push_back(
-                {{"start_gpst_ms", c.start},
-                 {"end_gpst_ms", end},
-                 {"band", key.first},
-                 {"mask_bit", key.second},
-                 {"latitude", coordinate->first},
-                 {"longitude", coordinate->second},
-                 {"delay_m", delay},
-                 {"vtec_tecu", delay * (1575.42e6 * 1575.42e6 / (40.3 * 1e16))},
-                 {"iodi", c.iodi},
-                 {"givei", c.givei},
-                 {"frame_offset", c.offset}});
+            rows.push_back({c.start, end, 0, key.first, key.second, c.iodi,
+                            c.givei, int64_t(c.offset), 0,
+                            double(coordinate->first),
+                            double(coordinate->second), delay,
+                            delay * (1575.42e6 * 1575.42e6 / (40.3 * 1e16))});
         }
         c.start = time;
     }
@@ -63,8 +133,7 @@ struct GridProcessor::State {
         iodi = count = -1;
         last.reset();
     }
-    void accept(const Json &row) {
-        const int64_t time = row.at("gpst_ms");
+    void accept(int64_t time, uint64_t offset, const GridUpdate &content) {
         if (last && time < *last)
             throw std::runtime_error("SBAS reception-context time reversed");
         if (last && gap_timeout > 0 && time - *last > gap_timeout) {
@@ -72,30 +141,27 @@ struct GridProcessor::State {
             ++diagnostics["signal_gap_reset"];
         }
         last = time;
-        const auto &message = row.at("sbas");
-        if (message.value("status", "") != "decoded") {
+        if (content.type < 0) {
             ++diagnostics["unparsed_or_invalid"];
             return;
         }
-        const int type = message.at("type");
-        const auto &content = message.at("content");
+        const int type = content.type;
         if (type == 0) {
             reset(time);
             last = time;
             ++diagnostics["test_mode_reset"];
         } else if (type == 18) {
             flush(time);
-            const int new_count = content.at("number_of_bands_raw"),
-                      band = content.at("band"), new_iodi = content.at("iodi");
-            auto positions =
-                content.at("active_mask_positions").get<std::vector<int>>();
+            const int new_count = content.count, band = content.band,
+                      new_iodi = content.iodi;
+            auto positions = content.positions;
             bool valid =
                 new_count >= 1 && new_count <= 11 &&
                 std::set<int>(positions.begin(), positions.end()).size() ==
                     positions.size();
             for (auto p : positions)
-                valid =
-                    valid && neognss_obs::SBAS::igp_coordinate(band, p).has_value();
+                valid = valid &&
+                        neognss_obs::SBAS::igp_coordinate(band, p).has_value();
             if (!valid) {
                 reset(time);
                 ++diagnostics["invalid_mask"];
@@ -122,15 +188,15 @@ struct GridProcessor::State {
             }
             masks[band] = {std::move(positions), time};
         } else if (type == 26) {
-            const int band = content.at("band"), block = content.at("block");
-            if (content.at("iodi") != iodi || !masks.contains(band) ||
+            const int band = content.band, block = content.block;
+            if (content.iodi != iodi || !masks.contains(band) ||
                 deadline() <= time) {
                 ++diagnostics["correction_without_current_complete_mask"];
                 return;
             }
             const auto &positions = masks.at(band).positions;
             size_t i = 0;
-            for (auto &correction : content.at("corrections")) {
+            for (auto &correction : content.corrections) {
                 const size_t ordinal = block * 15 + i++;
                 if (ordinal >= positions.size())
                     continue;
@@ -139,21 +205,19 @@ struct GridProcessor::State {
                     flush_cell(key, cells.at(key), time);
                     cells.erase(key);
                 }
-                const int delay = correction.at("delay_raw"),
-                          givei = correction.at("givei");
-                const std::string status = correction.at("status");
+                const int delay = correction.delay, givei = correction.givei;
+                const std::string status(correction.status);
                 if (status != "usable" || delay == 511 || givei == 15) {
                     ++diagnostics[status];
                     continue;
                 }
-                cells[key] = {time,  time + correction_age,
-                              delay, givei,
-                              iodi,  row.at("offset").get<uint64_t>()};
+                cells[key] = {time,  time + correction_age, delay, givei, iodi,
+                              offset};
             }
         }
     }
-    Json drain() {
-        Json out = Json::array();
+    std::vector<GridInterval> drain() {
+        std::vector<GridInterval> out;
         out.swap(rows);
         return out;
     }
@@ -172,10 +236,14 @@ GridProcessor::GridProcessor(double correction_age, double mask_age,
 GridProcessor::~GridProcessor() = default;
 Json GridProcessor::process(const Json &rows) {
     for (auto &row : rows)
-        state_->accept(row);
-    return state_->drain();
+        state_->accept(row.at("gpst_ms"), row.at("offset"),
+                       update(row.at("sbas")));
+    return json_intervals(state_->drain());
 }
 Json GridProcessor::finish(int64_t time) {
+    return json_intervals(finish_intervals(time));
+}
+std::vector<GridInterval> GridProcessor::finish_intervals(int64_t time) {
     if (state_->last && time < *state_->last)
         throw std::runtime_error("SBAS group end precedes its last message");
     state_->flush(time);
@@ -183,20 +251,31 @@ Json GridProcessor::finish(int64_t time) {
     return state_->drain();
 }
 Json GridProcessor::process_frames(const Json &rows) {
-    for (const auto &row : rows) {
-        const auto &bytes = row.at("frame").get_binary();
-        if (bytes.size() != 32 || (bytes.back() & 63))
+    std::vector<GridFrame> batch;
+    for (const auto &r : rows) {
+        const auto &bytes = r.at("frame").get_binary();
+        if (bytes.size() != 32)
+            throw std::runtime_error("Expected canonical SBAS body");
+        GridFrame f{r.at("gpst_ms"),
+                    r.at("frame_id"),
+                    {},
+                    r.at("crc_valid"),
+                    r.at("accepted").is_null() || r.at("accepted").get<bool>()};
+        std::copy(bytes.begin(), bytes.end(), f.bytes.begin());
+        batch.push_back(f);
+    }
+    return json_intervals(process_frames(std::span<const GridFrame>(batch)));
+}
+std::vector<GridInterval>
+GridProcessor::process_frames(std::span<const GridFrame> frames) {
+    for (const auto &f : frames) {
+        if (f.bytes.back() & 63)
             throw std::runtime_error(
                 "Expected canonical 250-bit SBAS frame with zero padding");
-        auto message = sbas_message(neognss_obs::SBAS::parse_l1(bytes));
-        if (message.value("crc_valid", false) !=
-            row.at("crc_valid").get<bool>())
+        auto parsed = SBAS::parse_l1(f.bytes);
+        if ((parsed.message && parsed.message->crc_valid) != f.crc_valid)
             throw std::runtime_error("SBAS frame CRC metadata mismatch");
-        if (!row.at("accepted").is_null() && !row.at("accepted").get<bool>())
-            message["status"] = "receiver_rejected";
-        state_->accept({{"gpst_ms", row.at("gpst_ms")},
-                        {"offset", row.at("frame_id")},
-                        {"sbas", message}});
+        state_->accept(f.gpst_ms, f.frame_id, update(parsed, f.accepted));
     }
     return state_->drain();
 }
