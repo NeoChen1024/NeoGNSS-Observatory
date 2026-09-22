@@ -7,6 +7,7 @@ import math
 import shutil
 from pathlib import Path
 
+from .antenna import model_metadata
 from .gpst import EPOCH, calendar
 
 
@@ -52,60 +53,16 @@ class LocalProducts:
 
 
 class Products(LocalProducts):
-    def __init__(self, root, scratch, antenna, catalogs, margin_hours=6):
+    def __init__(self, root, scratch, receiver_antenna, catalogs, margin_hours=6):
         super().__init__(root, scratch, margin_hours)
-        self.antenna, self.catalogs = antenna, catalogs
-
-    def receiver_antenna(self, start_ns, end_ns):
-        matches = []
-        for catalog in self.catalogs:
-            path = self.unpack(catalog)
-            with open(path, encoding="latin-1") as stream:
-                block = []
-                for line in stream:
-                    if "START OF ANTENNA" in line:
-                        block = []
-                    block.append(line)
-                    if "END OF ANTENNA" not in line:
-                        continue
-                    identity = next((v[:20].rstrip() for v in block if "TYPE / SERIAL NO" in v), None)
-                    if identity is None or identity.split() != self.antenna.split():
-                        continue
-                    valid_start, valid_end = 0, 2**63 - 1
-                    for row in block:
-                        if "VALID FROM" in row or "VALID UNTIL" in row:
-                            fields = row[:43].split()
-                            date = dt.datetime(*map(int, fields[:5])) + dt.timedelta(seconds=float(fields[5]))
-                            value = int((date - EPOCH).total_seconds() * 1e9)
-                            if "VALID FROM" in row:
-                                valid_start = value
-                            else:
-                                valid_end = value
-                    if not valid_start <= start_ns <= end_ns <= valid_end:
-                        continue
-                    frequencies = {v[:10].strip() for v in block if "START OF FREQUENCY" in v}
-                    if not {"G01", "G02"} <= frequencies:
-                        continue
-                    matches.append((path, block, valid_start, valid_end))
-        if not matches:
-            raise ValueError(f"No exact antenna/radome with GPS G01/G02 calibration: {self.antenna}")
-        # Configuration order expresses catalog precedence; select a whole record.
-        path, block, valid_start, valid_end = matches[0]
-        self.antenna_validity = (valid_start, valid_end)
-        selected = self.scratch / "receiver-selected.atx"
-        header = "     1.4            G                                       ANTEX VERSION / SYST\n"
-        header += "A                                                           PCV TYPE / REFANT\n"
-        header += "                                                            END OF HEADER\n"
-        selected.write_text(header + "".join(block), encoding="latin-1")
-        return str(selected), path, len(matches)
+        self.receiver_antenna, self.catalogs = receiver_antenna, catalogs
 
     def prepare(self, start_ns, end_ns):
         start, end = calendar(start_ns / 1e9), calendar(end_ns / 1e9)
         first, last = (start - self.margin).date(), (end + self.margin).date()
         key = (first, last)
         if key == self.loaded_key:
-            if self.antenna_validity[0] <= start_ns <= end_ns <= self.antenna_validity[1]:
-                return None
+            return None
         days = [first + dt.timedelta(days=i) for i in range((last - first).days + 1)]
         out = dict(sp3=[], clk=[], nav=[], erp=[], biases=[], time_ns=start_ns)
         for day in days:
@@ -138,16 +95,13 @@ class Products(LocalProducts):
                             meters=meters,
                         )
                     )
-        out["receiver_antex"], antenna_source, matches = self.receiver_antenna(start_ns, end_ns)
         out["satellite_antex"] = self.unpack(self.catalogs[0])
         out["metadata"] = dict(
             family="COD0MGXFIN",
             reference_system="IGS20",
             days=[str(d) for d in days],
             margin_hours=self.margin.total_seconds() / 3600,
-            antenna_source=Path(antenna_source).name,
-            antenna_matches=matches,
-            antenna_selection="first exact GPS G01/G02 record in configured catalog order",
+            receiver_antenna=model_metadata(self.receiver_antenna),
         )
         self.loaded_key, self.current = key, out["metadata"]
         return out

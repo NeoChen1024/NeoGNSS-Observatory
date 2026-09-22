@@ -15,6 +15,7 @@ The logger depends directly on `libcppgnss`.
 | Clock unwrap, adjustment inference, temperature association | Python/NumPy over CommonNEX |
 | SBAS mask completeness, correction/mask ages, grid resets | `libneognss-obs` |
 | GPS L1/L2 numerical-engine adapter over shared measurement normalization | `libneognss-obs` |
+| Receiver antenna PCO/PCV and bounded frequency substitution | Python selects ANTEX; `libneognss-obs` evaluates phase corrections |
 | Static GPS Float PPP adapter, filter and residual batches | `libneognss-obs`, linked to RTKLIB-EX |
 | GPS STEC geometry, phase leveling and receiver DCB estimation | `libneognss-obs`, linked to RTKLIB-EX |
 | Batch Python binding | `libneognss-obs` |

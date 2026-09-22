@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <neognss_obs/antenna.hpp>
 #include <neognss_obs/rtklib_lock.hpp>
 #include <neognss_obs/stec.hpp>
 #include <set>
@@ -126,6 +127,7 @@ struct StecProcessor::State {
         int64_t first_level = -1, last_level = -1;
     };
     Json settings;
+    ReceiverAntenna receiver_antenna;
     std::unique_ptr<nav_t> nav = std::make_unique<nav_t>();
     std::map<int, std::vector<Bias>> biases;
     std::map<int, std::vector<Bias>> gim_biases;
@@ -133,12 +135,14 @@ struct StecProcessor::State {
     std::string signal1, signal2;
     double rr[3], pos[3], elevation, level_elevation, mapping_height;
     int64_t previous = -1, next_arc = 0, interval, gap;
-    std::map<int, uint64_t> product_gaps{
-        {1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}};
+    std::map<int, uint64_t> product_gaps{{1, 0}, {2, 0},  {4, 0},
+                                         {8, 0}, {16, 0}, {32, 0}};
     uint64_t epochs = 0, sample_count = 0, arcs = 0, valid_arcs = 0,
              unhealthy = 0, missing_gim = 0;
     bool ready = false, finished = false;
-    explicit State(const Json &s) : settings(s) {
+    explicit State(const Json &s)
+        : settings(s),
+          receiver_antenna(s.value("receiver_antenna", Json(nullptr))) {
         signal1 = s.at("signal1");
         signal2 = s.at("signal2");
         if (signal1.size() != 2 || signal2.size() != 2 || signal1[0] != '1' ||
@@ -415,6 +419,8 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
         if (epoch.gpst_ns <= s.previous)
             throw std::runtime_error("Non-increasing STEC observation time");
         s.previous = epoch.gpst_ns;
+        if (s.receiver_antenna.enabled())
+            s.receiver_antenna.record_index(epoch.gpst_ns);
         ++s.epochs;
         std::set<int> timed_out;
         // Missing satellites must not retain an indefinitely open track.
@@ -472,6 +478,10 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
                          s.settings.at("gf_jump_m").get<double>() +
                              s.settings.at("gf_rate_m_s").get<double>() * dt)
                     reason = 4;
+                if (s.receiver_antenna.enabled() &&
+                    s.receiver_antenna.record_index(t.last) !=
+                        s.receiver_antenna.record_index(epoch.gpst_ns))
+                    reason = 8;
                 if (reason)
                     s.close(prn, reason, out.arcs);
             }
@@ -493,6 +503,17 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
             int32_t issues = 0;
             if (!s.geometry(prn, epoch.gpst_ns, az, el, lat, lon, issues))
                 continue;
+            // Preserve raw GF for slip detection/continuity, even during
+            // geometry gaps. Only emitted phase samples and leveling use
+            // antenna corrections.
+            if (!s.receiver_antenna.covers(epoch.gpst_ns, el)) {
+                gf = NAN;
+                if (std::isfinite(el))
+                    issues |= 32;
+            } else {
+                gf -= s.receiver_antenna.correction(0, epoch.gpst_ns, az, el) -
+                      s.receiver_antenna.correction(1, epoch.gpst_ns, az, el);
+            }
             // CODE MSLM mapping height is distinct from the 450 km IPP shell.
             double rp = 6371 / (6371 + s.mapping_height) *
                         std::sin(.9782 * (PI / 2 - el * D2R));
@@ -519,7 +540,8 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
                                    el, az, lat, lon, mapping, gim, rms});
             ++t.samples;
             ++s.sample_count;
-            if (std::isfinite(code) && el >= s.level_elevation) {
+            if (std::isfinite(code) && std::isfinite(gf) &&
+                el >= s.level_elevation) {
                 t.offsets.push_back(code - gf);
                 t.weights.push_back(std::pow(std::sin(el * D2R), 2));
                 if (t.first_level < 0)
@@ -552,7 +574,8 @@ Json StecProcessor::summary() const {
               {"clock", s.product_gaps.at(2)},
               {"health", s.product_gaps.at(4)},
               {"satellite_bias", s.product_gaps.at(8)},
-              {"gim", s.product_gaps.at(16)}}},
+              {"gim", s.product_gaps.at(16)},
+              {"receiver_antenna_direction", s.product_gaps.at(32)}}},
             {"meters_per_tecu", K},
             {"arc_reasons",
              {{"0", "start"},
@@ -562,7 +585,8 @@ Json StecProcessor::summary() const {
               {"4", "geometry_free_jump_candidate"},
               {"5", "stream_end"},
               {"6", "continuity_counter_change"},
-              {"7", "open_incremental_tail"}}}};
+              {"7", "open_incremental_tail"},
+              {"8", "receiver_antenna_calibration_change"}}}};
 }
 
 std::vector<StecArc> StecProcessor::preview() const {
@@ -597,7 +621,7 @@ Json StecProcessor::checkpoint() const {
                           {"weights", t.weights},
                           {"first_level", t.first_level},
                           {"last_level", t.last_level}});
-    return {{"version", 1},
+    return {{"version", 2},
             {"settings", s.settings},
             {"previous", s.previous},
             {"next_arc", s.next_arc},
@@ -612,7 +636,7 @@ Json StecProcessor::checkpoint() const {
 }
 void StecProcessor::restore(const Json &j) {
     auto &s = *state_;
-    if (j.at("version") != 1 || j.at("settings") != s.settings ||
+    if (j.at("version") != 2 || j.at("settings") != s.settings ||
         s.previous != -1)
         throw std::runtime_error("Incompatible STEC continuation state");
     s.previous = j.at("previous");

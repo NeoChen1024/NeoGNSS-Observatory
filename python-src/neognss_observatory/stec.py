@@ -15,6 +15,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
+from .antenna import model_metadata, receiver_model
 from .stec_incremental import (
     DAY_NS,
     EPOCH,
@@ -275,13 +276,24 @@ def cli(input_dir, config, output, start, end, rebuild):
         required = {"products_root"}
         if required - settings.keys():
             raise ValueError(f"Missing STEC settings: {sorted(required-settings.keys())}")
-        allowed = required | NATIVE_DEFAULTS.keys() | {"station", "position_ecef_m", "dcb", "margin_hours"}
+        allowed = required | NATIVE_DEFAULTS.keys() | {"station", "position_ecef_m", "dcb", "margin_hours", "receiver_antenna"}
         if settings.keys() - allowed:
             raise ValueError(f"Unknown STEC settings: {sorted(settings.keys()-allowed)}")
         native = NATIVE_DEFAULTS | {k: v for k, v in settings.items() if k in NATIVE_DEFAULTS}
         native["position_ecef_m"] = settings.get("position_ecef_m")
         if native["position_ecef_m"] is None:
             native["position_ecef_m"] = antenna_position(setup)
+        antenna_mode = settings.get("receiver_antenna", "required")
+        if antenna_mode not in ("required", "none"):
+            raise ValueError("receiver_antenna must be 'required' or explicit 'none'")
+        native["receiver_antenna"] = None
+        if antenna_mode == "required":
+            calibration = setup["antenna"].get("calibration_file")
+            if not calibration:
+                raise ValueError(
+                    "STEC requires Setup antenna.calibration_file; use receiver_antenna='none' explicitly to omit correction"
+                )
+            native["receiver_antenna"] = receiver_model([input_dir / calibration], setup["antenna"], ["G01", "G02"])
         dcb = DCB_DEFAULTS | settings.get("dcb", {})
         if dcb.keys() - DCB_DEFAULTS.keys() or not all(np.isfinite(v) and v > 0 for v in dcb.values()):
             raise ValueError("Invalid receiver DCB settings")
@@ -352,10 +364,12 @@ def cli(input_dir, config, output, start, end, rebuild):
                 "4": "health unavailable",
                 "8": "satellite bias unavailable",
                 "16": "GIM unavailable",
+                "32": "receiver antenna direction outside calibration grid",
             },
             missing_product_policy="preserve phase continuity; unavailable dependent fields; no broadcast or zero-bias fallback",
             missing_values="NaN for unavailable numerical samples/arc fields; null for unestimated receiver bias",
-            settings=native,
+            settings={k: v for k, v in native.items() if k != "receiver_antenna"},
+            receiver_antenna=model_metadata(native["receiver_antenna"]) if native["receiver_antenna"] else "none",
             dcb=dcb,
             units="gpst_ns/end_ns: nanoseconds; *_m: meters; *_deg: degrees; *_tecu: TECU; mapping: dimensionless",
             absolute_reference="GIM-constrained estimate, not independently calibrated TEC",
@@ -365,7 +379,12 @@ def cli(input_dir, config, output, start, end, rebuild):
             ipp="geocentric intersection at 6821 km; CODE MSLM alpha=0.9782",
             limitations=[
                 "GPS L1/L2 only",
-                "no phase wind-up or antenna phase-centre correction",
+                "no phase wind-up or satellite antenna phase-centre correction",
+                (
+                    "receiver antenna correction disabled"
+                    if antenna_mode == "none"
+                    else "receiver phase PCO/PCV; frequency approximations are not measured calibrations"
+                ),
                 "code multipath and receiver code smoothing can bias leveling",
                 "GIM model error can alias into receiver DCB; scatter is not absolute uncertainty",
                 "constant effective receiver bias per estimation window; no temperature model",

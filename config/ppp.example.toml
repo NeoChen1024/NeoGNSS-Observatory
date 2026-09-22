@@ -14,3 +14,8 @@ interval = 30.0
 gap_timeout = 50.0
 elevation_deg = 7.5
 margin_hours = 6
+# Optional receiver individual calibration and installation orientation:
+# antenna_serial_number = "12345"
+# antenna_azimuth_deg = 0.0
+# Frequency selection uses native/same-frequency, bounded interpolation, then
+# nearest original calibration within 25 MHz; see docs/antenna.md.

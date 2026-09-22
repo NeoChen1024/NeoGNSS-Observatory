@@ -9,7 +9,9 @@ calibrated TEC. RINEX OBS, PPP solutions and QA stamps are not required.
 ## Run
 
 Copy [the example configuration](../config/stec.example.toml), select the exact
-signal pair and local product root. Station identity and antenna reference-point
+signal pair and local product root. Receiver phase calibration is required from
+the Setup companion by default; see [antenna policy and explicit opt-out](antenna.md).
+Station identity and antenna reference-point
 ECEF position come from `setup.json` (marker XYZ plus marker-to-ARP NEU offset);
 explicit configuration overrides are available. Paths in the configuration are
 relative to that file.
@@ -93,7 +95,8 @@ gap: the precise orbit interpolation stencil must have consecutive 5-minute
 epochs, clocks must bracket the epoch, and GIM interpolation needs hourly maps.
 
 `product_issues` is a per-sample bitmask: 1 orbit, 2 clock, 4 health, 8 satellite
-bias and 16 GIM unavailable. Geometry-dependent GIM is not evaluated when geometry
+bias, 16 GIM unavailable, and 32 receiver direction outside the antenna
+calibration grid. Geometry-dependent GIM is not evaluated when geometry
 is unavailable. These flags record the checks actually reached, not an exhaustive
 inventory of every missing dependency. `summary.json` records per-cause counts
 and missing filenames. A run can finish as `partial_products` or
@@ -181,7 +184,8 @@ dependence or automatic receiver-DCB change points.
 - `samples/GPST-YYYY-MM-DD.parquet`: time, PRN, arc ID, phase/code GF, geometry,
   mapping and GIM slant reference/RMS. Day partitions are storage only.
 - `arcs.parquet`: closed and provisional offsets, counts, scatter, validity, start/end times
-  and boundary reasons. Arc IDs are unique within the output directory.
+  and boundary reasons (including 8 for a receiver calibration-record change).
+  Arc IDs are unique within the output directory.
 - `receiver_bias.parquet`: window validity, effective receiver DCB, coverage,
   residual diagnostics and model status.
 - `summary.json`: compact counts and scientific settings. Parquet metadata
@@ -283,7 +287,10 @@ mapping errors and local ionosphere departures can leak into receiver DCB.
 No absolute accuracy is inferred from GIM RMS or residual scatter alone.
 The constant bias assumption can fail with temperature, hardware or tracking
 changes. Per-arc code multipath and receiver code smoothing remain limitations.
-Phase wind-up and antenna phase-centre corrections are not yet applied here;
+Receiver phase PCO/PCV uses the shared [antenna model](antenna.md), required by
+default from the Setup companion calibration. Explicit `receiver_antenna = "none"`
+permits uncorrected processing. Phase wind-up and satellite antenna phase-centre
+corrections are not yet applied here;
 the PPP pipeline's model list must not be attributed to STEC.
 
 Future extensions include independent-reference comparisons, receiver-bias

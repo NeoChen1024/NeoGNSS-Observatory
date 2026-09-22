@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <mutex>
+#include <neognss_obs/antenna.hpp>
 #include <neognss_obs/ppp.hpp>
 #include <neognss_obs/rtklib_lock.hpp>
 #include <set>
@@ -70,11 +71,17 @@ struct PppFloat::State {
     std::unique_ptr<nav_t> nav = std::make_unique<nav_t>();
     std::unique_ptr<rtk_t> rtk = std::make_unique<rtk_t>();
     Json settings, metadata;
+    ReceiverAntenna receiver_antenna;
     bool initialized = false, ready = false;
     int64_t previous = -1, solved_time = -1, step_ns, gap_ns;
     uint64_t attempted = 0, solved = 0, skipped = 0;
+    uint64_t antenna_masked = 0;
     std::string code1, code2;
-    explicit State(const Json &s) : settings(s) {
+    explicit State(const Json &s)
+        : settings(s), receiver_antenna(s.at("receiver_antenna")) {
+        if (!receiver_antenna.enabled())
+            throw std::invalid_argument(
+                "PPP requires receiver antenna calibration");
         code1 = s.at("signal1");
         code2 = s.at("signal2");
         if (code1.size() != 2 || code2.size() != 2 || code1[0] != '1' ||
@@ -108,7 +115,8 @@ struct PppFloat::State {
         opt.posopt[1] = 1;
         opt.posopt[2] = 1;
         opt.posopt[3] = 1;
-        opt.prn[5] = 0; // Truly static position, not a position random walk.
+        opt.pcvr[0] = {}; // Receiver PCO/PCV is applied by our phase adapter.
+        opt.prn[5] = 0;   // Truly static position, not a position random walk.
         for (int i = 0; i < 3; ++i) {
             opt.ru[i] = s.at("position_ecef_m").at(i);
             opt.antdel[0][i] = s.at("arp_enu_m").at(i);
@@ -176,29 +184,6 @@ void PppFloat::products(const Json &p) {
     if (!readsap(p.at("satellite_antex").get<std::string>().c_str(), at,
                  s.nav.get()))
         throw std::runtime_error("Cannot read satellite ANTEX");
-    pcvs_t antennas{};
-    if (!readpcv(p.at("receiver_antex").get<std::string>().c_str(), &antennas))
-        throw std::runtime_error("Cannot read receiver ANTEX");
-    const std::string antenna = s.settings.at("antenna");
-    bool found = false;
-    for (int i = 0; i < antennas.n; ++i) {
-        auto &a = antennas.pcv[i];
-        auto compact = [](std::string v) {
-            std::erase(v, ' ');
-            return v;
-        };
-        if (!a.sat && compact(a.type) == compact(antenna) &&
-            (!a.ts.time || timediff(at, a.ts) >= 0) &&
-            (!a.te.time || timediff(at, a.te) <= 0)) {
-            s.rtk->opt.pcvr[0] = a;
-            found = true;
-            break;
-        }
-    }
-    free_pcvs(&antennas);
-    if (!found)
-        throw std::runtime_error(
-            "No exact receiver antenna/radome match in ANTEX: " + antenna);
     s.biases.clear();
     for (const auto &b : p.at("biases"))
         s.biases[{b.at("prn"), b.at("signal")}].push_back(
@@ -218,7 +203,11 @@ PppResult PppFloat::process(const ObservationBatch &batch) {
         if (e.gpst_ns <= s.previous)
             throw std::runtime_error(
                 "Non-increasing measurement time in PPP input");
+        bool calibration_changed =
+            s.previous >= 0 && s.receiver_antenna.record_index(s.previous) !=
+                                   s.receiver_antenna.record_index(e.gpst_ns);
         s.previous = e.gpst_ns;
+        s.receiver_antenna.record_index(e.gpst_ns);
         std::map<int, obsd_t> rows;
         for (const auto &m : e.signals) {
             int slot = m.signal == s.code1 ? 0 : (m.signal == s.code2 ? 1 : -1);
@@ -229,7 +218,7 @@ PppResult PppFloat::process(const ObservationBatch &batch) {
                 throw std::runtime_error("Unsupported GPS PRN");
             auto key = std::make_pair(m.prn, m.signal);
             auto old = s.tracks.find(key);
-            bool slip = e.clock_reset;
+            bool slip = e.clock_reset || calibration_changed;
             if (old != s.tracks.end())
                 slip |= e.gpst_ns - old->second.time > s.gap_ns ||
                         (m.lock_valid && old->second.lock_valid &&
@@ -300,6 +289,36 @@ PppResult PppFloat::process(const ObservationBatch &batch) {
             if (!peph2pos(o.time, sat, &nav, 1, rs, dts, &var) || dts[0] == 0)
                 throw std::runtime_error(
                     "Missing precise orbit/clock for GPS satellite");
+            // Apply receiver phase PCO/PCV once, outside RTKLIB's GPS-only
+            // ANTEX slot mapping. Keep its marker-to-ARP correction enabled.
+            // Use transmit-time geometry and the prior static position;
+            // no phase calibration is interpreted as a code-delay calibration.
+            if (!peph2pos(transmit, sat, &nav, 1, rs, dts, &var))
+                throw std::runtime_error(
+                    "Missing transmit-time orbit for antenna correction");
+            const double *rr = norm(r.x, 3) > 6e6 ? r.x : r.opt.ru;
+            double direction[3], pos[3], azel[2];
+            double tau = o.P[0] / CLIGHT, angle = OMGE * tau;
+            double x = rs[0], y = rs[1];
+            rs[0] = std::cos(angle) * x + std::sin(angle) * y;
+            rs[1] = -std::sin(angle) * x + std::cos(angle) * y;
+            for (int j = 0; j < 3; ++j)
+                direction[j] = rs[j] - rr[j];
+            double distance = norm(direction, 3);
+            for (double &v : direction)
+                v /= distance;
+            ecef2pos(rr, pos);
+            satazel(pos, direction, azel);
+            if (azel[1] < r.opt.elmin)
+                continue;
+            if (!s.receiver_antenna.covers(e.gpst_ns, azel[1] * R2D)) {
+                ++s.antenna_masked;
+                continue;
+            }
+            for (size_t k = 0; k < 2; ++k)
+                o.L[k] -= s.receiver_antenna.correction(
+                              k, e.gpst_ns, azel[0] * R2D, azel[1] * R2D) *
+                          sat2freq(sat, o.code[k], &nav) / CLIGHT;
             observations.push_back(o);
         }
         int n = observations.size();
@@ -368,24 +387,27 @@ PppResult PppFloat::process(const ObservationBatch &batch) {
 }
 Json PppFloat::summary() const {
     const auto &s = *state_;
-    return {
-        {"mode", "static_forward_float"},
-        {"engine", std::string("RTKLIB-") + VER_RTKLIB + " " + PATCH_LEVEL},
-        {"systems", "GPS"},
-        {"attempted_epochs", s.attempted},
-        {"solved_epochs", s.solved},
-        {"decimated_epochs", s.skipped},
-        {"settings", s.settings},
-        {"products", s.metadata},
-        {"uncertainty", "formal 1-sigma"},
-        {"residuals", "post-fit ionosphere-free L1/L2, meters"},
-        {"models",
-         {"precise SP3/CLK", "satellite code OSB",
-          "GPS L1/L2 antenna PCO and NOAZI PCV", "phase wind-up",
-          "solid Earth tides", "estimated ZTD, Niell mapping"}},
-        {"limitations",
-         {"GPS only", "float only", "no ocean loading",
-          "no azimuth-dependent PCV", "no troposphere gradients",
-          "no PPP receiver-bias calibration", "not equivalent to CSRS-PPP"}}};
+    return {{"mode", "static_forward_float"},
+            {"engine", std::string("RTKLIB-") + VER_RTKLIB + " " + PATCH_LEVEL},
+            {"systems", "GPS"},
+            {"attempted_epochs", s.attempted},
+            {"solved_epochs", s.solved},
+            {"decimated_epochs", s.skipped},
+            {"receiver_antenna_masked_observations", s.antenna_masked},
+            {"settings", s.settings},
+            {"products", s.metadata},
+            {"uncertainty", "formal 1-sigma"},
+            {"residuals", "post-fit ionosphere-free L1/L2, meters"},
+            {"models",
+             {"precise SP3/CLK", "satellite code OSB",
+              "receiver phase PCO/PCV with bounded frequency substitution",
+              "GPS satellite antenna PCO/PCV", "phase wind-up",
+              "solid Earth tides", "estimated ZTD, Niell mapping"}},
+            {"limitations",
+             {"GPS only", "float only", "no ocean loading",
+              "unknown antenna orientation uses NOAZI and north-aligned PCO",
+              "receiver correction uses prior-position geometry",
+              "no troposphere gradients", "no PPP receiver-bias calibration",
+              "not equivalent to CSRS-PPP"}}};
 }
 } // namespace neognss_obs

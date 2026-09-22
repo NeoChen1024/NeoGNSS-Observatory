@@ -14,6 +14,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
+from .antenna import model_metadata, receiver_model
 from .dataset_inputs import recordings
 from .gpst import EPOCH, calendar
 from .ppp_products import Products
@@ -140,6 +141,16 @@ def cli(protocol, input_dir, config, output, start, end):
             raise ValueError("Missing local product root")
         if output.resolve().is_relative_to(products_root) or products_root.is_relative_to(output.resolve()):
             raise ValueError("PPP output and product input must not contain each other")
+        native_settings["receiver_antenna"] = receiver_model(
+            catalogs,
+            dict(
+                type=settings["antenna_model"],
+                radome=settings["radome"],
+                serial_number=settings.get("antenna_serial_number"),
+                azimuth_deg=settings.get("antenna_azimuth_deg"),
+            ),
+            ["G01", "G02"],
+        )
         paths = recordings(input_dir.resolve(), protocol, True)
         output.mkdir()
         metadata = dict(
@@ -148,7 +159,8 @@ def cli(protocol, input_dir, config, output, start, end):
             mode="static_forward_float",
             systems="GPS",
             station=settings["station"],
-            settings=native_settings,
+            settings={k: v for k, v in native_settings.items() if k != "receiver_antenna"},
+            receiver_antenna=model_metadata(native_settings["receiver_antenna"]),
             units="SI; clock_ns; angles_deg",
             reference_system="IGS20",
             uncertainty="formal 1-sigma",
@@ -162,7 +174,9 @@ def cli(protocol, input_dir, config, output, start, end):
         product_windows = []
         try:
             with tempfile.TemporaryDirectory(prefix="ngo-ppp-products-") as scratch:
-                products = Products(products_root, scratch, native_settings["antenna"], catalogs, settings.get("margin_hours", 6))
+                products = Products(
+                    products_root, scratch, native_settings["receiver_antenna"], catalogs, settings.get("margin_hours", 6)
+                )
                 with tqdm(total=sum(p.stat().st_size for p in paths), desc="PPP Float", unit="B", unit_scale=True) as progress:
                     done = False
                     for path in paths:

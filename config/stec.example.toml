@@ -4,6 +4,8 @@
 # station = "BX4ACP"
 # position_ecef_m = [-2972418.7226, 5005726.1893, 2597096.1561]
 products_root = "../work/products"
+# Load Setup antenna.calibration_file; explicit "none" permits uncorrected research.
+receiver_antenna = "required"
 signal1 = "1C"
 signal2 = "2L"
 interval = 30.0

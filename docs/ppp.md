@@ -63,11 +63,12 @@ CLK values; there is no intentional broadcast-orbit or SP3-clock fallback.
 `antenna_catalogs` lists local ANTEX files in precedence order. The first must be
 the IGS20 satellite calibration catalog compatible with the precise products.
 Receiver lookup searches all listed catalogs, so NGS `ngs20.atx` can extend the
-available types. Select an exact antenna/radome record with G01/G02 calibration
-valid for the batch. Duplicate candidates use explicit configuration order and
-the number of matches is reported; no per-frequency splicing is performed.
-Individual serial-number selection and a general conflict-resolution UI are
-not implemented. Missing calibration is an error, not a zero-correction mode.
+available types. The shared [receiver antenna model](antenna.md) selects a
+whole valid calibration family, resolves native/same-frequency and bounded
+25 MHz approximations, and preserves PCO/PCV grids. Optional
+`antenna_serial_number` selects a matching individual calibration;
+`antenna_azimuth_deg` specifies installation orientation. Unknown orientation
+uses NOAZI and north-aligned PCO. Missing calibration is an error.
 
 NGS20 is the NGS composite calibration catalog in the IGS20 system, not a
 different reference frame. It includes IGS entries and additional NGS entries.
@@ -120,15 +121,17 @@ Ambiguity timelines and automatic CSRS comparison are not yet implemented.
 
 ## Scientific limits
 
-The initial model uses GPS ionosphere-free L1/L2, precise SP3/CLK, satellite code
-OSB, GPS PCO and elevation-only (NOAZI) PCV, phase wind-up, solid Earth tides and
-an estimated zenith tropospheric delay with Niell mapping. Ocean loading,
-troposphere gradients and azimuth-dependent PCV are not applied. ERP is loaded;
+The model uses GPS ionosphere-free L1/L2, precise SP3/CLK, satellite code
+OSB, receiver and satellite PCO/PCV, phase wind-up, solid Earth tides and
+an estimated zenith tropospheric delay with Niell mapping. Ocean loading and
+troposphere gradients are not applied. Receiver azimuth-dependent PCV is used
+when installation orientation is supplied. ERP is loaded;
 the configured solid-Earth tide mode does not imply all loading/pole corrections.
 
-The current RTKLIB antenna structure does not preserve a full independent
-receiver calibration for every constellation/frequency. Multi-GNSS support
-requires a deliberate adapter/model extension, not just enabling more systems.
+Receiver phase corrections use the shared model outside RTKLIB's receiver
+frequency slots, with prior-position geometry. Satellite corrections still use
+RTKLIB. See [antenna correction conventions and limits](antenna.md).
+Multi-GNSS processing requires further observation/product adapter work.
 Successful GPS validation is not evidence of validated Galileo/GLONASS/BeiDou
 PPP, arbitrary SBF measurement variants or a general receiver calibration model.
 
