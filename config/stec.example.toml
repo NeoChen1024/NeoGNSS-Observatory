@@ -6,8 +6,12 @@
 products_root = "../work/products"
 # Load Setup antenna.calibration_file; explicit "none" permits uncorrected research.
 receiver_antenna = "required"
-signal1 = "1C"
-signal2 = "2L"
+# Enable nearest-constant extrapolation when native L5 calibration is absent.
+allow_extrapolated_antenna = false
+antenna_extrapolation_max_mhz = 60.0
+# L1-anchored pair families and exact-code priorities are automatic.
+# Use one local satellite code-bias family; OSB BIA or DSB BSX, GPST.
+bias_product_family = "COD0MGXFIN"
 interval = 30.0
 gap_timeout = 50.0
 elevation_deg = 10.0

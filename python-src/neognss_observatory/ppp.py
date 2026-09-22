@@ -14,7 +14,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
-from .antenna import model_metadata, receiver_model
+from .antenna import antenna_options, model_metadata, receiver_model
 from .dataset_inputs import recordings
 from .gpst import EPOCH, calendar
 from .ppp_products import Products
@@ -150,6 +150,7 @@ def cli(protocol, input_dir, config, output, start, end):
                 azimuth_deg=settings.get("antenna_azimuth_deg"),
             ),
             ["G01", "G02"],
+            **antenna_options(settings),
         )
         paths = recordings(input_dir.resolve(), protocol, True)
         output.mkdir()

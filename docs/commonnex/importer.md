@@ -80,9 +80,10 @@ Not yet implemented: undefined future RawBits representations, DecodedNav,
 cadence events,
 Meas3 decoding, RINEX/RTCM3 input, and automatic overlap reconciliation.
 
-STEC's current Events validator still rejects receiver-restart events until an
-explicit arc-boundary mapping is implemented; do not silently remove these
-events to bypass that scientific limitation. SBAS grid skips null-time RawBits.
+STEC maps timed receiver-restart Events to independent phase arcs and receiver
+bias segments; see [STEC restart handling](../stec.md#receiver-restart-events).
+Untimed restart evidence and unsupported stream Events remain errors; do not
+remove these events to bypass validation. SBAS grid skips null-time RawBits.
 Observation values are not corrected using NAV-CLOCK or
 SBF navigation solutions. The CLI reports its restricted catalog coverage.
 

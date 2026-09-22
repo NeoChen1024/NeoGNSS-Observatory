@@ -2,8 +2,8 @@
 
 NeoGNSS Observatory is a pre-Alpha offline GNSS research project. Current
 tools extract receiver telemetry and SBAS messages, calculate SBAS grids and
-GPS STEC estimates, and export scientific tables and plots.
-GPS Float PPP is available as an initial static forward pipeline. GPS STEC now
+Multi-GNSS STEC estimates, and export scientific tables and plots.
+GPS Float PPP is available as an initial static forward pipeline. Multi-GNSS STEC now
 supports phase leveling and GIM-constrained receiver DCB estimation; it is not
 independently calibrated absolute TEC. Automated TID detection is not implemented.
 
@@ -35,7 +35,7 @@ extraction state. See [dataset QA](dataset-qa.md) and [dataset notes](dataset-no
 | SBF | `ngo-sbf-rinex` with installed RxTools | Native-rate RINEX and applicable auxiliary outputs |
 | CDDIS listings/products | `ngo-cddis-download` | Explicit product plans and integrity-checked downloads |
 | UBX/SBF GPS L1/L2 and local precise products | `ngo-ppp` → `ngo-ppp-plot` | Static forward Float solutions, residual Parquet and whole-solution reports |
-| CommonNEX GPS L1/L2, precise products and CODE IONEX | `ngo-stec` → `ngo-stec-plot` | Incremental daily GF samples, cross-day arc/DCB Parquet and hourly absolute-STEC trajectory PNGs |
+| CommonNEX G/E/C/J L1-anchored pairs, precise products and CODE IONEX | `ngo-stec` → `ngo-stec-plot` | Incremental pair GF/arc/DCB and fused STEC Parquet; hourly multi-GNSS trajectory PNGs |
 
 RINEX conversion is not lossless preservation of raw protocols and does not
 automatically prove cross-file continuity. Follow the [conversion guide](rinex-conversion.md).

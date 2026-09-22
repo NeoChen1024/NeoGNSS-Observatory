@@ -31,6 +31,28 @@ FREQUENCIES_HZ = {
     "S05": 1176450000,
 }
 MAX_FREQUENCY_DISTANCE_HZ = 25_000_000
+ANTENNA_DEFAULTS = dict(allow_extrapolated_antenna=False, antenna_extrapolation_max_mhz=60.0)
+
+
+class CalibrationUnavailable(ValueError):
+    """No permitted original-frequency calibration for a requested target."""
+
+
+def antenna_options(settings):
+    """Validate the shared PPP/STEC opt-in policy, including inactive limits."""
+    options = ANTENNA_DEFAULTS | {k: settings[k] for k in ANTENNA_DEFAULTS if k in settings}
+    if not isinstance(options["allow_extrapolated_antenna"], bool):
+        raise ValueError("allow_extrapolated_antenna must be a boolean")
+    limit = options["antenna_extrapolation_max_mhz"]
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, (int, float))
+        or not math.isfinite(limit)
+        or not math.isfinite(limit * 1e6)
+        or limit < MAX_FREQUENCY_DISTANCE_HZ / 1e6
+    ):
+        raise ValueError("antenna_extrapolation_max_mhz must be finite and at least 25 MHz")
+    return options
 
 
 def numbers(data):
@@ -116,8 +138,15 @@ def parse_patterns(block):
     return {k: v for k, v in patterns.items() if k in FREQUENCIES_HZ}
 
 
-def resolve_frequency(patterns, target):
+def resolve_frequency(patterns, target, *, allow_extrapolated_antenna=False, antenna_extrapolation_max_mhz=60.0):
     """Resolve using original records only; distances are absolute Hz."""
+    options = antenna_options(
+        dict(
+            allow_extrapolated_antenna=allow_extrapolated_antenna,
+            antenna_extrapolation_max_mhz=antenna_extrapolation_max_mhz,
+        )
+    )
+    limit_hz = options["antenna_extrapolation_max_mhz"] * 1e6 if allow_extrapolated_antenna else MAX_FREQUENCY_DISTANCE_HZ
     if target not in FREQUENCIES_HZ:
         raise ValueError(f"Unsupported receiver antenna frequency: {target}")
     frequency = FREQUENCIES_HZ[target]
@@ -147,15 +176,21 @@ def resolve_frequency(patterns, target):
                 lo, hi = lower[-1], upper[0]
                 w = (frequency - lo) / (hi - lo)
                 sources, weights, method = [source(lo), source(hi)], [1 - w, w], "interpolated"
-            elif nearby:
-                distance = min(abs(hz - frequency) for hz in nearby)
-                closest = [hz for hz in nearby if abs(hz - frequency) == distance]
+            else:
+                # Opt-in only extends nearest-constant substitution. It never
+                # widens the interpolation interval or derives a frequency slope.
+                candidates = nearby or [hz for hz in groups if abs(hz - frequency) <= limit_hz]
+                if not candidates:
+                    raise CalibrationUnavailable(
+                        f"No receiver calibration within {limit_hz / 1e6:g} MHz for {target} ({frequency} Hz)"
+                    )
+                distance = min(abs(hz - frequency) for hz in candidates)
+                closest = [hz for hz in candidates if abs(hz - frequency) == distance]
                 if len(closest) != 1:
                     raise ValueError(f"Equidistant ANTEX sources for {target}")
-                sources, weights, method = [source(closest[0])], [1.0], "near-frequency substitution"
-            else:
-                raise ValueError(f"No receiver calibration within 25 MHz for {target} ({frequency} Hz)")
-    return dict(
+                sources, weights = [source(closest[0])], [1.0]
+                method = "near-frequency substitution" if nearby else "extrapolated"
+    result = dict(
         target=target,
         frequency_hz=frequency,
         method=method,
@@ -170,10 +205,16 @@ def resolve_frequency(patterns, target):
             for code, weight in zip(sources, weights)
         ],
     )
+    if method == "extrapolated":
+        result["extrapolation"] = "nearest-constant"
+    return result
 
 
-def receiver_model(catalogs, antenna, targets):
+def receiver_model(catalogs, antenna, targets, **policy):
     """Select one catalog/serial family and resolve every validity record."""
+    if policy.keys() - ANTENNA_DEFAULTS.keys():
+        raise ValueError(f"Unknown antenna policy: {sorted(policy.keys() - ANTENNA_DEFAULTS.keys())}")
+    options = antenna_options(policy)
     data, path, _, kind = select_antenna(catalogs, antenna)
     azimuth = antenna.get("azimuth_deg")
     if azimuth is not None and (not math.isfinite(azimuth) or not 0 <= azimuth < 360):
@@ -186,6 +227,9 @@ def receiver_model(catalogs, antenna, targets):
         max_frequency_distance_hz=MAX_FREQUENCY_DISTANCE_HZ,
         records=[],
     )
+    # Disabled defaults preserve existing numerical models/continuation contracts.
+    if options["allow_extrapolated_antenna"]:
+        result.update(options)
     block = None
     for line in data.splitlines():
         if label(line) == b"START OF ANTENNA":
@@ -205,7 +249,7 @@ def receiver_model(catalogs, antenna, targets):
                         if end.is_finite()
                         else 2**63 - 1
                     ),
-                    frequencies=[resolve_frequency(patterns, target) for target in targets],
+                    frequencies=[resolve_frequency(patterns, target, **options) for target in targets],
                 )
             )
             block = None

@@ -21,7 +21,25 @@ Each requested ANTEX frequency identifier is resolved in this order:
 3. Linear interpolation between the nearest lower and upper original
    frequencies, **both within 25 MHz of the target**.
 4. Direct substitution of the closest original frequency within 25 MHz.
-5. Error when none of these applies.
+5. If explicitly enabled, nearest-original constant extrapolation within the
+   configured frequency-distance limit (60 MHz by default).
+6. Error when none of these applies.
+
+Both PPP and STEC accept these top-level TOML settings:
+
+```toml
+allow_extrapolated_antenna = false
+antenna_extrapolation_max_mhz = 60.0
+```
+
+Set the boolean to `true` to enable the last fallback. The limit must be finite
+and at least 25 MHz; its boundary is inclusive. The fallback copies the nearest
+original PCO/PCV without wavelength scaling or a slope derived from L1/L2.
+It does not widen the 25 MHz interpolation policy or relax angular/validity
+coverage. Equal-distance conflicting choices are rejected. Extrapolation is a
+research approximation, not measured calibration; leveling/DCB scatter does not
+include its full systematic error. Disabled defaults retain existing models.
+Enabling/changing the active policy requires rebuilding existing STEC outputs.
 
 The 25 MHz limit is inclusive and is an engineering approximation policy, not
 an accuracy bound. No frequency slope is extrapolated. Resolved models never
@@ -36,8 +54,8 @@ For GPS G01/G02-only calibration:
 | --- | --- |
 | Galileo E01 / BeiDou C01, 1575.42 MHz | Same-frequency G01 |
 | Galileo E07 / BeiDou C07, 1207.14 MHz | G02 substitution, 20.46 MHz separation |
-| GPS G05 / Galileo E05 / BeiDou C05, 1176.45 MHz | Unavailable; G02 is 51.15 MHz away |
-| Galileo E06, 1278.75 MHz | Unavailable; cross-band G01/G02 interpolation is disallowed |
+| GPS G05 / Galileo E05 / BeiDou C05 / QZSS J05, 1176.45 MHz | Unavailable by default; opt-in 60 MHz allows constant G02 extrapolation over 51.15 MHz |
+| Galileo E06, 1278.75 MHz | Unavailable by default; opt-in 60 MHz allows constant G02 substitution over 51.15 MHz, not cross-band interpolation |
 
 C07 identifies the carrier used by BeiDou B2I/B2b, not a code-bias identity.
 Subsequent STEC processing must still select exact observation codes and verify
@@ -64,11 +82,15 @@ Frequency interpolation is a weighted sum of complete directional corrections;
 each source retains its own angular grid. ARP displacement remains separate.
 Do not interpret ANTEX phase calibration as a measured code/group-delay bias.
 
-Results record `native`, `same-frequency`, `interpolated`, or
-`near-frequency substitution`, original source identifiers/frequencies, signed
+Results record `native`, `same-frequency`, `interpolated`,
+`near-frequency substitution`, or `extrapolated` with
+`extrapolation = "nearest-constant"`, original source identifiers/frequencies, signed
 frequency differences and weights. They do not assign invented calibration
 uncertainties. Configuration/continuation state retains the actual numerical
 model; output metadata contains compact selection information.
+An enabled extrapolation policy and its limit are retained in both. It changes
+antenna model availability only: PPP still selects GPS L1/L2; STEC automatically considers its documented
+L1-anchored families. Extrapolation does not supply missing code biases.
 
 ## Current consumers
 

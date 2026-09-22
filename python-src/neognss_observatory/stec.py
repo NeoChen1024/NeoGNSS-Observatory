@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""GPS phase leveling and incremental GIM-constrained DCB from CommonNEX."""
+"""Automatic multi-GNSS pair leveling, receiver DCB and equal-mean fusion."""
 
 import json
 import sys
 import tempfile
 import tomllib
 import uuid
+from collections import defaultdict
 from pathlib import Path
 
 import click
@@ -15,11 +16,13 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
-from .antenna import model_metadata, receiver_model
+from .antenna import ANTENNA_DEFAULTS, antenna_options
+from .stec_fusion import write_fused
 from .stec_incremental import (
     DAY_NS,
     EPOCH,
     DailySamples,
+    native_table,
     observation_batches,
     publication,
     replace_json,
@@ -28,12 +31,10 @@ from .stec_incremental import (
     signature,
     validate_events,
 )
+from .stec_pairs import antenna_metadata, build_pairs
 from .stec_products import StecProducts
 
-K = 40.3e16 * (1227.60e6**-2 - 1575.42e6**-2)
 NATIVE_DEFAULTS = dict(
-    signal1="1C",
-    signal2="2L",
     interval=30.0,
     gap_timeout=50.0,
     elevation_deg=10.0,
@@ -95,7 +96,7 @@ def leveled(table, ids, offsets):
     indices = np.searchsorted(ids, wanted)
     if np.any(indices >= len(ids)) or np.any(ids[indices] != wanted):
         raise ValueError("Missing finalized STEC arc")
-    return (table["phase_gf_m"].to_numpy() + offsets[indices]) / K
+    return (table["phase_gf_m"].to_numpy() + offsets[indices]) / table["meters_per_tecu"].to_numpy()
 
 
 def sample_batches(root, start_ns=None, end_ns=None):
@@ -118,34 +119,52 @@ def sample_batches(root, start_ns=None, end_ns=None):
 
 
 def calibrate(root, settings, metadata, from_ns=None, origin_ns=None, previous=None):
-    """One bounded in-memory window; native robust fit, not per-row Python."""
+    """Fit independent exact-code receiver biases in one bounded time window."""
     ids, offsets = arc_levels(root)
     window_ns = round(settings["window_hours"] * 3600e9)
     if window_ns < 1:
-        raise ValueError("Invalid receiver-bias window")
+        raise ValueError("Invalid DCB window")
     rows = [r for r in (previous or []) if from_ns is not None and r["end_gpst_ns"] <= from_ns]
-    pieces, origin, current, last_time = [], origin_ns, None, None
-    arc_table = pq.read_table(root / "arcs.parquet", columns=["gpst_ns", "end_ns", "provisional"])
-    open_start = arc_table["gpst_ns"].to_numpy()[arc_table["provisional"].to_numpy().astype(bool)]
-    open_end = arc_table["end_ns"].to_numpy()[arc_table["provisional"].to_numpy().astype(bool)]
+    pieces, origin, current, last_time = defaultdict(list), origin_ns, None, None
+    arcs = pq.read_table(root / "arcs.parquet")
+    boundaries = np.asarray(metadata["receiver_restart_boundaries_ns"], dtype=np.int64)
 
-    def flush(window_complete=False):
-        if not pieces:
+    def flush(complete=False):
+        if current is None:
             return
-        data = np.concatenate(pieces)
-        fit = _native.fit_receiver_dcb(data, settings)
-        fit.update(
-            window_id=current,
-            start_gpst_ns=origin + current * window_ns,
-            end_gpst_ns=min(origin + (current + 1) * window_ns, last_time + 1),
-            method="gim_constrained",
-            signal_pair=f"C{metadata['signal1']}-C{metadata['signal2']}",
-            provisional=bool(
-                (not window_complete and last_time + 1 < origin + (current + 1) * window_ns)
-                or np.any((open_start < origin + (current + 1) * window_ns) & (open_end >= origin + current * window_ns))
-            ),
-        )
-        rows.append(fit)
+        window, receiver_segment = current
+        segment_index = np.searchsorted(boundaries, receiver_segment, side="right")
+        segment_end = int(boundaries[segment_index]) if segment_index < len(boundaries) else 2**63 - 1
+        window_start = max(origin + window * window_ns, receiver_segment)
+        window_end = min(origin + (window + 1) * window_ns, segment_end)
+        for pair_id, parts in pieces.items():
+            pair = metadata["pairs"][pair_id]
+            data = np.concatenate(parts)
+            fit = _native.fit_receiver_dcb(data, settings | dict(meters_per_tecu=pair["meters_per_tecu"]))
+            selected = arcs.filter(
+                pa.compute.and_(
+                    pa.compute.equal(arcs["pair_id"], pair_id),
+                    pa.compute.equal(arcs["receiver_segment_start_ns"], receiver_segment),
+                )
+            )
+            open_mask = selected["provisional"].to_numpy().astype(bool)
+            open_start = selected["gpst_ns"].to_numpy()[open_mask]
+            open_end = selected["end_ns"].to_numpy()[open_mask]
+            fit.update(
+                pair_id=pair_id,
+                satellite_system=pair["system"],
+                window_id=window,
+                receiver_segment_start_ns=receiver_segment,
+                start_gpst_ns=window_start,
+                end_gpst_ns=min(window_end, last_time + 1),
+                method="gim_constrained",
+                signal_pair=f"C{pair['signal1']}/C{pair['signal2']}",
+                bias_datum=pair["bias_datum"],
+                provisional=bool(
+                    (not complete and last_time + 1 < window_end) or np.any((open_start < window_end) & (open_end >= window_start))
+                ),
+            )
+            rows.append(fit)
         pieces.clear()
 
     for batch in tqdm(sample_batches(root, from_ns), desc="Receiver DCB", unit="batch"):
@@ -164,68 +183,81 @@ def calibrate(root, settings, metadata, from_ns=None, origin_ns=None, previous=N
             if name != "residual_tecu":
                 data[name] = table[name].to_numpy()
         data["residual_tecu"] = leveled(table, ids, offsets) - table["gim_stec_tecu"].to_numpy()
+        data["residual_tecu"][table["product_issues"].to_numpy() != 0] = np.nan
         windows = (times - origin) // window_ns
-        for window in np.unique(windows):
-            if int(window) != current:
-                flush(window_complete=True)
-                current = int(window)
-            selected = data[windows == window]
-            pieces.append(selected)
-            last_time = int(selected[-1]["gpst_ns"])
+        segments = table["receiver_segment_start_ns"].to_numpy()
+        pair_ids = table["pair_id"].to_numpy()
+        edges = np.r_[0, np.flatnonzero((windows[1:] != windows[:-1]) | (segments[1:] != segments[:-1])) + 1, len(times)]
+        for a, b in zip(edges[:-1], edges[1:]):
+            key = (int(windows[a]), int(segments[a]))
+            if key != current:
+                flush(True)
+                current = key
+            for pair_id in np.unique(pair_ids[a:b]):
+                pieces[int(pair_id)].append(data[a:b][pair_ids[a:b] == pair_id])
+            last_time = int(times[b - 1])
     flush()
     if not rows:
         raise ValueError("No receiver DCB windows")
-    # Explicit nullable floats, including when every window is insufficient.
+    rows.sort(key=lambda r: (r["start_gpst_ns"], r["pair_id"]))
     floats = {"receiver_bias_tecu", "receiver_dcb_ns", "candidate_bias_tecu", "residual_scatter_tecu"}
-    table = pa.table({key: pa.array([r[key] for r in rows], type=pa.float64() if key in floats else None) for key in rows[0]})
+    table = pa.table({k: pa.array([r[k] for r in rows], type=pa.float64() if k in floats else None) for k in rows[0]})
     table = table.replace_schema_metadata({b"ngo": json.dumps(metadata | dict(dcb=settings)).encode()})
     replace_table(root / "receiver_bias.parquet", table)
     return rows
 
 
 def read_stec(root, start_ns=None, end_ns=None):
-    """Yield finalized batches, without reopening raw observations or products.
-
-    Invalid leveling or uncalibrated windows produce Arrow nulls, never a zero
-    bias fallback. Negative estimates are retained, not silently clipped.
-    """
+    """Read pair results; invalid calibration never becomes a zero-bias result."""
     root = Path(root)
     ids, offsets = arc_levels(root)
-    biases = pq.read_table(root / "receiver_bias.parquet")
-    starts, ends, values = (biases[k].to_numpy() for k in ("start_gpst_ns", "end_gpst_ns", "receiver_bias_tecu"))
-    window_ids = biases["window_id"].to_numpy()
-    bias_provisional = biases["provisional"].to_numpy()
-    arc_table = pq.read_table(root / "arcs.parquet", columns=["arc_id", "provisional"])
-    order = np.argsort(arc_table["arc_id"].to_numpy())
-    arc_provisional = arc_table["provisional"].to_numpy()[order].astype(bool)
+    fits = pq.read_table(root / "receiver_bias.parquet")
+    fit_groups = {}
+    for segment in np.unique(fits["receiver_segment_start_ns"].to_numpy()):
+        subset = fits.filter(pa.compute.equal(fits["receiver_segment_start_ns"], int(segment)))
+        for pair in np.unique(subset["pair_id"].to_numpy()):
+            t = subset.filter(pa.compute.equal(subset["pair_id"], int(pair))).sort_by("start_gpst_ns")
+            fit_groups[(int(pair), int(segment))] = {
+                k: t[k].to_numpy() for k in ("start_gpst_ns", "end_gpst_ns", "receiver_bias_tecu", "window_id", "provisional")
+            }
+    arcs = pq.read_table(root / "arcs.parquet").sort_by("arc_id")
+    provisional = arcs["provisional"].to_numpy().astype(bool)
     for batch in sample_batches(root, start_ns, end_ns):
-        table = pa.Table.from_batches([batch])
-        times = table["gpst_ns"].to_numpy()
-        keep = np.ones(len(table), dtype=bool)
+        t = pa.Table.from_batches([batch])
+        times = t["gpst_ns"].to_numpy()
+        keep = np.ones(len(t), bool)
         if start_ns is not None:
             keep &= times >= start_ns
         if end_ns is not None:
             keep &= times < end_ns
-        table = table.filter(keep)
+        t = t.filter(keep)
         times = times[keep]
-        if not len(table):
+        if not len(t):
             continue
-        indices = np.searchsorted(starts, times, side="right") - 1
-        covered = (indices >= 0) & (times < ends[np.maximum(0, indices)])
-        bias = np.where(covered, values[np.maximum(0, indices)], np.nan)
-        table = table.append_column("receiver_window_id", pa.array(window_ids[np.maximum(0, indices)], mask=~covered))
-        level = leveled(table, ids, offsets)
-        arc_indices = np.searchsorted(ids, table["arc_id"].to_numpy())
-        table = table.append_column(
-            "provisional", pa.array(arc_provisional[arc_indices] | bias_provisional[np.maximum(0, indices)])
-        )
-        for name, data in (
-            ("stec_leveled_tecu", level),
-            ("receiver_bias_tecu", bias),
-            ("stec_absolute_tecu", level - bias),
-        ):
-            table = table.append_column(name, pa.array(data, mask=~np.isfinite(data)))
-        yield table
+        pair_ids = t["pair_id"].to_numpy()
+        bias = np.full(len(t), np.nan)
+        windows = np.full(len(t), -1, dtype=np.int64)
+        prov = provisional[np.searchsorted(ids, t["arc_id"].to_numpy())].copy()
+        segments = t["receiver_segment_start_ns"].to_numpy()
+        for segment in np.unique(segments):
+            for pair in np.unique(pair_ids[segments == segment]):
+                f = fit_groups.get((int(pair), int(segment)))
+                if f is None:
+                    continue
+                where = np.flatnonzero((pair_ids == pair) & (segments == segment))
+                idx = np.searchsorted(f["start_gpst_ns"], times[where], side="right") - 1
+                covered = (idx >= 0) & (times[where] < f["end_gpst_ns"][np.maximum(0, idx)])
+                where, idx = where[covered], idx[covered]
+                bias[where] = f["receiver_bias_tecu"][idx]
+                windows[where] = f["window_id"][idx]
+                prov[where] |= f["provisional"][idx]
+        level = leveled(t, ids, offsets)
+        absolute = level - bias
+        absolute[t["product_issues"].to_numpy() != 0] = np.nan
+        t = t.append_column("receiver_window_id", pa.array(windows, mask=windows < 0)).append_column("provisional", pa.array(prov))
+        for name, values in (("stec_leveled_tecu", level), ("receiver_bias_tecu", bias), ("stec_absolute_tecu", absolute)):
+            t = t.append_column(name, pa.array(values, mask=~np.isfinite(values)))
+        yield t
 
 
 def antenna_position(setup):
@@ -260,7 +292,7 @@ def antenna_position(setup):
 @click.option("--end", help="Exclusive GPST date YYYY-MM-DD; may extend on later invocations.")
 @click.option("--rebuild", is_flag=True, help="Recompute the complete selection; preserve previous output as backup.")
 def cli(input_dir, config, output, start, end, rebuild):
-    """Incrementally process CommonNEX GPS observations; no raw protocol input."""
+    """Incrementally process automatic multi-GNSS L1-anchored STEC pairs."""
     from datetime import date
 
     try:
@@ -276,7 +308,12 @@ def cli(input_dir, config, output, start, end, rebuild):
         required = {"products_root"}
         if required - settings.keys():
             raise ValueError(f"Missing STEC settings: {sorted(required-settings.keys())}")
-        allowed = required | NATIVE_DEFAULTS.keys() | {"station", "position_ecef_m", "dcb", "margin_hours", "receiver_antenna"}
+        allowed = (
+            required
+            | NATIVE_DEFAULTS.keys()
+            | ANTENNA_DEFAULTS.keys()
+            | {"station", "position_ecef_m", "dcb", "margin_hours", "receiver_antenna", "bias_product_family"}
+        )
         if settings.keys() - allowed:
             raise ValueError(f"Unknown STEC settings: {sorted(settings.keys()-allowed)}")
         native = NATIVE_DEFAULTS | {k: v for k, v in settings.items() if k in NATIVE_DEFAULTS}
@@ -284,16 +321,16 @@ def cli(input_dir, config, output, start, end, rebuild):
         if native["position_ecef_m"] is None:
             native["position_ecef_m"] = antenna_position(setup)
         antenna_mode = settings.get("receiver_antenna", "required")
+        antenna_policy = antenna_options(settings)
         if antenna_mode not in ("required", "none"):
             raise ValueError("receiver_antenna must be 'required' or explicit 'none'")
-        native["receiver_antenna"] = None
-        if antenna_mode == "required":
-            calibration = setup["antenna"].get("calibration_file")
-            if not calibration:
-                raise ValueError(
-                    "STEC requires Setup antenna.calibration_file; use receiver_antenna='none' explicitly to omit correction"
-                )
-            native["receiver_antenna"] = receiver_model([input_dir / calibration], setup["antenna"], ["G01", "G02"])
+        pairs, antennas, missing_antennas = build_pairs(input_dir, setup, antenna_mode, antenna_policy)
+        bias_family = settings.get("bias_product_family", "COD0MGXFIN")
+        for pair in pairs:
+            pair["bias_datum"] = (
+                ("CODE_GIM_transfer:" if pair["system"] in ("G", "E") else "product_effective:") + bias_family + ":COD0OPSFIN"
+            )
+        native.update(pairs=pairs, antennas=antennas, antenna_required=antenna_mode == "required")
         dcb = DCB_DEFAULTS | settings.get("dcb", {})
         if dcb.keys() - DCB_DEFAULTS.keys() or not all(np.isfinite(v) and v > 0 for v in dcb.values()):
             raise ValueError("Invalid receiver DCB settings")
@@ -314,6 +351,7 @@ def cli(input_dir, config, output, start, end, rebuild):
             native=native,
             dcb=dcb,
             products_root=str(products_root),
+            bias_product_family=bias_family,
             margin_hours=settings.get("margin_hours", 6),
             station=settings.get("station", setup["setup_id"]),
             start=start,
@@ -324,7 +362,7 @@ def cli(input_dir, config, output, start, end, rebuild):
             if not state_path.is_file():
                 raise ValueError("Existing output has no CommonNEX STEC state; use --rebuild")
             old = json.loads(state_path.read_text())
-            if old.get("version") != 1 or not old.get("lineage") or old["contract"] != contract:
+            if old.get("version") != 3 or not old.get("lineage") or old["contract"] != contract:
                 raise ValueError("STEC configuration/Setup changed; use --rebuild with the complete selection")
         selected = {str(p.relative_to(input_dir)): signature(p, input_dir) for _, obs, ev in days for p in [*obs, *ev]}
         if old:
@@ -343,20 +381,26 @@ def cli(input_dir, config, output, start, end, rebuild):
             )
             for label, obs, ev in days
         ]
-        for _, _, events in todo:
-            validate_events(events, setup["setup_id"])
+        restart_boundaries = validate_events([p for _, _, events in todo for p in events], setup["setup_id"])
         processor = _native.StecProcessor(native)
         if old:
             processor.restore(old["processor"])
+        processor.restarts(restart_boundaries)
+        # The sparse boundary timeline is functional calibration context, including
+        # future events retained for an incremental continuation.
+        restart_boundaries = sorted(set(restart_boundaries) | set(old["processor"]["restart_boundaries"] if old else []))
         metadata = dict(
-            schema_version=2,
+            schema_version=4,
+            receiver_restart_boundaries_ns=restart_boundaries,
+            receiver_restart_policy="close all pair arcs before first epoch at/after evidence GPST; independent receiver DCB segments",
             time_scale="GPST",
             time_epoch="1980-01-06",
             station=settings.get("station", setup["setup_id"]),
-            constellation="GPS",
-            signal1=native["signal1"],
-            signal2=native["signal2"],
-            meters_per_tecu=K,
+            constellations="G E C J",
+            pairs=pairs,
+            fusion="equal arithmetic mean of eligible L1-anchored families; B1I kept separate from B1C",
+            receiver_antenna=antenna_metadata(antennas),
+            missing_antenna_families=missing_antennas,
             arc_reasons=processor.summary()["arc_reasons"],
             product_issues={
                 "1": "orbit unavailable",
@@ -364,21 +408,20 @@ def cli(input_dir, config, output, start, end, rebuild):
                 "4": "health unavailable",
                 "8": "satellite bias unavailable",
                 "16": "GIM unavailable",
-                "32": "receiver antenna direction outside calibration grid",
+                "32": "receiver antenna calibration/direction unavailable",
             },
             missing_product_policy="preserve phase continuity; unavailable dependent fields; no broadcast or zero-bias fallback",
             missing_values="NaN for unavailable numerical samples/arc fields; null for unestimated receiver bias",
-            settings={k: v for k, v in native.items() if k != "receiver_antenna"},
-            receiver_antenna=model_metadata(native["receiver_antenna"]) if native["receiver_antenna"] else "none",
+            settings={k: v for k, v in native.items() if k not in ("pairs", "antennas")},
             dcb=dcb,
             units="gpst_ns/end_ns: nanoseconds; *_m: meters; *_deg: degrees; *_tecu: TECU; mapping: dimensionless",
             absolute_reference="GIM-constrained estimate, not independently calibrated TEC",
             receiver_bias_sign="P2-P1 additive receiver delay; absolute=leveled-receiver_bias",
-            satellite_bias="IONEX C1W-C2W datum + MGEX within-frequency exact-signal OSB differences",
+            satellite_bias="G/E: frequency-scaled CODE GIM datum transfer; C/J: selected-product effective bias",
             gim="COD0OPSFIN; external UT normalized to GPST; sun-fixed interpolation",
             ipp="geocentric intersection at 6821 km; CODE MSLM alpha=0.9782",
             limitations=[
-                "GPS L1/L2 only",
+                "no GLONASS/NavIC; no L2/L5 or cross-family B1I/B1C pair",
                 "no phase wind-up or satellite antenna phase-centre correction",
                 (
                     "receiver antenna correction disabled"
@@ -399,16 +442,18 @@ def cli(input_dir, config, output, start, end, rebuild):
             # Only windows touched by new samples or previously open arcs need refitting.
             dirty = min((t["start"] for t in old["processor"]["tracks"]), default=None) if old else None
             samples = BufferedTables(DailySamples(stage, metadata))
-            reader = _native.StecCnexReader(setup["setup_id"], native["signal1"], native["signal2"])
+            reader = _native.StecCnexReader(setup["setup_id"], pairs)
             new_sample_start = None
-            source_bytes = sum(p.stat().st_size for _, obs, _ in todo for p in obs)
+            source_rows = 0
+            for _, paths, _ in todo:
+                for path in paths:
+                    with pq.ParquetFile(path) as source:
+                        source_rows += source.metadata.num_rows
             missing = set(old.get("missing_products", [])) if old else set()
             try:
                 with tempfile.TemporaryDirectory(prefix="ngo-stec-products-") as scratch:
-                    products = StecProducts(
-                        products_root, scratch, native["signal1"], native["signal2"], settings.get("margin_hours", 6)
-                    )
-                    with tqdm(total=source_bytes, desc="CommonNEX STEC", unit="B", unit_scale=True, mininterval=1) as progress:
+                    products = StecProducts(products_root, scratch, pairs, settings.get("margin_hours", 6), bias_family)
+                    with tqdm(total=source_rows, desc="STEC observations", unit="row", unit_scale=True, mininterval=1) as progress:
 
                         def process(batch):
                             nonlocal new_sample_start
@@ -427,13 +472,15 @@ def cli(input_dir, config, output, start, end, rebuild):
                                 new_sample_start = int(points["gpst_ns"][0]) if new_sample_start is None else new_sample_start
                                 samples.append(points)
                             if len(levels):
-                                closed.append(pa.table({n: levels[n] for n in levels.dtype.names}))
+                                closed.append(native_table(levels, metadata))
 
-                        for _, paths, _ in todo:
+                        for label, paths, _ in todo:
+                            if paths:
+                                progress.set_postfix_str(f"GPST {label}", refresh=False)
                             for path in paths:
                                 for batch in observation_batches([path], setup["setup_id"]):
                                     process(reader.feed(batch))
-                                progress.update(path.stat().st_size)
+                                    progress.update(batch.num_rows)
                             # CommonNEX publishes complete measurement epochs; physical parts may split rows.
                             process(reader.flush())
             finally:
@@ -444,9 +491,9 @@ def cli(input_dir, config, output, start, end, rebuild):
             for key in reader_stats:
                 reader_stats[key] += old.get("reader", {}).get(key, 0) if old else 0
             if not summary["samples"]:
-                raise ValueError("No usable selected GPS dual-frequency STEC samples")
+                raise ValueError("No usable automatic dual-frequency STEC samples")
             preview = processor.preview()
-            closed.append(pa.table({n: preview[n] for n in preview.dtype.names}))
+            closed.append(native_table(preview, metadata))
             arcs = pa.concat_tables([t.replace_schema_metadata(None) for t in closed]).sort_by("arc_id")
             arcs = arcs.replace_schema_metadata({b"ngo": json.dumps(metadata).encode()})
             replace_table(stage / "arcs.parquet", arcs)
@@ -458,6 +505,7 @@ def cli(input_dir, config, output, start, end, rebuild):
                 from_ns = origin + max(0, (min(candidates) - origin) // width) * width
             previous_fits = pq.read_table(stage / "receiver_bias.parquet").to_pylist() if old else None
             fits = calibrate(stage, dcb, metadata, from_ns, origin, previous_fits) if candidates or not old else previous_fits
+            fusion_counts = write_fused(stage, metadata, from_ns)
             generation = old["generation"] + 1 if old else 1
             lineage = old["lineage"] if old else uuid.uuid4().hex
             changed_from = from_ns if old else origin
@@ -468,6 +516,8 @@ def cli(input_dir, config, output, start, end, rebuild):
                     day_generations[label] = generation
             estimated = sum(r["status"] == "estimated" for r in fits)
             summary.update(
+                fusion_counts_updated_days=fusion_counts,
+                bias_coverage={str(k): sorted(v) for k, v in products.coverage.items()},
                 status=(
                     "partial_calibration"
                     if estimated != len(fits)
@@ -488,7 +538,7 @@ def cli(input_dir, config, output, start, end, rebuild):
             replace_json(
                 stage / "state.json",
                 dict(
-                    version=1,
+                    version=3,
                     contract=contract,
                     inputs=selected,
                     processor=checkpoint,

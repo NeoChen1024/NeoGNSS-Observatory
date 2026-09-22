@@ -20,7 +20,7 @@ this component. CMake exposes `neognss_obs::neognss_obs`.
 
 The library implements archive epoch indexing and GPST segmentation, receiver
 clock association/unwrap and MON-SYS restart/temperature tracking, and SBAS
-mask/aging state, GPS STEC/receiver DCB processing, and static GPS Float PPP
+mask/aging state, multi-GNSS STEC/receiver DCB processing, and static GPS Float PPP
 using the RTKLIB-EX core.
 The pybind11 extension exposes bounded-batch processing;
 Python owns file I/O, orchestration, Parquet and plots. JSON containers here
@@ -100,17 +100,20 @@ loads a new product window without resetting filter state, and `process()`
 returns structured NumPy arrays rather than per-observation Python objects.
 See [PPP settings, models and limits](../docs/ppp.md).
 
-`StecCnexReader(setup_id, signal1, signal2)` accepts CommonNEX Observation Arrow
+`StecCnexReader(setup_id, pairs)` accepts CommonNEX Observation Arrow
 batches through `feed()` and returns the opaque `ObservationBatch` consumed by
 `StecProcessor`. `flush()` emits the pending complete measurement epoch after
 all its rows have arrived. The adapter validates selected signal/quality fields
 and converts decimal GPST to integer nanoseconds without floating-point absolute
 time. `StecProcessor` returns
 structured NumPy sample/arc arrays. `products()` replaces only product data;
+`restarts()` schedules timed receiver boundaries that close all active pair
+arcs before the first epoch at or after each boundary.
 `preview()` estimates open arcs without closing them, and `checkpoint()`/`restore()`
-preserve scientific state across daily invocations. `finish()` is reserved for
+preserve scientific state, pending restart boundaries and their cursor across
+daily invocations. `finish()` is reserved for
 explicit scientific stream termination. `fit_receiver_dcb()` fits one
-receiver/signal-pair window from leveled residual batches, with coverage gates.
+receiver-segment/signal-pair window from leveled residual batches, with coverage gates.
 RTKLIB adapters share the same process-wide lock. See [STEC conventions and
 limits](../docs/stec.md); GIM-constrained estimates are not independent calibration.
 

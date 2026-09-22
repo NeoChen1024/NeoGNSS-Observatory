@@ -17,7 +17,7 @@ The logger depends directly on `libcppgnss`.
 | GPS L1/L2 numerical-engine adapter over shared measurement normalization | `libneognss-obs` |
 | Receiver antenna PCO/PCV and bounded frequency substitution | Python selects ANTEX; `libneognss-obs` evaluates phase corrections |
 | Static GPS Float PPP adapter, filter and residual batches | `libneognss-obs`, linked to RTKLIB-EX |
-| GPS STEC geometry, phase leveling and receiver DCB estimation | `libneognss-obs`, linked to RTKLIB-EX |
+| Multi-GNSS shared STEC geometry, pair leveling and receiver DCB estimation | `libneognss-obs`, linked to RTKLIB-EX |
 | Batch Python binding | `libneognss-obs` |
 | Source selection, overlap byte I/O/proofs, publication and Parquet | Python |
 | Numerical table reductions, rendering and parallel PNG export | Python/NumPy |
@@ -113,7 +113,7 @@ not a change to the currently linked PPP/STEC implementation.
 
 Status: native-to-Python output is wired into the CommonNEX importer.
 `StecCnexReader` accepts replayed Observation Arrow batches directly, maps the
-selected GPS pair and quality into the numerical engine, and retains a pending
+automatic G/E/C/J pair candidates and quality into the numerical engine, and retains a pending
 measurement epoch across batches. Other analysis-binding migrations remain pending.
 The CommonNEX importer uses a bounded native decode pool for stateless
 Measurements/MeasExtra/RawBits work. It owns copied frame bytes until all jobs

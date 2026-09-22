@@ -37,7 +37,10 @@ auto lock(Processor &s) {
 void bind_stec(py::module_ &m) {
     using namespace neognss_obs::python_bindings::stec;
     py::class_<StecCnexReader>(m, "StecCnexReader")
-        .def(py::init<std::string, std::string, std::string>())
+        .def(py::init([](std::string setup, py::list pairs) {
+            return std::make_unique<StecCnexReader>(std::move(setup),
+                                                    arg(pairs));
+        }))
         .def("feed",
              [](StecCnexReader &s, const py::object &batch) {
                  auto capsules =
@@ -69,12 +72,14 @@ void bind_stec(py::module_ &m) {
                 throw std::runtime_error("Concurrent CommonNEX reader use");
             return result(s.summary());
         });
-    PYBIND11_NUMPY_DTYPE(StecSample, gpst_ns, arc_id, prn, product_issues,
-                         phase_gf_m, code_gf_corrected_m, elevation_deg,
-                         azimuth_deg, ipp_latitude_deg, ipp_longitude_deg,
-                         mapping, gim_stec_tecu, gim_rms_tecu);
+    PYBIND11_NUMPY_DTYPE(
+        StecSample, gpst_ns, arc_id, receiver_segment_start_ns, prn, system,
+        pair_id, product_issues, raw_phase_gf_m, relative_stec_tecu, phase_gf_m,
+        code_gf_corrected_m, elevation_deg, azimuth_deg, ipp_latitude_deg,
+        ipp_longitude_deg, mapping, gim_stec_tecu, gim_rms_tecu);
     PYBIND11_NUMPY_DTYPE(StecArc, gpst_ns, end_ns, arc_id, samples,
-                         leveling_samples, prn, valid, start_reason, end_reason,
+                         leveling_samples, receiver_segment_start_ns, prn,
+                         system, pair_id, valid, start_reason, end_reason,
                          provisional, level_offset_m, scatter_m);
     PYBIND11_NUMPY_DTYPE(DcbSample, gpst_ns, arc_id, prn, residual_tecu,
                          elevation_deg, azimuth_deg, gim_rms_tecu);
@@ -91,6 +96,12 @@ void bind_stec(py::module_ &m) {
                  py::gil_scoped_release release;
                  auto guard = lock(s);
                  s.value.products(j);
+             })
+        .def("restarts",
+             [](Processor &s, const std::vector<int64_t> &boundaries) {
+                 py::gil_scoped_release release;
+                 auto guard = lock(s);
+                 s.value.restarts(boundaries);
              })
         .def("process",
              [](Processor &s, const ObservationBatch &b) {

@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "rtklib.h"
 #include <algorithm>
+#include <array>
+#include <climits>
 #include <cmath>
+#include <cstdlib>
+#include <iterator>
 #include <map>
 #include <neognss_obs/antenna.hpp>
 #include <neognss_obs/rtklib_lock.hpp>
@@ -9,10 +13,17 @@
 #include <set>
 #include <tuple>
 
+extern "C" void ngo_combine_precise_clocks(nav_t *nav);
+
 namespace neognss_obs {
 namespace {
-constexpr double K = 40.3e16 * (1 / (FREQL2 * FREQL2) - 1 / (FREQL1 * FREQL1));
 constexpr int64_t second = 1000000000LL;
+unsigned signal_slot(std::string_view code) {
+    if (code.size() != 2 || code[0] < '1' || code[0] > '9' || code[1] < 'A' ||
+        code[1] > 'Z')
+        return 0;
+    return unsigned(code[0] - '0') * 32 + unsigned(code[1] - 'A');
+}
 gtime_t time_of(int64_t ns) {
     return gpst2time(int(ns / (604800 * second)),
                      double(ns % (604800 * second)) / second);
@@ -82,6 +93,23 @@ void free_products(nav_t &nav) {
     free(nav.erp.data);
     nav = nav_t{};
 }
+
+// Reuse RTKLIB's merge after each file, exactly as readrnxc() does.
+void append_clocks(nav_t &nav, const std::vector<pclk_t> &clocks) {
+    size_t count = size_t(nav.nc) + clocks.size();
+    if (count > size_t(INT_MAX))
+        throw std::overflow_error("Too many precise clock records");
+    auto buffer =
+        static_cast<pclk_t *>(std::realloc(nav.pclk, count * sizeof(pclk_t)));
+    if (!buffer)
+        throw std::bad_alloc();
+    nav.pclk = buffer;
+    std::copy(clocks.begin(), clocks.end(), nav.pclk + nav.nc);
+    nav.nc = nav.ncmax = int(count);
+    ngo_combine_precise_clocks(&nav);
+    if (!nav.pclk || nav.nc <= 0)
+        throw std::bad_alloc();
+}
 // Strict bilinear interpolation: no nearest-neighbour fill or zero
 // substitution.
 std::pair<double, double> grid(const tec_t &m, double latitude,
@@ -118,38 +146,81 @@ struct StecProcessor::State {
         int64_t start, end;
         double meters;
     };
+    struct Pair {
+        int id, family;
+        char system;
+        std::string first, second;
+        double f1, f2, k;
+        unsigned first_slot = 0, second_slot = 0;
+    };
     struct Track {
+        int pair_id = -1, prn = 0;
+        double first_gf = 0;
         int64_t id, start, last, emitted = -1, samples = 0;
         int reason;
         double gf;
         neognss_obs::Observation a, b;
         std::vector<double> offsets, weights;
         int64_t first_level = -1, last_level = -1;
+        int64_t receiver_segment_start_ns = 0;
     };
     Json settings;
-    ReceiverAntenna receiver_antenna;
+    std::vector<Pair> pairs;
+    std::map<char, std::map<int, std::vector<const Pair *>>> pair_families;
+    std::array<std::vector<int>, MAXSAT> health_index;
+    std::map<int, ReceiverAntenna> antennas;
+    bool antenna_required;
     std::unique_ptr<nav_t> nav = std::make_unique<nav_t>();
-    std::map<int, std::vector<Bias>> biases;
-    std::map<int, std::vector<Bias>> gim_biases;
+    std::map<std::string, std::vector<pclk_t>> clock_cache;
+    std::map<std::pair<int, int>, std::vector<Bias>> biases;
     std::map<int, Track> tracks;
-    std::string signal1, signal2;
     double rr[3], pos[3], elevation, level_elevation, mapping_height;
-    int64_t previous = -1, next_arc = 0, interval, gap;
+    double gf_jump, gf_rate;
+    int64_t previous = -1, last_emit = -1, next_arc = 0, interval, gap;
+    std::vector<int64_t> restart_boundaries;
+    size_t next_restart = 0;
+    int64_t receiver_segment_start_ns = 0;
     std::map<int, uint64_t> product_gaps{{1, 0}, {2, 0},  {4, 0},
                                          {8, 0}, {16, 0}, {32, 0}};
     uint64_t epochs = 0, sample_count = 0, arcs = 0, valid_arcs = 0,
              unhealthy = 0, missing_gim = 0;
     bool ready = false, finished = false;
     explicit State(const Json &s)
-        : settings(s),
-          receiver_antenna(s.value("receiver_antenna", Json(nullptr))) {
-        signal1 = s.at("signal1");
-        signal2 = s.at("signal2");
-        if (signal1.size() != 2 || signal2.size() != 2 || signal1[0] != '1' ||
-            signal2[0] != '2' || !obs2code(signal1.c_str()) ||
-            !obs2code(signal2.c_str()))
-            throw std::invalid_argument(
-                "STEC requires an exact GPS L1/L2 pair");
+        : settings(s), antenna_required(s.at("antenna_required")) {
+        for (const auto &[key, model] : s.at("antennas").items())
+            antennas.emplace(std::stoi(key), ReceiverAntenna(model));
+        for (const auto &p : s.at("pairs")) {
+            const std::string sys = p.at("system");
+            Pair pair{p.at("id"),
+                      p.at("family_id"),
+                      sys.at(0),
+                      p.at("signal1"),
+                      p.at("signal2"),
+                      p.at("frequency1_hz"),
+                      p.at("frequency2_hz"),
+                      p.at("meters_per_tecu")};
+            if (pair.id != int(pairs.size()) || sys.size() != 1 ||
+                std::string("GECJ").find(pair.system) == std::string::npos ||
+                pair.family < 0 || pair.family >= 16 ||
+                !antennas.contains(pair.family) ||
+                !obs2code(pair.first.c_str()) ||
+                !obs2code(pair.second.c_str()) || !std::isfinite(pair.f1) ||
+                !std::isfinite(pair.f2) || pair.f1 <= pair.f2 || pair.f2 <= 0 ||
+                !std::isfinite(pair.k) ||
+                std::abs(pair.k - 40.3e16 * (1 / (pair.f2 * pair.f2) -
+                                             1 / (pair.f1 * pair.f1))) > 1e-12)
+                throw std::invalid_argument(
+                    "Invalid automatic STEC pair contract");
+            pair.first_slot = signal_slot(pair.first);
+            pair.second_slot = signal_slot(pair.second);
+            if (!pair.first_slot || !pair.second_slot)
+                throw std::invalid_argument("Invalid STEC signal code");
+            pairs.push_back(std::move(pair));
+        }
+        if (pairs.empty())
+            throw std::invalid_argument("Empty STEC pair selection");
+        for (const auto &pair : pairs)
+            pair_families[pair.system][pair.family].push_back(&pair);
         interval = std::llround(positive(s, "interval") * second);
         gap = std::llround(positive(s, "gap_timeout") * second);
         if (interval < 1 || gap < 1)
@@ -160,8 +231,8 @@ struct StecProcessor::State {
             level_elevation < elevation)
             throw std::invalid_argument("Invalid elevation masks");
         mapping_height = positive(s, "mapping_height_km");
-        positive(s, "gf_jump_m");
-        positive(s, "gf_rate_m_s");
+        gf_jump = positive(s, "gf_jump_m");
+        gf_rate = positive(s, "gf_rate_m_s");
         positive(s, "min_arc_seconds");
         positive(s, "min_level_samples");
         for (int i = 0; i < 3; ++i)
@@ -172,18 +243,12 @@ struct StecProcessor::State {
         ecef2pos(rr, pos);
     }
     ~State() { free_products(*nav); }
-    double bias(int prn, int64_t t) const {
-        auto find = [&](const auto &values) -> double {
-            auto found = values.find(prn);
-            if (found != values.end())
-                for (auto b : found->second)
-                    if (b.start <= t && t < b.end)
-                        return b.meters;
-            return NAN;
-        };
-        double intra = find(biases), reference = find(gim_biases);
-        if (std::isfinite(intra) && std::isfinite(reference))
-            return intra - reference;
+    double bias(int pair, int prn, int64_t t) const {
+        auto found = biases.find({pair, prn});
+        if (found != biases.end())
+            for (const auto &b : found->second)
+                if (b.start <= t && t < b.end)
+                    return b.meters;
         return NAN;
     }
     StecArc estimate(int prn, const Track &a, int reason,
@@ -198,7 +263,10 @@ struct StecProcessor::State {
                 a.id,
                 a.samples,
                 int64_t(a.offsets.size()),
-                prn,
+                a.receiver_segment_start_ns,
+                a.prn,
+                int(pairs.at(a.pair_id).system),
+                a.pair_id,
                 int(valid),
                 a.reason,
                 reason,
@@ -216,27 +284,41 @@ struct StecProcessor::State {
         valid_arcs += value.valid;
         tracks.erase(found);
     }
-    bool geometry(int prn, int64_t ns, double &az, double &el, double &lat,
+    bool geometry(int sat, int64_t ns, double &az, double &el, double &lat,
                   double &lon, int32_t &issues) {
-        int sat = satno(SYS_GPS, prn);
-        if (!sat)
-            throw std::runtime_error("Unsupported GPS PRN");
+
         gtime_t t = time_of(ns);
         const eph_t *health = nullptr;
         double age = 7201;
-        for (int i = 0; i < nav->n; ++i)
-            if (nav->eph[i].sat == sat) {
-                double d = std::abs(timediff(t, nav->eph[i].toe));
-                if (d < age) {
-                    health = nav->eph + i;
-                    age = d;
-                }
+        const auto &indices = health_index.at(sat - 1);
+        auto lower = [&](gtime_t when) {
+            return std::lower_bound(indices.begin(), indices.end(), when,
+                                    [&](int i, gtime_t v) {
+                                        return timediff(nav->eph[i].toe, v) < 0;
+                                    });
+        };
+        auto consider = [&](int i) {
+            auto candidate = nav->eph + i;
+            double d = std::abs(timediff(t, candidate->toe));
+            // Preserve the original scan's first-index tie rule.
+            if (d < age || (health && d == age && candidate < health)) {
+                health = candidate;
+                age = d;
             }
+        };
+        auto next = lower(t);
+        if (next != indices.end())
+            consider(*next);
+        if (next != indices.begin())
+            consider(*lower(nav->eph[*std::prev(next)].toe));
         if (!health || age > 7200) {
             issues |= 4;
             return true;
         }
-        if (health->svh) {
+        // Reuse constellation-specific health interpretation, including the
+        // QZSS LEX-only bit which must not reject L1/L2/L5 ranging
+        // observations.
+        if (satexclude(sat, 0.0, health->svh, nullptr)) {
             ++unhealthy;
             return false;
         }
@@ -364,9 +446,31 @@ void StecProcessor::products(const Json &p) {
             throw std::runtime_error("Cannot read nonempty STEC SP3: " +
                                      f.get<std::string>());
     }
+    std::set<std::string> clock_files;
     for (const auto &f : p.at("clk"))
-        if (!readrnxc(f.get<std::string>().c_str(), s.nav.get()))
-            throw std::runtime_error("Cannot read STEC CLK");
+        clock_files.insert(f.get<std::string>());
+    std::erase_if(s.clock_cache, [&](const auto &entry) {
+        return !clock_files.contains(entry.first);
+    });
+    for (const auto &f : p.at("clk")) {
+        auto path = f.get<std::string>();
+        auto found = s.clock_cache.find(path);
+        if (found == s.clock_cache.end()) {
+            auto parsed = std::unique_ptr<nav_t, void (*)(nav_t *)>(
+                new nav_t{}, [](nav_t *v) {
+                    free_products(*v);
+                    delete v;
+                });
+            if (!readrnxc(path.c_str(), parsed.get()))
+                throw std::runtime_error("Cannot read STEC CLK");
+            found =
+                s.clock_cache
+                    .emplace(path, std::vector<pclk_t>(
+                                       parsed->pclk, parsed->pclk + parsed->nc))
+                    .first;
+        }
+        append_clocks(*s.nav, found->second);
+    }
     obs_t unused{};
     sta_t sta{};
     for (const auto &f : p.at("nav")) {
@@ -377,6 +481,16 @@ void StecProcessor::products(const Json &p) {
             throw std::runtime_error("Cannot read STEC BRDC");
     }
     uniqnav(s.nav.get());
+    for (auto &indices : s.health_index)
+        indices.clear();
+    for (int i = 0; i < s.nav->n; ++i)
+        if (s.nav->eph[i].sat >= 1 && s.nav->eph[i].sat <= MAXSAT)
+            s.health_index[s.nav->eph[i].sat - 1].push_back(i);
+    for (auto &indices : s.health_index)
+        std::sort(indices.begin(), indices.end(), [&](int a, int b) {
+            double delta = timediff(s.nav->eph[a].toe, s.nav->eph[b].toe);
+            return delta < 0 || (delta == 0 && a < b);
+        });
     for (const auto &f : p.at("ionex")) {
         int before = s.nav->nt;
         readtec(f.get<std::string>().c_str(), s.nav.get(), 1);
@@ -395,35 +509,88 @@ void StecProcessor::products(const Json &p) {
         m.time = utc2gpst(m.time);
     }
     s.biases.clear();
-    for (const auto &b : p.at("biases"))
-        s.biases[b.at("prn")].push_back(
-            {b.at("start_ns"), b.at("end_ns"), b.at("meters")});
-    s.gim_biases.clear();
-    auto utc_ns = [](int64_t ns) {
+    auto utc_ns = [](int64_t ns) -> int64_t {
         auto utc = time_of(ns);
         return ns + std::llround(timediff(utc2gpst(utc), utc) * second);
     };
-    for (const auto &b : p.at("gim_biases"))
-        s.gim_biases[b.at("prn")].push_back({utc_ns(b.at("start_utc_ns")),
-                                             utc_ns(b.at("end_utc_ns")),
-                                             b.at("meters")});
+    for (const auto &b : p.at("biases")) {
+        int64_t start = b.at("start_ns"), end = b.at("end_ns");
+        if (b.contains("start_utc_ns")) {
+            start = std::max(start, utc_ns(b.at("start_utc_ns")));
+            end = std::min(end, utc_ns(b.at("end_utc_ns")));
+        }
+        double meters = b.at("meters");
+        int pair = b.at("pair_id"), prn = b.at("prn");
+        if (pair < 0 || pair >= int(s.pairs.size()) || prn < 1 || prn > 99 ||
+            !std::isfinite(meters))
+            throw std::invalid_argument("Invalid satellite pair bias");
+        if (start < end)
+            s.biases[{pair, prn}].push_back({start, end, meters});
+    }
+    for (auto &[key, values] : s.biases) {
+        std::sort(
+            values.begin(), values.end(),
+            [](const auto &a, const auto &b) { return a.start < b.start; });
+        for (size_t i = 1; i < values.size(); ++i)
+            if (values[i].start < values[i - 1].end)
+                throw std::invalid_argument(
+                    "Overlapping satellite pair bias intervals");
+    }
     s.ready = true;
 }
+void StecProcessor::restarts(std::span<const int64_t> boundaries) {
+    std::lock_guard guard(rtklib_mutex);
+    auto &s = *state_;
+    if (s.finished)
+        throw std::runtime_error("Cannot schedule restart after STEC finish");
+    auto merged = s.restart_boundaries;
+    for (int64_t ns : boundaries) {
+        if (ns < 0)
+            throw std::invalid_argument("Negative receiver restart GPST");
+        if (std::binary_search(s.restart_boundaries.begin(),
+                               s.restart_boundaries.end(), ns))
+            continue;
+        if (ns <= s.previous)
+            throw std::runtime_error(
+                "New receiver restart precedes processed observations; rebuild "
+                "the complete selection");
+        merged.push_back(ns);
+    }
+    std::sort(merged.begin(), merged.end());
+    merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+    s.restart_boundaries = std::move(merged);
+}
+
 StecResult StecProcessor::process(const ObservationBatch &batch) {
     std::lock_guard guard(rtklib_mutex);
     auto &s = *state_;
     StecResult out;
     if (!s.ready || s.finished)
         throw std::runtime_error("STEC processor is not ready");
+    std::vector<const Observation *> observations;
+    std::vector<double> pair_bias(s.pairs.size());
+    std::vector<uint64_t> bias_generation(s.pairs.size(), 0);
+    uint64_t generation = 0;
     for (const auto &epoch : batch.epochs) {
         if (epoch.gpst_ns <= s.previous)
             throw std::runtime_error("Non-increasing STEC observation time");
+        bool restarted = false;
+        while (s.next_restart < s.restart_boundaries.size() &&
+               s.restart_boundaries[s.next_restart] <= epoch.gpst_ns) {
+            while (!s.tracks.empty())
+                s.close(s.tracks.begin()->first, 11, out.arcs);
+            s.receiver_segment_start_ns =
+                s.restart_boundaries[s.next_restart++];
+            s.last_emit = -1;
+            restarted = true;
+        }
         s.previous = epoch.gpst_ns;
-        if (s.receiver_antenna.enabled())
-            s.receiver_antenna.record_index(epoch.gpst_ns);
         ++s.epochs;
+        bool emit =
+            s.last_emit < 0 || epoch.gpst_ns - s.last_emit >= s.interval;
+        if (emit)
+            s.last_emit = epoch.gpst_ns;
         std::set<int> timed_out;
-        // Missing satellites must not retain an indefinitely open track.
         for (auto it = s.tracks.begin(); it != s.tracks.end();) {
             auto current = it++;
             if (epoch.gpst_ns - current->second.last > s.gap) {
@@ -431,122 +598,228 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
                 s.close(current->first, 1, out.arcs);
             }
         }
-        std::map<int, std::pair<const neognss_obs::Observation *,
-                                const neognss_obs::Observation *>>
-            pairs;
-        for (const auto &m : epoch.signals)
-            if (m.antenna == 0 &&
-                (m.signal == s.signal1 || m.signal == s.signal2)) {
-                auto &slot = m.signal == s.signal1 ? pairs[m.prn].first
-                                                   : pairs[m.prn].second;
-                if (slot)
-                    throw std::runtime_error("Duplicate selected STEC signal");
-                slot = &m;
-            }
-        for (auto [prn, pair] : pairs) {
-            auto [a, b] = pair;
-            if (!a || !b || !a->phase_valid || !b->phase_valid)
+        observations.clear();
+        observations.reserve(epoch.signals.size());
+        for (const auto &m : epoch.signals) {
+            if (m.antenna != 0)
                 continue;
-            if (a->half_cycle || b->half_cycle) {
-                s.close(prn, 3, out.arcs);
-                continue;
+            observations.push_back(&m);
+        }
+        std::sort(observations.begin(), observations.end(), [](auto a, auto b) {
+            return std::tie(a->system, a->prn, a->signal) <
+                   std::tie(b->system, b->prn, b->signal);
+        });
+        for (size_t i = 1; i < observations.size(); ++i) {
+            auto a = observations[i - 1], b = observations[i];
+            if (std::tie(a->system, a->prn, a->signal) ==
+                std::tie(b->system, b->prn, b->signal))
+                throw std::runtime_error("Duplicate STEC observation identity");
+        }
+        for (size_t begin = 0, end; begin < observations.size(); begin = end) {
+            auto system = observations[begin]->system;
+            auto prn = observations[begin]->prn;
+            for (end = begin + 1; end < observations.size() &&
+                                  observations[end]->system == system &&
+                                  observations[end]->prn == prn;
+                 ++end) {
             }
-            double gf = CLIGHT / a->frequency_hz * a->phase_cycles -
-                        CLIGHT / b->frequency_hz * b->phase_cycles;
-            int reason = timed_out.contains(prn) ? 1 : 0;
-            auto old = s.tracks.find(prn);
-            if (old != s.tracks.end()) {
-                auto &t = old->second;
-                double dt = double(epoch.gpst_ns - t.last) / second;
-                if (epoch.gpst_ns - t.last > s.gap)
-                    reason = 1;
-                else if (a->loss_of_lock || b->loss_of_lock ||
-                         (a->lock_valid && t.a.lock_valid &&
-                          a->lock_seconds < t.a.lock_seconds) ||
-                         (b->lock_valid && t.b.lock_valid &&
-                          b->lock_seconds < t.b.lock_seconds))
-                    reason = 2;
-                else if ((a->continuity_counter && t.a.continuity_counter &&
-                          a->continuity_counter != t.a.continuity_counter) ||
-                         (b->continuity_counter && t.b.continuity_counter &&
-                          b->continuity_counter != t.b.continuity_counter))
-                    reason = 6;
-                else if (a->sub_half_cycle != t.a.sub_half_cycle ||
-                         b->sub_half_cycle != t.b.sub_half_cycle)
-                    reason = 3;
-                else if (std::abs(gf - t.gf) >
-                         s.settings.at("gf_jump_m").get<double>() +
-                             s.settings.at("gf_rate_m_s").get<double>() * dt)
-                    reason = 4;
-                if (s.receiver_antenna.enabled() &&
-                    s.receiver_antenna.record_index(t.last) !=
-                        s.receiver_antenna.record_index(epoch.gpst_ns))
-                    reason = 8;
-                if (reason)
-                    s.close(prn, reason, out.arcs);
-            }
-            auto [it, inserted] = s.tracks.try_emplace(prn);
-            auto &t = it->second;
-            if (inserted) {
-                t.id = s.next_arc++;
-                t.start = epoch.gpst_ns;
-                t.reason = reason;
-            }
-            t.last = epoch.gpst_ns;
-            t.a = *a;
-            t.b = *b;
-            t.gf = gf;
-            if (t.emitted >= 0 && epoch.gpst_ns - t.emitted < s.interval)
-                continue;
-            t.emitted = epoch.gpst_ns;
-            double az = NAN, el = NAN, lat = NAN, lon = NAN;
-            int32_t issues = 0;
-            if (!s.geometry(prn, epoch.gpst_ns, az, el, lat, lon, issues))
-                continue;
-            // Preserve raw GF for slip detection/continuity, even during
-            // geometry gaps. Only emitted phase samples and leveling use
-            // antenna corrections.
-            if (!s.receiver_antenna.covers(epoch.gpst_ns, el)) {
-                gf = NAN;
-                if (std::isfinite(el))
-                    issues |= 32;
-            } else {
-                gf -= s.receiver_antenna.correction(0, epoch.gpst_ns, az, el) -
-                      s.receiver_antenna.correction(1, epoch.gpst_ns, az, el);
-            }
-            // CODE MSLM mapping height is distinct from the 450 km IPP shell.
-            double rp = 6371 / (6371 + s.mapping_height) *
-                        std::sin(.9782 * (PI / 2 - el * D2R));
-            double mapping = 1 / std::sqrt(1 - rp * rp);
-            double gim = NAN, rms = NAN;
-            if (std::isfinite(mapping)) {
-                std::tie(gim, rms) = s.gim(epoch.gpst_ns, lat, lon, mapping);
-                if (!std::isfinite(gim)) {
-                    issues |= 16;
-                    ++s.missing_gim;
+            std::array<const Observation *, 320> signals{};
+            ++generation;
+            auto bias_value = [&](int id) {
+                if (bias_generation[id] != generation) {
+                    pair_bias[id] = s.bias(id, prn, epoch.gpst_ns);
+                    bias_generation[id] = generation;
                 }
-            }
-            double code = NAN;
-            if (a->code_valid && b->code_valid) {
-                code = b->pseudorange_m - a->pseudorange_m -
-                       s.bias(prn, epoch.gpst_ns);
-                if (!std::isfinite(code))
+                return pair_bias[id];
+            };
+            for (size_t i = begin; i < end; ++i)
+                if (auto slot = signal_slot(observations[i]->signal))
+                    signals[slot] = observations[i];
+            int sys = system == 'G'   ? SYS_GPS
+                      : system == 'E' ? SYS_GAL
+                      : system == 'C' ? SYS_CMP
+                      : system == 'J' ? SYS_QZS
+                                      : 0;
+            int sat = satno(sys, system == 'J' ? prn + 192 : prn);
+            if (!sat)
+                throw std::runtime_error("Unsupported STEC satellite identity");
+            // Geometry and GIM are shared by all pair families for this
+            // satellite.
+            bool computed = false, usable = true;
+            double az = NAN, el = NAN, lat = NAN, lon = NAN, mapping = NAN,
+                   gim = NAN, rms = NAN;
+            int32_t geometry_issues = 0;
+            auto families = s.pair_families.find(system);
+            if (families == s.pair_families.end())
+                continue;
+            for (const auto &[family, candidates] : families->second) {
+                int key = sat * 16 + family;
+                auto old = s.tracks.find(key);
+                auto available = [&](const State::Pair &p) {
+                    auto a = signals[p.first_slot], b = signals[p.second_slot];
+                    return a && b && a->phase_valid && b->phase_valid &&
+                           !a->half_cycle && !b->half_cycle;
+                };
+                const State::Pair *selected = nullptr;
+                auto calibrated = [&](const State::Pair &p) {
+                    return available(p) && signals[p.first_slot]->code_valid &&
+                           signals[p.second_slot]->code_valid &&
+                           std::isfinite(bias_value(p.id));
+                };
+                // Sticky among covered codes. If coverage disappears, prefer
+                // a covered alternative; otherwise retain raw phase continuity.
+                if (old != s.tracks.end() &&
+                    calibrated(s.pairs[old->second.pair_id]))
+                    selected = &s.pairs[old->second.pair_id];
+                if (!selected)
+                    for (auto candidate : candidates)
+                        if (calibrated(*candidate)) {
+                            selected = candidate;
+                            break;
+                        }
+                if (!selected && old != s.tracks.end() &&
+                    available(s.pairs[old->second.pair_id]))
+                    selected = &s.pairs[old->second.pair_id];
+                if (!selected)
+                    for (auto candidate : candidates)
+                        if (available(*candidate)) {
+                            selected = candidate;
+                            break;
+                        }
+                if (!selected) {
+                    if (old != s.tracks.end()) {
+                        const auto &active = s.pairs[old->second.pair_id];
+                        for (auto slot :
+                             {active.first_slot, active.second_slot}) {
+                            auto found = signals[slot];
+                            if (found && found->half_cycle) {
+                                s.close(key, 3, out.arcs);
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                const auto &p = *selected;
+                const auto *a = signals[p.first_slot],
+                           *b = signals[p.second_slot];
+                double gf = CLIGHT / p.f1 * a->phase_cycles -
+                            CLIGHT / p.f2 * b->phase_cycles;
+                int reason = restarted ? 11 : timed_out.contains(key) ? 1 : 0;
+                auto &antenna = s.antennas.at(family);
+                auto antenna_record = [&](int64_t ns) -> int64_t {
+                    if (!antenna.enabled())
+                        return -1;
+                    try {
+                        return antenna.record_index(ns);
+                    } catch (const std::runtime_error &) {
+                        return -1;
+                    }
+                };
+                if (old != s.tracks.end()) {
+                    auto &t = old->second;
+                    double dt = double(epoch.gpst_ns - t.last) / second;
+                    if (epoch.gpst_ns - t.last > s.gap)
+                        reason = 1;
+                    else if (a->loss_of_lock || b->loss_of_lock ||
+                             (a->lock_valid && t.a.lock_valid &&
+                              a->lock_seconds < t.a.lock_seconds) ||
+                             (b->lock_valid && t.b.lock_valid &&
+                              b->lock_seconds < t.b.lock_seconds))
+                        reason = 2;
+                    else if ((a->continuity_counter && t.a.continuity_counter &&
+                              a->continuity_counter !=
+                                  t.a.continuity_counter) ||
+                             (b->continuity_counter && t.b.continuity_counter &&
+                              b->continuity_counter != t.b.continuity_counter))
+                        reason = 6;
+                    else if (a->sub_half_cycle != t.a.sub_half_cycle ||
+                             b->sub_half_cycle != t.b.sub_half_cycle)
+                        reason = 3;
+                    else if (std::abs(gf - t.gf) > s.gf_jump + s.gf_rate * dt)
+                        reason = 4;
+
+                    if (p.id != t.pair_id)
+                        reason = 9;
+                    if (epoch.clock_reset)
+                        reason = 10;
+                    if (antenna_record(t.last) != antenna_record(epoch.gpst_ns))
+                        reason = 8;
+                    if (reason)
+                        s.close(key, reason, out.arcs);
+                }
+                auto [it, inserted] = s.tracks.try_emplace(key);
+                auto &t = it->second;
+                if (inserted) {
+                    t.id = s.next_arc++;
+                    t.start = epoch.gpst_ns;
+                    t.reason = reason;
+                    t.pair_id = p.id;
+                    t.prn = prn;
+                    t.first_gf = gf;
+                    t.receiver_segment_start_ns = s.receiver_segment_start_ns;
+                }
+                t.last = epoch.gpst_ns;
+                t.a = *a;
+                t.b = *b;
+                t.gf = gf;
+                if (!emit)
+                    continue;
+                t.emitted = epoch.gpst_ns;
+                if (!computed) {
+                    computed = true;
+                    usable = s.geometry(sat, epoch.gpst_ns, az, el, lat, lon,
+                                        geometry_issues);
+                    double rp = 6371 / (6371 + s.mapping_height) *
+                                std::sin(.9782 * (PI / 2 - el * D2R));
+                    mapping = 1 / std::sqrt(1 - rp * rp);
+                    if (std::isfinite(mapping)) {
+                        std::tie(gim, rms) =
+                            s.gim(epoch.gpst_ns, lat, lon, mapping);
+                        if (!std::isfinite(gim)) {
+                            geometry_issues |= 16;
+                            ++s.missing_gim;
+                        }
+                    }
+                }
+                if (!usable)
+                    continue;
+                double raw = gf;
+                int32_t issues = geometry_issues;
+                if (s.antenna_required &&
+                    (!antenna.enabled() || antenna_record(epoch.gpst_ns) < 0)) {
+                    gf = NAN;
+                    issues |= 32;
+                } else if (!antenna.covers(epoch.gpst_ns, el)) {
+                    gf = NAN;
+                    if (std::isfinite(el))
+                        issues |= 32;
+                } else
+                    gf -= antenna.correction(0, epoch.gpst_ns, az, el) -
+                          antenna.correction(1, epoch.gpst_ns, az, el);
+                double code = NAN;
+                if (a->code_valid && b->code_valid)
+                    code =
+                        b->pseudorange_m - a->pseudorange_m - bias_value(p.id);
+                if (!std::isfinite(bias_value(p.id)))
                     issues |= 8;
-            }
-            for (auto &[bit, count] : s.product_gaps)
-                if (issues & bit)
-                    ++count;
-            out.samples.push_back({epoch.gpst_ns, t.id, prn, issues, gf, code,
-                                   el, az, lat, lon, mapping, gim, rms});
-            ++t.samples;
-            ++s.sample_count;
-            if (std::isfinite(code) && std::isfinite(gf) &&
-                el >= s.level_elevation) {
-                t.offsets.push_back(code - gf);
-                t.weights.push_back(std::pow(std::sin(el * D2R), 2));
-                if (t.first_level < 0)
-                    t.first_level = epoch.gpst_ns;
-                t.last_level = epoch.gpst_ns;
+                for (auto &[bit, count] : s.product_gaps)
+                    if (issues & bit)
+                        ++count;
+                out.samples.push_back(
+                    {epoch.gpst_ns, t.id, s.receiver_segment_start_ns, prn,
+                     int(system), p.id, issues, raw, (raw - t.first_gf) / p.k,
+                     gf, code, el, az, lat, lon, mapping, gim, rms});
+                ++t.samples;
+                ++s.sample_count;
+                if (std::isfinite(code) && std::isfinite(gf) &&
+                    el >= s.level_elevation) {
+                    t.offsets.push_back(code - gf);
+                    t.weights.push_back(std::pow(std::sin(el * D2R), 2));
+                    if (t.first_level < 0)
+                        t.first_level = epoch.gpst_ns;
+                    t.last_level = epoch.gpst_ns;
+                }
             }
         }
     }
@@ -564,6 +837,9 @@ std::vector<StecArc> StecProcessor::finish() {
 Json StecProcessor::summary() const {
     const auto &s = *state_;
     return {{"epochs", s.epochs},
+            {"receiver_restarts_applied", s.next_restart},
+            {"receiver_restarts_pending",
+             s.restart_boundaries.size() - s.next_restart},
             {"samples", s.sample_count},
             {"arcs", s.arcs},
             {"valid_arcs", s.valid_arcs},
@@ -576,7 +852,7 @@ Json StecProcessor::summary() const {
               {"satellite_bias", s.product_gaps.at(8)},
               {"gim", s.product_gaps.at(16)},
               {"receiver_antenna_direction", s.product_gaps.at(32)}}},
-            {"meters_per_tecu", K},
+            {"pairs", s.settings.at("pairs")},
             {"arc_reasons",
              {{"0", "start"},
               {"1", "timeout"},
@@ -586,7 +862,10 @@ Json StecProcessor::summary() const {
               {"5", "stream_end"},
               {"6", "continuity_counter_change"},
               {"7", "open_incremental_tail"},
-              {"8", "receiver_antenna_calibration_change"}}}};
+              {"8", "receiver_antenna_calibration_change"},
+              {"9", "exact_signal_pair_change"},
+              {"10", "receiver_clock_reset"},
+              {"11", "receiver_restart"}}}};
 }
 
 std::vector<StecArc> StecProcessor::preview() const {
@@ -607,21 +886,30 @@ Json StecProcessor::checkpoint() const {
                                     : Json(nullptr)}};
     };
     for (const auto &[prn, t] : s.tracks)
-        tracks.push_back({{"prn", prn},
-                          {"id", t.id},
-                          {"start", t.start},
-                          {"last", t.last},
-                          {"emitted", t.emitted},
-                          {"samples", t.samples},
-                          {"reason", t.reason},
-                          {"gf", t.gf},
-                          {"a", tracking(t.a)},
-                          {"b", tracking(t.b)},
-                          {"offsets", t.offsets},
-                          {"weights", t.weights},
-                          {"first_level", t.first_level},
-                          {"last_level", t.last_level}});
-    return {{"version", 2},
+        tracks.push_back(
+            {{"key", prn},
+             {"prn", t.prn},
+             {"pair_id", t.pair_id},
+             {"first_gf", t.first_gf},
+             {"receiver_segment_start_ns", t.receiver_segment_start_ns},
+             {"id", t.id},
+             {"start", t.start},
+             {"last", t.last},
+             {"emitted", t.emitted},
+             {"samples", t.samples},
+             {"reason", t.reason},
+             {"gf", t.gf},
+             {"a", tracking(t.a)},
+             {"b", tracking(t.b)},
+             {"offsets", t.offsets},
+             {"weights", t.weights},
+             {"first_level", t.first_level},
+             {"last_level", t.last_level}});
+    return {{"version", 4},
+            {"restart_boundaries", s.restart_boundaries},
+            {"next_restart", s.next_restart},
+            {"receiver_segment_start_ns", s.receiver_segment_start_ns},
+            {"last_emit", s.last_emit},
             {"settings", s.settings},
             {"previous", s.previous},
             {"next_arc", s.next_arc},
@@ -636,10 +924,28 @@ Json StecProcessor::checkpoint() const {
 }
 void StecProcessor::restore(const Json &j) {
     auto &s = *state_;
-    if (j.at("version") != 2 || j.at("settings") != s.settings ||
+    if (j.at("version") != 4 || j.at("settings") != s.settings ||
         s.previous != -1)
         throw std::runtime_error("Incompatible STEC continuation state");
     s.previous = j.at("previous");
+    s.restart_boundaries =
+        j.at("restart_boundaries").get<std::vector<int64_t>>();
+    s.next_restart = j.at("next_restart");
+    s.receiver_segment_start_ns = j.at("receiver_segment_start_ns");
+    if (!std::is_sorted(s.restart_boundaries.begin(),
+                        s.restart_boundaries.end()) ||
+        std::adjacent_find(s.restart_boundaries.begin(),
+                           s.restart_boundaries.end()) !=
+            s.restart_boundaries.end() ||
+        (!s.restart_boundaries.empty() && s.restart_boundaries.front() < 0) ||
+        s.next_restart !=
+            size_t(std::upper_bound(s.restart_boundaries.begin(),
+                                    s.restart_boundaries.end(), s.previous) -
+                   s.restart_boundaries.begin()) ||
+        s.receiver_segment_start_ns !=
+            (s.next_restart ? s.restart_boundaries[s.next_restart - 1] : 0))
+        throw std::runtime_error("Invalid receiver restart checkpoint");
+    s.last_emit = j.at("last_emit");
     s.next_arc = j.at("next_arc");
     s.epochs = j.at("epochs");
     s.sample_count = j.at("samples");
@@ -659,6 +965,15 @@ void StecProcessor::restore(const Json &j) {
     };
     for (const auto &v : j.at("tracks")) {
         State::Track t;
+        t.prn = v.at("prn");
+        t.pair_id = v.at("pair_id");
+        t.first_gf = v.at("first_gf");
+        t.receiver_segment_start_ns = v.at("receiver_segment_start_ns");
+        if (t.receiver_segment_start_ns != s.receiver_segment_start_ns)
+            throw std::runtime_error("STEC track crosses a receiver restart");
+        if (t.pair_id < 0 || t.pair_id >= int(s.pairs.size()) ||
+            !std::isfinite(t.first_gf))
+            throw std::runtime_error("Invalid STEC pair checkpoint");
         t.id = v.at("id");
         t.start = v.at("start");
         t.last = v.at("last");
@@ -672,15 +987,17 @@ void StecProcessor::restore(const Json &j) {
         t.weights = v.at("weights").get<std::vector<double>>();
         t.first_level = v.at("first_level");
         t.last_level = v.at("last_level");
-        if (t.offsets.size() != t.weights.size() || t.start > t.last ||
+        if (t.offsets.size() != t.weights.size() ||
+            t.start < t.receiver_segment_start_ns || t.start > t.last ||
             t.last > s.previous || !std::isfinite(t.gf) || t.id < 0 ||
             t.id >= s.next_arc)
             throw std::runtime_error("Invalid STEC track checkpoint");
-        s.tracks.emplace(v.at("prn").get<int>(), std::move(t));
+        s.tracks.emplace(v.at("key").get<int>(), std::move(t));
     }
 }
 
 Json fit_receiver_dcb(std::span<const DcbSample> rows, const Json &settings) {
+    double K = positive(settings, "meters_per_tecu");
     double bin_seconds = positive(settings, "bin_seconds"),
            min_hours = positive(settings, "min_hours");
     auto bin_ns = std::llround(bin_seconds * second);

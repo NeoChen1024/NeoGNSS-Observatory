@@ -21,13 +21,15 @@ from .sbas_grid_parquet import SCHEMA as SBAS_SCHEMA
 from .sbas_grid_plot import hourly_rows
 from .sbas_grid_render import coastline_parts, parse_hour
 from .sbas_streams import sbas_satellite as validate_sbas_satellite
-from .stec import read_stec
+from .stec_fusion import read_fused
 from .stec_incremental import publication, replace_json
 
 HOUR_NS = 3_600_000_000_000
 FIELDS = (
     "gpst_ns",
-    "arc_id",
+    "segment_start_gpst_ns",
+    "satellite_system",
+    "fusion_group",
     "prn",
     "receiver_window_id",
     "ipp_latitude_deg",
@@ -69,7 +71,7 @@ def prepare_hours(root, scratch, start, end, center, selected_days=None):
 
     def tables():
         if selected_days is None:
-            yield from read_stec(root, start, end)
+            yield from read_fused(root, start, end)
         else:
             from datetime import date
 
@@ -77,10 +79,12 @@ def prepare_hours(root, scratch, start, end, center, selected_days=None):
 
             for day in sorted(selected_days):
                 first = (date.fromisoformat(day) - EPOCH).days * DAY_NS
-                yield from read_stec(root, max(first, start or 0), min(first + DAY_NS, end or 2**63 - 1))
+                yield from read_fused(root, max(first, start or 0), min(first + DAY_NS, end or 2**63 - 1))
 
     for table in tqdm(tables(), desc="Read calibrated STEC", unit="batch"):
-        points = {k: table[k].to_numpy() for k in FIELDS}
+        points = {
+            k: table[k].to_numpy().astype(str) if k in ("satellite_system", "fusion_group") else table[k].to_numpy() for k in FIELDS
+        }
         times = points["gpst_ns"]
         if np.any(np.diff(times) < 0) or (previous is not None and times[0] < previous):
             raise ValueError("Non-monotonic STEC sample times")
@@ -169,8 +173,9 @@ def initialize(coastline, options):
 
 def track_pieces(data, gap_ns):
     """No joins over missing calibration, arc/window changes, gaps or dateline."""
-    for arc in np.unique(data["arc_id"]):
-        indices = np.flatnonzero(data["arc_id"] == arc)
+    keys = np.rec.fromarrays([data["fusion_group"], data["prn"], data["segment_start_gpst_ns"]], names="group,prn,segment")
+    for key in np.unique(keys):
+        indices = np.flatnonzero(keys == key)
         valid = np.isfinite(data["stec_absolute_tecu"][indices]) & np.isfinite(data["receiver_window_id"][indices])
         valid &= np.isfinite(data["ipp_latitude_deg"][indices]) & np.isfinite(data["ipp_longitude_deg"][indices])
         times = data["gpst_ns"][indices]
@@ -246,12 +251,13 @@ def render_hour(job):
                     linewidths=0.6,
                     zorder=6,
                 )
-            prn = int(data["prn"][indices[-1]])
-            if prn not in endpoints or data["gpst_ns"][indices[-1]] > data["gpst_ns"][endpoints[prn]]:
-                endpoints[prn] = indices[-1]
-        for prn, index in endpoints.items():
+            index = indices[-1]
+            key = (str(data["fusion_group"][index]), int(data["prn"][index]))
+            if key not in endpoints or data["gpst_ns"][index] > data["gpst_ns"][endpoints[key]]:
+                endpoints[key] = index
+        for (group, prn), index in endpoints.items():
             ax.annotate(
-                f"G{prn:02d}",
+                f"{data['satellite_system'][index]}{prn:02d}" + (f" {group[2:]}" if group.startswith("C-") else ""),
                 (lon[index], lat[index]),
                 xytext=(5, 5),
                 textcoords="offset points",
@@ -261,11 +267,11 @@ def render_hour(job):
             )
         ax.scatter(*opts["station"], marker="*", s=130, c="black", edgecolors="white", linewidths=0.7, zorder=8)
         heading = calendar(hour).strftime("%Y-%m-%d %H:00 GPST")
-        subtitle = f"GIM-constrained absolute STEC | {opts['signal_pair']} | {valid.sum():,}/{len(tec):,} usable samples"
+        subtitle = f"GIM-constrained pair mean | {valid.sum():,}/{len(tec):,} usable samples"
         if np.any(data["provisional"]):
             subtitle += " | provisional calibration"
         ax.set(
-            title=f"{opts['station_name']} — GPS ionospheric pierce-point tracks\n{heading}\n{subtitle}",
+            title=f"{opts['station_name']} — multi-GNSS ionospheric pierce-point tracks\n{heading}\n{subtitle}",
             xlim=opts["extent"][:2],
             ylim=opts["extent"][2:],
             xlabel="Longitude",
@@ -396,8 +402,12 @@ def cli(
         if not paths:
             raise ValueError("No STEC samples")
         metadata = json.loads(pq.ParquetFile(paths[0]).schema_arrow.metadata[b"ngo"])
-        if metadata.get("time_scale") != "GPST" or metadata.get("schema_version") != 2 or metadata.get("constellation") != "GPS":
-            raise ValueError("Expected current GPS STEC Parquet")
+        if (
+            metadata.get("time_scale") != "GPST"
+            or metadata.get("schema_version") != 4
+            or metadata.get("constellations") != "G E C J"
+        ):
+            raise ValueError("Expected current multi-GNSS STEC Parquet")
         station = station_position(metadata["settings"]["position_ecef_m"])
         source_summary = json.loads((input_dir / "summary.json").read_text())
         generations = source_summary["day_generations"]
@@ -481,7 +491,6 @@ def cli(
                     extent=extent,
                     station=station,
                     station_name=metadata["station"],
-                    signal_pair=f"C{metadata['signal1']}/C{metadata['signal2']}",
                     vmin=vmin,
                     vmax=vmax,
                     sbas_vmax=sbas_vmax,

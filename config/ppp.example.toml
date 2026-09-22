@@ -19,3 +19,6 @@ margin_hours = 6
 # antenna_azimuth_deg = 0.0
 # Frequency selection uses native/same-frequency, bounded interpolation, then
 # nearest original calibration within 25 MHz; see docs/antenna.md.
+# Explicit opt-in for more distant nearest-constant frequency extrapolation:
+allow_extrapolated_antenna = false
+antenna_extrapolation_max_mhz = 60.0

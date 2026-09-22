@@ -29,7 +29,7 @@ only when they affect present interpretation or processing.
   archives, optional storage limits and multiple FTPS targets.
 - [CommonNEX importer pilot](commonnex/importer.md): native UBX/SBF observations,
   RawBits, receiver telemetry and Events to daily Parquet, tail parts and revisions.
-- [GPS STEC and receiver DCB](stec.md): CommonNEX input, incremental phase leveling,
+- [Multi-GNSS STEC and receiver DCB](stec.md): CommonNEX input, incremental phase leveling,
   GIM-constrained absolute estimates and hourly plots.
 - [Receiver antenna calibration](antenna.md): shared PCO/PCV, same-frequency use, bounded interpolation and nearby-frequency substitution.
 - [Offline PPP Float](ppp.md): raw GPS observations, local precise products and numerical/plot outputs.

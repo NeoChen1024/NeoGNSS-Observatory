@@ -4,15 +4,17 @@
 
 namespace neognss_obs {
 struct StecSample {
-    int64_t gpst_ns, arc_id;
-    int32_t prn, product_issues;
+    int64_t gpst_ns, arc_id, receiver_segment_start_ns;
+    int32_t prn, system, pair_id, product_issues;
+    double raw_phase_gf_m, relative_stec_tecu;
     double phase_gf_m, code_gf_corrected_m, elevation_deg, azimuth_deg;
     double ipp_latitude_deg, ipp_longitude_deg, mapping, gim_stec_tecu,
         gim_rms_tecu;
 };
 struct StecArc {
-    int64_t gpst_ns, end_ns, arc_id, samples, leveling_samples;
-    int32_t prn, valid, start_reason, end_reason, provisional;
+    int64_t gpst_ns, end_ns, arc_id, samples, leveling_samples,
+        receiver_segment_start_ns;
+    int32_t prn, system, pair_id, valid, start_reason, end_reason, provisional;
     double level_offset_m, scatter_m;
 };
 struct StecResult {
@@ -25,6 +27,7 @@ class StecProcessor {
     ~StecProcessor();
     void products(const Json &products);
     StecResult process(const ObservationBatch &batch);
+    void restarts(std::span<const int64_t> boundaries);
     std::vector<StecArc> finish();
     std::vector<StecArc> preview() const;
     Json checkpoint() const;

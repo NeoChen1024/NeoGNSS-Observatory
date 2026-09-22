@@ -5,9 +5,11 @@
 #include <string>
 
 namespace neognss_obs {
-// GPS L1/L2 numerical-engine representation, selected from shared Measurements.
+// Shared numerical-engine observations; PPP's raw adapter selects GPS L1/L2,
+// while CommonNEX STEC preserves the selected G/E/C/J system and exact code.
 // No RTKLIB types or terminal I/O in this representation.
 struct Observation {
+    char system = 'G';
     int prn = 0, antenna = 0;
     std::string signal;
     double frequency_hz = 0, pseudorange_m = 0, phase_cycles = 0,
