@@ -3,9 +3,11 @@
 """Experimental CommonNEX import; no receiver acquisition or deduplication."""
 
 import json
+import lzma
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from collections import OrderedDict, deque
@@ -31,6 +33,35 @@ ORIGIN = date(1980, 1, 6)
 SBF_FILENAME = re.compile(r"[A-Za-z0-9_]{4}[0-9]{3}[A-Za-z0-9]\.[0-9]{2}_\Z")
 
 
+def open_input(path):
+    return lzma.open(path, "rb") if path.suffix == ".xz" else path.open("rb")
+
+
+def input_size(path):
+    """Expanded size from XZ indexes, without scanning/decompressing the payload."""
+    if path.suffix != ".xz":
+        return path.stat().st_size
+    try:
+        result = subprocess.run(["xz", "--robot", "--list", "--", str(path)], capture_output=True, text=True)
+    except FileNotFoundError as error:
+        raise ValueError("XZ input requires the xz executable for container index inspection") from error
+    if result.returncode:
+        raise ValueError(f"Cannot read XZ index for {path}: {result.stderr.strip()}")
+    totals = [line.split("\t") for line in result.stdout.splitlines() if line.startswith("totals\t")]
+    if len(totals) != 1 or len(totals[0]) < 5:
+        raise ValueError(f"Missing XZ size information: {path}")
+    return int(totals[0][4])
+
+
+def unchanged_input(item):
+    path = Path(item["path"])
+    return (
+        0 <= item["offset"] <= item["size"]
+        and path.stat().st_size == item.get("stored_size", item["size"])
+        and input_size(path) == item["size"]
+    )
+
+
 def discover_inputs(inputs, protocol, recursive):
     """Discover protocol-specific filenames; payload probes determine ordering."""
     paths = []
@@ -44,8 +75,13 @@ def discover_inputs(inputs, protocol, recursive):
                 raise ValueError(f"Directory input requires --recursive/-r: {path}")
             for directory, directories, files in os.walk(path, followlinks=False, onerror=walk_error):
                 directories.sort()
+                names = set(files)
                 for name in sorted(files):
-                    matches = name.endswith(".ubx") if protocol == "ubx" else SBF_FILENAME.fullmatch(name)
+                    plain = name.removesuffix(".xz")
+                    matches = plain.endswith(".ubx") if protocol == "ubx" else SBF_FILENAME.fullmatch(plain)
+                    if matches and name.endswith(".xz") and plain in names:
+                        click.echo(f"Skipping XZ copy beside expanded input: {Path(directory) / name}", err=True)
+                        continue
                     candidate = Path(directory) / name
                     if matches and candidate.is_file():
                         paths.append(candidate.resolve())
@@ -54,11 +90,11 @@ def discover_inputs(inputs, protocol, recursive):
         else:
             raise ValueError(f"Input is not a regular file or directory: {path}")
     if not paths:
-        raise ValueError(f"No matching expanded {protocol.upper()} input files")
+        raise ValueError(f"No matching {protocol.upper()} input files")
     if len(set(paths)) != len(paths):
         raise ValueError("Repeated input path; do not supply overlapping directories or the same file twice")
-    if any(p.suffix == ".xz" for p in paths):
-        raise ValueError("Provide expanded raw files, not XZ archives")
+    if any(p.suffix == ".xz" and p.with_suffix("") in paths for p in paths):
+        raise ValueError("Both expanded input and its XZ copy supplied; choose one")
     return paths
 
 
@@ -71,11 +107,12 @@ def ordered_inputs(paths, protocol):
     """Stable sort by a bounded head probe, without sharing decoder state."""
     found = []
     for path in tqdm(paths, desc="Probe input heads", unit="file", file=sys.stderr):
-        size = path.stat().st_size
+        stored_size = path.stat().st_size
+        size = input_size(path)
         limit = min(size, max((size + 99) // 100, 1024**2))
         probe = _native.CnexTimeProbe(protocol)
         result = {"observation": None, "navigation": None}
-        with path.open("rb") as source:
+        with open_input(path) as source:
             remaining = limit
             while remaining:
                 data = source.read(min(1024**2, remaining))
@@ -86,7 +123,7 @@ def ordered_inputs(paths, protocol):
                 result = probe.result()
                 if result["observation"] is not None:
                     break
-        if path.stat().st_size != size:
+        if path.stat().st_size != stored_size:
             raise ValueError(f"Input changed while probing: {path}")
         kind = "observation" if result["observation"] is not None else "navigation"
         time = result[kind]
@@ -284,7 +321,7 @@ def list_parts(station):
     "--recursive",
     "-r",
     is_flag=True,
-    help="Recursively discover *.ubx or SBF marker+DOY+session.YY_ files in directory inputs; ignore XZ copies.",
+    help="Recursively discover *.ubx or SBF marker+DOY+session.YY_ files, including .xz; prefer expanded sibling copies.",
 )
 @click.option("--station", required=True, type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--protocol", "-p", type=click.Choice(["ubx", "sbf"]), default="ubx", show_default=True)
@@ -369,7 +406,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                     raise ValueError("Continuation state refers to an obsolete revision")
             for item in state["inputs"]:
                 path = Path(item["path"])
-                if not 0 <= item["offset"] <= item["size"] or path.stat().st_size != item["size"]:
+                if not unchanged_input(item):
                     raise ValueError(f"Previously read input changed: {path}")
                 processed[str(path)] = item
             skipped = sum(str(p) in processed for p in new_paths)
@@ -380,11 +417,12 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                 return
             for item in state["tail_inputs"]:
                 path = Path(item["path"])
-                if not 0 <= item["offset"] <= item["size"] or path.stat().st_size != item["size"]:
+                if not unchanged_input(item):
                     raise ValueError("Tail input changed")
                 segments.append((path, item["offset"], item["size"]))
         # Saved raw tail is replay context, not a candidate for fresh sorting.
         segments.extend(ordered_inputs(new_paths, protocol))
+        stored_sizes = {str(path): path.stat().st_size for path, _, _ in segments}
         mode = "rebuild" if rebuild else "tail" if resume_from else "new"
         stage = Path(tempfile.mkdtemp(prefix=".cnex-import-", dir=station))
         # validate_setup emits exactly twelve fractional digits; avoid both
@@ -582,7 +620,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
         ):
             group_sequence = 0
             for path, start, size in segments:
-                with path.open("rb") as source:
+                with open_input(path) as source:
                     source.seek(start)
                     remaining = size - start
                     while remaining:
@@ -605,7 +643,12 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                         batches = batch_group(group_sequence, native_batches, include_empty=True).ordered_batches()
                         group_sequence += 1
                         summary = reader.summary()
-                        processed[str(path)] = {"path": str(path), "size": size, "offset": size - remaining}
+                        processed[str(path)] = {
+                            "path": str(path),
+                            "size": size,
+                            "offset": size - remaining,
+                            "stored_size": stored_sizes[str(path)],
+                        }
                         tail = []
                         offset = summary["resume_offset"]
                         consumed = summary["source_bytes"]
@@ -614,7 +657,14 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                             if consumed <= 0:
                                 break
                             if offset < length:
-                                tail.append({"path": str(tail_path), "offset": tail_start + offset, "size": tail_size})
+                                tail.append(
+                                    {
+                                        "path": str(tail_path),
+                                        "offset": tail_start + offset,
+                                        "size": tail_size,
+                                        "stored_size": stored_sizes[str(tail_path)],
+                                    }
+                                )
                                 offset = 0
                             else:
                                 offset -= length
@@ -630,7 +680,10 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                             click.echo("Warning: skipped complete foreign-protocol frames", err=True)
                             warned_foreign = True
                         progress.update(len(data))
-                if path.stat().st_size != size:
+                    # Read past the indexed size to validate the final XZ check/footer.
+                    if source.read(1):
+                        raise ValueError(f"Input exceeds its declared expanded size: {path}")
+                if path.stat().st_size != stored_sizes[str(path)]:
                     raise ValueError(f"Input changed while reading: {path}")
             for future in pending_writes:
                 future.result()
@@ -655,7 +708,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
             click.echo("Warning: RawBits includes retained null-time or unsupported records; inspect counts", err=True)
         if summary["telemetry_partial_rows"]:
             click.echo("Warning: partial telemetry windows were retained; inspect collection_complete", err=True)
-    except (ValueError, KeyError, OSError, RuntimeError, pa.ArrowException) as exc:
+    except (ValueError, KeyError, OSError, EOFError, lzma.LZMAError, RuntimeError, pa.ArrowException) as exc:
         for writer, _, _ in writers.values():
             if writer is not None:
                 writer.close()

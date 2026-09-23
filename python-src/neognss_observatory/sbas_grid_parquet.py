@@ -31,12 +31,15 @@ SCHEMA = pa.schema(
             "givei",
             "frame_id",
             "stream_id",
+            "reported_gpst_ms",
         )
     ]
     + [(name, pa.float64()) for name in ("latitude", "longitude", "delay_m", "vtec_tecu")]
-    + [(name, pa.string()) for name in ("satellite_system", "signal")],
+    + [(name, pa.string()) for name in ("satellite_system", "signal", "status")]
+    + [("mt0_seen", pa.bool_())],
     metadata={
-        b"schema_version": b"3",
+        b"schema_version": b"4",
+        b"mt0_policy": b"research: retain grid; flag MT0 since state reset; no safety assurance",
         b"time_scale": b"GPST",
         b"time_origin": b"1980-01-06 00:00:00 GPST",
         b"time_basis": b"input SBAS frame context; not transmit time",
@@ -66,7 +69,12 @@ class DailySink:
         indices = np.repeat(np.arange(len(rows)), counts)
         first = np.repeat(np.cumsum(counts) - counts, counts)
         days = start[indices] // 86400000 + np.arange(len(indices)) - first
-        columns = {name: pa.array(rows[name][indices]) for name in SCHEMA.names if name in rows.dtype.names}
+        columns = {
+            name: pa.array(rows[name][indices], from_pandas=True)
+            for name in SCHEMA.names
+            if name in rows.dtype.names and name != "status"
+        }
+        columns["status"] = pa.array(np.array(["usable", "do_not_use", "not_monitored"])[rows["status"][indices]])
         columns["start_gpst_ms"] = pa.array(np.maximum(start[indices], days * 86400000))
         columns["end_gpst_ms"] = pa.array(np.minimum(end[indices], (days + 1) * 86400000))
         columns["satellite_system"] = pa.repeat("S", len(indices))
@@ -217,7 +225,7 @@ def cli(input_dir, output, gap_timeout):
         output.mkdir()
         manifest, diagnostics = build_grid(input_dir.resolve(), output, gap_timeout)
         result = dict(
-            schema=3,
+            schema=4,
             status="complete",
             product="sbas_igp_intervals",
             time_scale="GPST",

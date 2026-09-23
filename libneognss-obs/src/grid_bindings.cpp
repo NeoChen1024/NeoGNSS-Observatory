@@ -52,7 +52,7 @@ void bind_grid(py::module_ &m) {
     PYBIND11_NUMPY_DTYPE(GridInterval, start_gpst_ms, end_gpst_ms,
                          satellite_number, band, mask_bit, iodi, givei,
                          frame_id, stream_id, latitude, longitude, delay_m,
-                         vtec_tecu);
+                         vtec_tecu, reported_gpst_ms, status, mt0_seen);
     py::class_<GridCnexProcessor>(m, "GridCnexProcessor")
         .def(py::init<std::string, int64_t>())
         .def("begin_day",

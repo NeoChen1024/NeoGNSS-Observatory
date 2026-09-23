@@ -15,88 +15,14 @@ from tqdm import tqdm
 
 from .map_assets import with_coastline
 from .research_output import staged_output, write_json
-from .sbas_grid_parquet import SCHEMA
-from .sbas_grid_render import extent_for, initialize_coastline, parse_hour, render_job
-from .sbas_streams import IDENTITY
-
-HOURLY_SCHEMA = pa.schema(
-    [
-        pa.field("satellite_system", pa.string(), nullable=False),
-        pa.field("satellite_number", pa.int64(), nullable=False),
-        pa.field("signal", pa.string(), nullable=False),
-        *[pa.field(name, pa.int64(), nullable=False) for name in ("band", "mask_bit", "hour_gpst")],
-        *[
-            pa.field(name, pa.float64(), nullable=False)
-            for name in (
-                "latitude",
-                "longitude",
-                "vtec_integral_tecu_seconds",
-                "valid_seconds",
-                "coverage",
-                "vtec_tecu",
-            )
-        ],
-    ],
-    metadata={
-        b"time_scale": b"GPST",
-        b"time_origin": b"1980-01-06 00:00:00 GPST",
-        b"hour_gpst_unit": b"seconds",
-        b"quantity": b"SBAS VTEC",
-        b"vtec_unit": b"TECU",
-        b"coordinate_unit": b"degrees",
-        b"mean": b"valid-time-weighted sample-and-hold",
-    },
+from .sbas_composite import (
+    HOURLY_SCHEMA,
+    PRIORITY,
+    SELECTED_SCHEMA,
+    composite_day,
+    parse_priority,
 )
-
-
-def hourly_rows(path, day, start=None, end=None):
-    """Aggregate one bounded GPST day; zero coverage remains absent, not zero TEC."""
-    if day % 86400000:
-        raise ValueError("Parquet partition must start at GPST midnight")
-    parquet = pq.ParquetFile(path)
-    if not parquet.schema_arrow.equals(SCHEMA) or any(
-        parquet.schema_arrow.metadata.get(k) != v for k, v in SCHEMA.metadata.items()
-    ):
-        raise ValueError(f"Unexpected SBAS Parquet schema: {path}")
-    stats = defaultdict(lambda: [0.0, 0, None])
-    last_end = {}
-    for batch in parquet.iter_batches(batch_size=65536):
-        for row in batch.to_pylist():
-            begin, finish = row["start_gpst_ms"], row["end_gpst_ms"]
-            if not day <= begin < finish <= day + 86400000:
-                raise ValueError("SBAS interval outside its GPST day")
-            key = tuple(row[k] for k in (*IDENTITY, "band", "mask_bit"))
-            if begin < last_end.get(key, begin):
-                raise ValueError("Overlapping or reversed SBAS grid intervals")
-            last_end[key] = finish
-            if not math.isfinite(row["vtec_tecu"]) or row["vtec_tecu"] < 0:
-                raise ValueError("Invalid SBAS VTEC")
-            while begin < finish:
-                hour = begin // 3600000 * 3600000
-                stop = min(finish, hour + 3600000)
-                if (start is None or hour >= start * 1000) and (end is None or hour < end * 1000):
-                    stat = stats[key, hour]
-                    stat[0] += row["vtec_tecu"] * (stop - begin) / 1000
-                    stat[1] += stop - begin
-                    stat[2] = row
-                begin = stop
-    result = []
-    for (key, hour), (integral, milliseconds, row) in sorted(stats.items()):
-        if not 0 < milliseconds <= 3600000:
-            raise ValueError("Invalid SBAS hourly coverage")
-        result.append(
-            dict(
-                zip((*IDENTITY, "band", "mask_bit"), key),
-                hour_gpst=hour // 1000,
-                latitude=row["latitude"],
-                longitude=row["longitude"],
-                vtec_integral_tecu_seconds=integral,
-                valid_seconds=milliseconds / 1000,
-                coverage=milliseconds / 3600000,
-                vtec_tecu=integral / (milliseconds / 1000),
-            )
-        )
-    return result
+from .sbas_grid_render import extent_for, initialize_coastline, parse_hour, render_job
 
 
 @click.command()
@@ -109,6 +35,9 @@ def hourly_rows(path, day, start=None, end=None):
 )
 @click.option("--start", callback=parse_hour, help="First GPST hour, YYYY-MM-DDTHH.")
 @click.option("--end", callback=parse_hour, help="Exclusive final GPST hour, YYYY-MM-DDTHH.")
+@click.option(
+    "--priority", default=",".join(PRIORITY), callback=parse_priority, show_default=True, help="Provider preference, highest first."
+)
 @click.option("--vmin", type=float, default=0, show_default=True)
 @click.option("--vmax", type=float, default=200, show_default=True)
 @click.option("--min-coverage", type=click.FloatRange(0, 1), default=0.25, show_default=True)
@@ -117,7 +46,7 @@ def hourly_rows(path, day, start=None, end=None):
 @click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")
 @with_coastline
 @staged_output
-def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, workers, png_compression):
+def cli(input_dir, output, coastline, start, end, priority, vmin, vmax, min_coverage, workers, png_compression):
     """Read daily GPST Parquet and export time-weighted hourly PNG maps."""
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
@@ -129,21 +58,40 @@ def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, work
             raise ValueError("Require finite --vmin < --vmax")
         daily = input_dir / "daily" if (input_dir / "daily").is_dir() else input_dir
         files = []
+        available = {}
         for path in sorted(daily.glob("GPST-*.parquet")):
             metadata = pq.ParquetFile(path).schema_arrow.metadata or {}
             day = int(metadata[b"day_gpst_ms"])
+            if day in available:
+                raise ValueError("Duplicate SBAS day")
+            available[day] = path
             if (start is None or day + 86400000 > start * 1000) and (end is None or day < end * 1000):
                 files.append(dict(path=str(path.resolve()), day_gpst_ms=day))
         output.mkdir(parents=False, exist_ok=False)
         cache = output / "hourly"
         cache.mkdir()
-        daily_cache, bounds = [], []
+        selections = output / "selected"
+        selections.mkdir()
+        daily_cache, bounds, state = [], [], {}
+        if files:
+            previous = min(r["day_gpst_ms"] for r in files) - 86400000
+            if previous in available:
+                composite_day(available[previous], previous, priority=priority, state=state)
+        hourly_schema = HOURLY_SCHEMA.with_metadata({**HOURLY_SCHEMA.metadata, b"priority": ",".join(priority).encode()})
+        selected_schema = SELECTED_SCHEMA.with_metadata({**SELECTED_SCHEMA.metadata, b"priority": ",".join(priority).encode()})
         for record in tqdm(sorted(files, key=lambda r: r["day_gpst_ms"]), desc="Aggregate GPST days", unit="day"):
             path = (input_dir / record["path"]).resolve()
-            rows = hourly_rows(path, record["day_gpst_ms"], start, end)
+            rows, selected = composite_day(path, record["day_gpst_ms"], start, end, priority, state)
+            pq.write_table(
+                pa.Table.from_pylist(selected, schema=selected_schema),
+                selections / path.name,
+                compression="zstd",
+                compression_level=3,
+                use_dictionary=True,
+            )
             target = cache / (path.stem + ".parquet")
             pq.write_table(
-                pa.Table.from_pylist(rows, schema=HOURLY_SCHEMA),
+                pa.Table.from_pylist(rows, schema=hourly_schema),
                 target,
                 compression="zstd",
                 compression_level=3,
@@ -169,7 +117,7 @@ def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, work
                     for batch in parquet.iter_batches(batch_size=65536):
                         for row in batch.to_pylist():
                             if row["coverage"] >= min_coverage:
-                                grouped[tuple(row[k] for k in (*IDENTITY, "hour_gpst"))].append(row)
+                                grouped[row["hour_gpst"]].append(row)
                 jobs = [
                     (cells, coastline, output, vmin, vmax, min_coverage, extent, png_compression)
                     for _, cells in sorted(grouped.items())
@@ -180,7 +128,7 @@ def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, work
         write_json(
             output / "completed.json",
             dict(
-                schema=1,
+                schema=2,
                 status="complete",
                 time_scale="GPST",
                 input_files=files,
@@ -195,7 +143,9 @@ def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, work
                     min_coverage=min_coverage,
                     workers=workers,
                     png_compression=png_compression,
-                    mean="valid-time-weighted sample-and-hold",
+                    mean="source selection before valid-time-weighted hourly average",
+                    priority=list(priority),
+                    mt0_policy="research; retained and flagged, no integrity assurance",
                 ),
             ),
         )

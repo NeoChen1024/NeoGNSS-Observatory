@@ -87,7 +87,7 @@ handling.
 - [ ] Consume receiver restart Events in grid, defining timed and untimed
   boundaries without carrying masks across an established restart.
 
-Grid schema version 3 contains RINEX `satellite_system`/`satellite_number`
+Grid schema version 4 contains RINEX `satellite_system`/`satellite_number`
 identity (`S`/`37`, displayed as `S37`), signal, `stream_id`,
 `frame_id`, IGP band/mask position, coordinates, IODI, GIVEI, delay in meters,
 equivalent VTEC in TECU, and `[start_gpst_ms,end_gpst_ms)`. The derived grid's
@@ -98,10 +98,18 @@ foreign key or byte offset. SBAS
 bodies are not duplicated for every grid cell. Midnight splits intervals, not
 state. No raw source references or transport identifiers are persisted.
 
-Correction/mask ages remain 600/1200 seconds. Missing masks, expired state,
-invalid and unmonitored values produce no interval, not zero TEC. Values from
-different satellites are never averaged together. This is SBAS-broadcast equivalent
-VTEC, not receiver-observed STEC. Empty days have no grid Parquet.
+Correction/mask ages remain 600/1200 seconds. Missing masks and expired state
+produce no interval. Reported do-not-use and not-monitored states are retained
+with null delay/VTEC, alongside `reported_gpst_ms` and `status`, so selection
+cannot mistake them for missing data. This is SBAS-broadcast equivalent VTEC,
+not receiver-observed STEC. Empty days have no grid Parquet.
+
+MT0 is a research warning, not a grid reset: retain independently decoded
+MT18/26 state and set `mt0_seen` on subsequent intervals until state resets.
+The flag is historical within that state, not a timed integrity guarantee;
+false does not establish safety. MT0 payload is not reinterpreted as MT2.
+Existing grid products must be regenerated for schema 4; CommonNEX does not
+need rebuilding.
 
 Grid publishes daily Parquet after successful processing; `--overwrite`
 retains the previous output as a backup.
@@ -110,7 +118,25 @@ the import-state sidecar, completion summaries or raw sources.
 
 `ngo-sbas-grid-plot` uses grid Parquet and the bundled Natural Earth 10m coastline.
 Use `--coastline PATH` to supply another coastline ZIP. It computes
-valid-duration-weighted hourly means; `--min-coverage` defaults to 0.25.
+one composite map per hour, not separate satellite/provider maps.
+Select sources per IGP and time interval before computing valid-duration-weighted
+hourly means; `--min-coverage` defaults to 0.25. Default provider priority is
+MSAS, BDSBAS, KASS, GAGAN, SouthPAN; `--priority` can reorder these providers.
+Unavailable, expired, do-not-use or not-monitored candidates fall through to
+the next provider. Within a provider, use its newest report; a newer rejection
+blocks older usable reports from its other satellites. Equal-time reports with
+any rejection are rejected conservatively; equal-time usable reports use the lowest
+RINEX satellite number. Concurrent estimates are not averaged or counted twice.
+
+The current provider registry covers S29/S37 (MSAS), S30/S43/S44 (BDSBAS),
+S34/S42 (KASS), S27/S28/S32 (GAGAN), and S22 (SouthPAN). Unmapped satellites
+require an explicit registry update rather than a guessed provider.
+Selected intervals, provider/PRN and MT0 flag are written to `selected/`;
+hourly records retain contributing sources and their durations. Source switches
+can introduce steps: the composite is a research visualization, not an integrity
+solution or a blended ionosphere model. MT0 contributions are marked on maps.
+STEC's optional SBAS background uses the same selection, configured through
+`ngo-stec-plot --sbas-priority`.
 Hourly grid records are stored in `hourly/GPST-YYYY-MM-DD.parquet`, using
 Zstandard level 3 and explicit GPST, coordinate and VTEC units. Each file
 contains that day's hourly means, valid durations and coverage fractions;
@@ -170,7 +196,7 @@ Encode the PNG manifest in its recorded order with a Vulkan Video HEVC encoder:
 ngo-sbas-map-video \
   --images-manifest work/era-a-vtec-hourly/images.json \
   --output work/era-a-vtec-hourly/era-a-S37-hourly-vtec-5fps-hevc.mp4 \
-  --title "Era A SBAS S37 hourly mean VTEC"
+  --title "Era A SBAS composite hourly mean VTEC"
 ```
 
 The defaults are 5 fps, Vulkan physical device 0, CQP 24, an `hvc1` MP4 stream,

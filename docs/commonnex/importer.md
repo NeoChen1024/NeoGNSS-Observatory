@@ -140,11 +140,14 @@ Recursive discovery selects `*.ubx` for UBX. SBF basenames must match
 `[A-Za-z0-9_]{4}[0-9]{3}[A-Za-z0-9]\.[0-9]{2}_`: four marker characters,
 three DOY digits, one session character, a literal dot, two year digits and
 a final underscore. Examples: `bx4a1600.25_`, `bee_2560.26_`. The session
-character is retained; daily filenames commonly use `0`. RINEX `.25o`/`.25p`,
-XZ copies and unrelated files are not selected. Matching is case-sensitive for
-the `.ubx` suffix. Filenames select candidates, not observation dates or order.
+character is retained; daily filenames commonly use `0`.
+The same names with an additional `.xz` suffix are also selected. When an
+expanded file and its XZ copy coexist in a scanned directory, the expanded
+file wins; supplying both explicitly is an error. RINEX `.25o`/`.25p` and unrelated
+files are not selected. Matching is case-sensitive for the `.ubx` suffix.
+Filenames select candidates, not observation dates or order.
 Explicit file arguments need not match these discovery patterns, so a renamed
-`sample.sbf` remains usable; explicit XZ inputs are rejected.
+`sample.sbf` and `sample.sbf.xz` remain usable.
 
 Directory arguments require `--recursive`. Traversal is deterministic and does
 not follow nested directory symlinks; an explicitly supplied directory symlink
@@ -152,10 +155,21 @@ can identify the root. Unreadable directories and empty overall discovery are
 errors. Overlapping roots or file aliases resolving to the same input path are
 errors, not an observation deduplication policy.
 
-Inputs must be expanded files. The importer orders files from bounded head
+Inputs may be expanded or XZ-compressed files, including a mixture. XZ is
+decoded in memory without writing an expanded temporary file. The `xz`
+executable is required to read expanded sizes from the container indexes;
+Python's LZMA decoder reads and checks the payload, including concatenated
+XZ streams. Progress, head-probe budgets and continuation offsets refer to
+expanded bytes. Resume also checks the stored file size; seeking to a saved
+XZ offset may require decompressing from the beginning, so continuation can
+be slower than for an expanded file. Corrupt/truncated archives fail rather
+than being treated as a clean end of input. As with other input failures,
+already published daily parts are retained.
+
+The importer orders files from bounded head
 samples, not filenames. Use one continuous recording path per invocation; do
 not mix overlapping logger copies.
-The importer does not acquire FTP data, decompress XZ, or require a QA stamp.
+The importer does not acquire FTP data or require a QA stamp.
 Choose `-p ubx` for RAWX. Frame-validated foreign-protocol messages are skipped
 atomically with a throttled warning and counters.
 `run --source-antenna` selects a native observation input (default 0; RAWX

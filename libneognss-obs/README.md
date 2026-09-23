@@ -71,7 +71,7 @@ The experimental extension is `neognss_observatory._native`:
 | `DatasetScan(protocol="ubx", gap_timeout=50)` | Read-only streaming QA |
 | `archive_index(buffer)` | Read-only UBX buffer to a packed `UBXIDX04` index |
 | `SegmentPlanner(joins, timeout_ms)` | Source index buffers to GPST segments/quarantined spans |
-| `GridProcessor(correction_age=600, mask_age=1200, gap_timeout=0)` | Protocol-neutral timed SBAS batches to valid IGP intervals |
+| `GridProcessor(correction_age=600, mask_age=1200, gap_timeout=0)` | Protocol-neutral timed SBAS batches to IGP state intervals |
 | `ObservationReader(protocol="ubx")` | UBX RAWX / SBF MeasEpoch chunks to opaque GPS observation batches |
 | `CnexObservationReader(protocol, setup_id, antenna, period_seconds, period_ps)` | UBX/SBF chunks to four CommonNEX Arrow batches: observations, events, RawBits and receiver-telemetry |
 | `CnexTimeProbe(protocol)` | Independent head-sample framing and first valid observation/navigation GPST anchors; no Arrow science output |
@@ -146,13 +146,17 @@ keys. These times are continuous milliseconds since 1980-01-06 GPST. For UBX,
 the shared streaming epoch assembler establishes reception context. These times
 must not be confused with a measured SBAS transmission timestamp.
 
-SBF adapters use GEORawL1 TOW/WNc and reject receiver-failed CRC records for
-grid updates. A positive `gap_timeout` clears state after a per-signal message
+The CommonNEX adapter uses navigation-context times and rejects receiver-failed
+CRC records for grid updates. A positive `gap_timeout` clears state after a per-signal message
 gap, closing intervals at the last observed time; zero disables this extra
 policy when explicit frame-stream end records already define continuity. Feed all SBAS
 message types for gap detection, not just mask/correction messages. Python
 attaches RINEX `satellite_system`, `satellite_number`, and `signal` identities to
 intervals, keeping SBAS Sxx numbering through plotting and selection.
+Intervals carry their originating correction time, usable/do-not-use/not-monitored
+status and an MT0-seen flag. Non-usable numeric values are NaN in native arrays
+and null in grid Parquet. MT0 retains grid state for research; it does not grant
+integrity assurance. See the [grid policy](../docs/subframes.md).
 
 This is pre-Alpha research code, not a stable ABI or safety-critical SBAS
 implementation. See [architecture and limitations](../docs/native-architecture.md).

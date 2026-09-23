@@ -30,6 +30,9 @@ struct GridInterval {
     int64_t start_gpst_ms, end_gpst_ms, satellite_number = 0, band, mask_bit,
                                         iodi, givei, frame_id, stream_id = 0;
     double latitude, longitude, delay_m, vtec_tecu;
+    int64_t reported_gpst_ms = 0,
+            status = 0; // 0 usable, 1 do_not_use, 2 not_monitored.
+    bool mt0_seen = false;
 };
 class GridProcessor {
   public:

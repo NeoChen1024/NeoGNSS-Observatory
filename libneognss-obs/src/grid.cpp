@@ -76,7 +76,12 @@ Json json_intervals(const std::vector<GridInterval> &rows) {
                        {"latitude", r.latitude},
                        {"longitude", r.longitude},
                        {"delay_m", r.delay_m},
-                       {"vtec_tecu", r.vtec_tecu}});
+                       {"vtec_tecu", r.vtec_tecu},
+                       {"reported_gpst_ms", r.reported_gpst_ms},
+                       {"status", r.status == 0   ? "usable"
+                                  : r.status == 1 ? "do_not_use"
+                                                  : "not_monitored"},
+                       {"mt0_seen", r.mt0_seen}});
     return out;
 }
 } // namespace
@@ -87,7 +92,7 @@ struct GridProcessor::State {
     };
     struct Cell {
         int64_t start, expiry;
-        int delay, givei, iodi;
+        int delay, givei, iodi, status;
         uint64_t offset;
     };
     using Key = std::pair<int, int>;
@@ -95,6 +100,7 @@ struct GridProcessor::State {
     std::map<int, Mask> masks;
     std::map<Key, Cell> cells;
     int iodi = -1, count = -1;
+    bool mt0_seen = false;
     std::optional<int64_t> last;
     std::map<std::string, uint64_t> diagnostics;
     std::vector<GridInterval> rows;
@@ -113,12 +119,13 @@ struct GridProcessor::State {
                 neognss_obs::SBAS::igp_coordinate(key.first, key.second);
             if (!coordinate)
                 throw std::runtime_error("Invalid IGP coordinate");
-            const double delay = c.delay * 0.125;
+            const double delay = c.status == 0 ? c.delay * 0.125 : NAN;
             rows.push_back({c.start, end, 0, key.first, key.second, c.iodi,
                             c.givei, int64_t(c.offset), 0,
                             double(coordinate->first),
                             double(coordinate->second), delay,
-                            delay * (1575.42e6 * 1575.42e6 / (40.3 * 1e16))});
+                            delay * (1575.42e6 * 1575.42e6 / (40.3 * 1e16)),
+                            c.expiry - correction_age, c.status, mt0_seen});
         }
         c.start = time;
     }
@@ -132,6 +139,7 @@ struct GridProcessor::State {
         masks.clear();
         iodi = count = -1;
         last.reset();
+        mt0_seen = false;
     }
     void accept(int64_t time, uint64_t offset, const GridUpdate &content) {
         if (last && time < *last)
@@ -147,9 +155,12 @@ struct GridProcessor::State {
         }
         const int type = content.type;
         if (type == 0) {
-            reset(time);
-            last = time;
-            ++diagnostics["test_mode_reset"];
+            // Research policy: retain the warning, not a fictitious grid reset.
+            // MT0 payload is not reinterpreted as a correction message.
+            if (!mt0_seen)
+                flush(time);
+            mt0_seen = true;
+            ++diagnostics["mt0_messages"];
         } else if (type == 18) {
             flush(time);
             const int new_count = content.count, band = content.band,
@@ -209,10 +220,13 @@ struct GridProcessor::State {
                 const std::string status(correction.status);
                 if (status != "usable" || delay == 511 || givei == 15) {
                     ++diagnostics[status];
-                    continue;
                 }
-                cells[key] = {time,  time + correction_age, delay, givei, iodi,
-                              offset};
+                const int state = status == "do_not_use" || delay == 511 ? 1
+                                  : status != "usable" || givei == 15    ? 2
+                                                                         : 0;
+                cells[key] = {
+                    time,  time + correction_age, delay, givei, iodi, state,
+                    offset};
             }
         }
     }
