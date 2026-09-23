@@ -24,12 +24,8 @@ are not processed by this estimator.
 
 The observation progress bar counts input signal-observation rows, including
 rows that signal selection later excludes, rather than compressed file bytes,
-epochs or emitted STEC samples. Its total comes from Parquet metadata for new
-input parts only. Progress advances after each Arrow batch (up to 65,536 rows),
-with display refreshes throttled to once per second, and shows the current GPST
-partition date, row throughput and estimated remaining observation-processing
-time. Product preparation is included in elapsed time; subsequent receiver DCB
-and fusion stages are separate work.
+epochs or emitted STEC samples. It covers new input parts only; subsequent
+receiver DCB and fusion stages are separate work.
 
 Do not configure `signal1`/`signal2`; these obsolete settings are rejected.
 The following families are automatically considered on each satellite:
@@ -52,33 +48,10 @@ Changing exact codes closes the previous arc. Observation row order does not
 set priority. Data, pilot and combined-code alternatives never multiply the
 fusion weight of one family.
 
-## Native processing and boundaries
+## Time and continuity
 
-CommonNEX is read once through Arrow. Native processing retains exact system,
-canonical satellite number and signal code. QZSS Jxx is translated to RTKLIB's
-internal PRN convention only at the geometry boundary. The build generates an
-ABI-consistent RTKLIB header/source view with BeiDou capacity C01-C63; the pinned
-submodule is unchanged. Geometry and GIM lookup are shared across families for
-a satellite/epoch; there is one product context, not a solver per pair.
-
-The reader projects only consumed Parquet columns and prefetches at most one
-batch on a dedicated read thread. Native schema/field lookup is batch-local;
-value validity, duplicate identities and time ordering are still checked.
-Pair-family candidates and compact signal slots are prepared once. Per-satellite
-signal lookup uses direct slots, and pair bias lookups are reused within an epoch.
-Broadcast health ephemerides are
-indexed by satellite and reference time, retaining the original first-record
-tie rule. These indexes are rebuilt when products change. Scientific processing
-remains ordered across epochs and days; output writers are not parallelized.
-
-Overlapping product windows reuse temporary expansions, parsed Bias-SINEX and
-IONEX headers. Native daily CLK records are cached for the active file set and
-combined in input-file order with RTKLIB's timestamp/index sort and nonzero
-overwrite rules. Expired entries are evicted; unchanged local products are
-assumed for the duration of a run. SP3, broadcast navigation and full IONEX grids
-still use their existing native loaders. Cache reuse does not expand the active
-time window or substitute missing products. Fusion selects geometry columns in
-batches while retaining ordered per-satellite continuity state.
+Input observations and local products must remain unchanged during a run.
+Processing preserves canonical system, satellite and signal identities.
 
 GPST decimal seconds become integer nanoseconds with round-half-to-even.
 Distinct epochs that collide after rounding and backward time are errors.
@@ -236,10 +209,9 @@ consumers must respect those boundaries.
 - `summary.json` and Parquet metadata carry scientific policies and quality.
   `state.json` is the incremental continuation checkpoint.
 
-Current output schema is 4, Python continuation contract version is 3, and
-native checkpoint version is 4. Older outputs require explicit `--rebuild`;
-no automatic rewriting occurs. Configuration,
-antenna-model or previously consumed input changes require rebuilding. Additional
+Incompatible outputs require explicit `--rebuild`; no automatic rewriting
+occurs. Configuration, antenna-model or previously consumed input changes
+require rebuilding. Additional
 parts/days preserve native state and refit only affected windows; fusion and plot
 day generations are updated for affected days. Changes to already-used external
 products require an explicit rebuild as well. Products and observations are
@@ -248,8 +220,11 @@ retained as a backup.
 
 `ngo-stec-plot` renders hourly fused multi-GNSS IPP tracks from published tables.
 It labels satellite system and BeiDou family, does not join across fusion
-segments, and preserves provisional/negative/out-of-range values. The coastline
-ZIP and optional SBAS grid remain separate inputs; SBAS background VTEC is not
+segments, and preserves provisional/negative/out-of-range values. Natural Earth
+10m coastline is bundled; `--coastline PATH` overrides it. Incremental plots
+identify the coastline ZIP by SHA-512, not its path or modification time.
+Older plot states using path-based identity require `--rebuild` once.
+The optional SBAS grid remains a separate input; SBAS background VTEC is not
 the STEC estimate. Use `--rebuild` to regenerate old GPS-only plot outputs.
 
 References: [Bias-SINEX](https://files.igs.org/pub/data/format/sinex_bias_100.pdf),

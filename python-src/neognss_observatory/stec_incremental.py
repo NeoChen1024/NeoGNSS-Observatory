@@ -16,7 +16,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from .batch_pipeline import prefetched
-from .cnex_import import day_directories, latest_parts
+from .cnex_import import day_directories, dictionary_columns, latest_parts
 from .setup_metadata import validate_setup
 
 DAY_NS = 86400 * 10**9
@@ -239,7 +239,13 @@ class DailySamples:
                 self.path = self.root / "samples" / f"GPST-{label}.parquet"
                 self.path.parent.mkdir(exist_ok=True)
                 self.temporary = self.path.with_suffix(".parquet.new")
-                self.writer = pq.ParquetWriter(self.temporary, table.schema, compression="zstd", compression_level=3)
+                self.writer = pq.ParquetWriter(
+                    self.temporary,
+                    table.schema,
+                    compression="zstd",
+                    compression_level=3,
+                    use_dictionary=dictionary_columns(table.schema),
+                )
                 if self.path.exists():
                     with pq.ParquetFile(self.path) as old:
                         for batch in old.iter_batches():

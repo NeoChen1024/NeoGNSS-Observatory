@@ -19,12 +19,12 @@ Observatory-specific C++20 processing on top of
 this component. CMake exposes `neognss_obs::neognss_obs`.
 
 The library implements archive epoch indexing and GPST segmentation, receiver
-clock association/unwrap and MON-SYS restart/temperature tracking, and SBAS
+time association and receiver telemetry normalization, SBAS
 mask/aging state, multi-GNSS STEC/receiver DCB processing, and static GPS Float PPP
 using the RTKLIB-EX core.
 The pybind11 extension exposes bounded-batch processing;
-Python owns file I/O, orchestration, Parquet and plots. JSON containers here
-are in-memory records, not a subprocess or JSON-text transport.
+Python owns file I/O, orchestration, Parquet and plots. See
+[native architecture](../docs/native-architecture.md) for interop requirements.
 
 ## Build and use
 
@@ -37,14 +37,13 @@ Install the repository Python package to build and install the extension:
 ```sh
 git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json contrib/RTKLIB
 python -m pip install .
-ngo-receiver-clock --input-dir /data/reconstructed --output /data/clock
 ngo-cnex-import init /data/cnex --setup /data/setup.json
 ngo-cnex-import run -p ubx --station /data/cnex /data/first.ubx
+ngo-receiver-clock --input-dir /data/cnex --output /data/clock
 ngo-sbas-grid-parquet --input-dir /data/cnex --output /data/sbas-grid
 ```
 
-No `--worker` or `--indexer` executable paths are used. The old internal
-executables are removed; the independent UBX/SBF `neognsslogger` application remains.
+The independent UBX/SBF `neognsslogger` application belongs to libcppgnss.
 For a C++-only root build, use `-DNEOGNSS_BUILD_BINDINGS=OFF`.
 
 Clang with an installed libc++/libc++abi can be verified in a separate build

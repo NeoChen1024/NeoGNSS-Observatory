@@ -64,7 +64,6 @@ fingerprints and overlap indexes are enabled only for reconstruction.
 The restitch profile selects expanded `*.ubx` files. Its inventory caches are
 keyed by resolved source path, size, modification time, and native index-policy
 identifier. Each index records the full source SHA-256 and is itself checksummed.
-Three Python threads call the GIL-released native scanner concurrently.
 State storage must be writable and separate from input data; the default scan
 profile does not create this cache.
 

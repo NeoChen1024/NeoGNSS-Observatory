@@ -1,7 +1,11 @@
 # Documentation
 
-Tool documents describe the current implementation; design documents explicitly
-distinguish selected contracts from implemented subsets. Historical runs, superseded
+Tool documents describe usage, observable behavior, data interpretation and
+known limitations. Keep internal scheduling, cache structures and optimization
+walkthroughs in code rather than duplicating them here. Public API contracts and
+scientific/format definitions still belong in their owning documentation.
+Design documents explicitly distinguish selected contracts from implemented
+subsets. Historical runs, superseded
 designs and migration logs belong in Git history. Dataset facts are retained
 only when they affect present interpretation or processing.
 

@@ -5,7 +5,6 @@ import datetime as dt
 import math
 import re
 from collections import defaultdict, deque
-from pathlib import Path
 
 from .antenna import FREQUENCIES_HZ
 from .gpst import EPOCH, calendar
@@ -162,11 +161,6 @@ class StecProducts(LocalProducts):
         self.ionex_cache = {}
         self.bias_cache = {}
 
-    def unpack(self, path):
-        value = super().unpack(path)
-        self.touched.add(Path(path).resolve())
-        return value
-
     def available(self, name):
         if not self.files.get(name) and not self.files.get(name.removesuffix(".gz")):
             self.missing.add(name)
@@ -223,12 +217,6 @@ class StecProducts(LocalProducts):
                 result["biases"].extend(rows)
                 for row in rows:
                     self.coverage[row["pair_id"]].add(row["prn"])
-        # Keep only this requested window. Never unlink an uncompressed source.
-        for source in set(self.unpacked) - self.touched:
-            target = self.unpacked.pop(source)
-            if source.suffix == ".gz":
-                Path(target).unlink()
-            self.ionex_cache.pop(target, None)
-            self.bias_cache.pop(target, None)
+        self.finish_window(self.ionex_cache, self.bias_cache)
         self.loaded_key = key
         return result

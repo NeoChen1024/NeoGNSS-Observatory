@@ -39,6 +39,9 @@ dependencies = { file = ["requirements.txt"] }
 [tool.setuptools.packages.find]
 where = ["python-src"]
 
+[tool.setuptools.package-data]
+"neognss_observatory.data" = ["*.zip", "NOTICE.txt"]
+
 [tool.black]
 line-length = 132
 target-version = ['py311']

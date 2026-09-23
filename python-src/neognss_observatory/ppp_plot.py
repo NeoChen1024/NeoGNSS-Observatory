@@ -2,12 +2,13 @@
 """Plot the numerical PPP Float outputs without reopening observations."""
 
 import json
+import tempfile
 from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 
 import click
 import numpy as np
-import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
@@ -15,13 +16,80 @@ from .gpst import calendar
 from .ppp_report import write_report
 from .research_output import staged_output
 
+EPOCH_COLUMNS = {
+    "position": ("east", "north", "up", "sigma_e", "sigma_n", "sigma_u"),
+    "position-settled": ("east", "north", "up", "sigma_e", "sigma_n", "sigma_u"),
+    "states": ("ztd_m", "ztd_sigma_m", "clock_ns", "clock_sigma_ns", "satellites"),
+    "sky": (),
+    "residuals": (),
+}
+SATELLITE_COLUMNS = {
+    "position": (),
+    "position-settled": (),
+    "states": ("gpst_ns",),
+    "sky": ("prn", "elevation_deg", "azimuth_deg"),
+    "residuals": ("prn", "gpst_ns", "phase_residual_m", "code_residual_m"),
+}
 
-def read_columns(directory):
-    paths = sorted(directory.glob("GPST-*.parquet"))
-    if not paths:
-        raise ValueError(f"No PPP Parquet files in {directory}")
-    table = pa.concat_tables([pq.read_table(path) for path in paths])
-    return np.rec.fromarrays([table[name].to_numpy() for name in table.column_names], names=table.column_names)
+
+class Columns(dict):
+    def __getattr__(self, name):
+        return self[name]
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return super().__getitem__(key)
+        return Columns((name, values[key]) for name, values in self.items())
+
+
+class PlotData:
+    def __init__(self, cache):
+        self.cache, self.arrays = Path(cache), {}
+
+    def columns(self, catalog, names):
+        result = Columns()
+        for name in names:
+            key = catalog, name
+            if key not in self.arrays:
+                self.arrays[key] = np.load(self.cache / f"{catalog}-{name}.npy", mmap_mode="r", allow_pickle=False)
+            result[name] = self.arrays[key]
+        return result
+
+
+def prepare_plot_data(source, cache, kinds):
+    """Read projected input once; share immutable, disk-backed columns with renderers."""
+    for catalog, selection in (("epochs", EPOCH_COLUMNS), ("satellites", SATELLITE_COLUMNS)):
+        names = sorted({name for kind in kinds for name in selection[kind]} | ({"gpst_ns"} if catalog == "epochs" else set()))
+        if not names:
+            continue
+        paths = sorted((source / catalog).glob("GPST-*.parquet"))
+        if not paths:
+            raise ValueError(f"No PPP Parquet files in {source / catalog}")
+        count = sum(pq.ParquetFile(path).metadata.num_rows for path in paths)
+        arrays, offset = {}, 0
+        for path in paths:
+            with pq.ParquetFile(path) as reader:
+                for batch in reader.iter_batches(columns=names):
+                    for name in names:
+                        values = batch[name].to_numpy(zero_copy_only=False)
+                        if name not in arrays:
+                            arrays[name] = np.lib.format.open_memmap(
+                                cache / f"{catalog}-{name}.npy", mode="w+", dtype=values.dtype, shape=(count,)
+                            )
+                        arrays[name][offset : offset + len(batch)] = values
+                    offset += len(batch)
+        if offset != count or not count:
+            raise ValueError(f"Empty or changed PPP catalog: {catalog}")
+        for array in arrays.values():
+            array.flush()
+
+
+_plot_data = None
+
+
+def initialize_plot_data(cache):
+    global _plot_data
+    _plot_data = PlotData(cache)
 
 
 def by_satellite(rows):
@@ -29,14 +97,15 @@ def by_satellite(rows):
         yield prn, rows[rows.prn == prn]
 
 
-def render_figure(source, kind):
+def render_figure(source, kind, data=None):
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    epochs = read_columns(source / "epochs")
-    satellites = read_columns(source / "satellites")
+    data = data if data is not None else _plot_data
+    epochs = data.columns("epochs", ("gpst_ns", *EPOCH_COLUMNS[kind]))
+    satellites = data.columns("satellites", SATELLITE_COLUMNS[kind])
     summary = json.loads((source / "summary.json").read_text())
     start_ns, end_ns = int(epochs.gpst_ns[0]), int(epochs.gpst_ns[-1])
 
@@ -152,9 +221,12 @@ def cli(input_dir, output, workers):
     if summary["end_gpst_ns"] - summary["start_gpst_ns"] > 3_600_000_000_000:
         kinds.insert(1, "position-settled")
     tasks = [(input_dir, output, kind) for kind in kinds]
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        list(tqdm(pool.map(draw, tasks), total=len(tasks), desc="PPP plots", unit="figure"))
-    report = write_report(input_dir, output, kinds, render_figure)
+    with tempfile.TemporaryDirectory(prefix=".plot-data-", dir=output) as temporary:
+        cache = Path(temporary)
+        prepare_plot_data(input_dir, cache, kinds)
+        with ProcessPoolExecutor(max_workers=workers, initializer=initialize_plot_data, initargs=(cache,)) as pool:
+            list(tqdm(pool.map(draw, tasks), total=len(tasks), desc="PPP plots", unit="figure"))
+        report = write_report(input_dir, output, kinds, partial(render_figure, data=PlotData(cache)))
     click.echo(f"PDF report: {report.name}", err=True)
 
 

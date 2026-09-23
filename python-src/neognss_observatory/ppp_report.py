@@ -57,7 +57,7 @@ def write_report(source, output, kinds, render_figure):
 
         windows = summary.get("product_windows") or [summary["products"]]
         products = ", ".join(sorted({w["family"] for w in windows}))
-        catalogs = ", ".join(sorted({w["antenna_source"] for w in windows}))
+        catalogs = ", ".join(sorted({w["receiver_antenna"]["source"] for w in windows}))
         references = ", ".join(sorted({w["reference_system"] for w in windows}))
         attempted, solved = summary["attempted_epochs"], summary["solved_epochs"]
         fig = page("PPP solution summary", f"{station} | {summary['engine']}")

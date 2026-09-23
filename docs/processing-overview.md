@@ -29,7 +29,7 @@ extraction state. See [dataset QA](dataset-qa.md) and [dataset notes](dataset-no
 | Input | Processing | Products |
 | --- | --- | --- |
 | UBX or SBF | `ngo-cnex-import` → `ngo-sbas-grid-parquet` → `ngo-sbas-grid-plot` | ParquetNEX SBAS RawBits/Events and daily IGP intervals; hourly VTEC maps |
-| CommonNEX receiver-clock, measurement-clock, receiver-status, pulse-timing and restart Events | `ngo-receiver-clock` → `ngo-receiver-clock-plot` | Derived clock/status/PPS Parquet and plots |
+| CommonNEX receiver-telemetry and restart Events | `ngo-receiver-clock` → `ngo-receiver-clock-plot` | Derived clock/status/PPS Parquet and plots |
 | Existing clock Parquet | `ngo-receiver-clock-reunwrap` | Recomputed clock arcs and bias corrections |
 | UBX | RTKLIB-EX `neognss_convbin` | RINEX OBS/NAV supported by the pinned converter |
 | SBF | `ngo-sbf-rinex` with installed RxTools | Native-rate RINEX and applicable auxiliary outputs |
@@ -50,8 +50,8 @@ copies of transport envelopes or execution environments. In particular, grid
 calculation reads only SBAS frame Parquet, and plotting reads only grid products.
 
 Python owns file I/O, Parquet, orchestration and rendering. CPU-heavy parsing
-and state machines run in native batches. Parallelize independent receiver
-streams or rendering jobs, not arbitrary cuts through shared parser state.
+and stateful processing use native batch APIs. Execution boundaries must not
+change scientific continuity.
 See [native architecture](native-architecture.md).
 
 Outputs are research products outside Git. CLI schemas may change; no stable

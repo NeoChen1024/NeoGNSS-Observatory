@@ -171,12 +171,11 @@ Startup immediately scans the eligible backlog. Subsequent scans occur after
 `retry_seconds` (600 by default) and at the next daily gate, without interrupting
 an in-flight cycle. First startup follows the same policy and processes eligible
 history in date order, subject to capacity and retry admission. Existing archive
-upload jobs are scheduled before new downloads. Three independent workers handle downloading, compression and forwarding.
+upload jobs are scheduled before new downloads.
 Each completed download is queued for compression immediately, and each verified
 archive is queued for forwarding without waiting for the remaining downloads.
-With a storage limit, admission is serialized across complete file pipelines to
-keep the workspace bounded and avoid queue deadlocks; the three worker threads
-remain separate.
+With a storage limit, one complete file pipeline is admitted at a time to keep
+the workspace bounded.
 `--once` waits for the planned work in all three stages to drain; it does not wait
 through future retry deadlines. If a source changed while its older local version
 was still awaiting delivery, that cycle delivers the old version first and a later
@@ -368,18 +367,15 @@ same path is a new discovery.
 
 ## Resource bounds and failures
 
-There is one download worker, one compression worker, and one push worker. The
-stages can overlap for different files when storage is unlimited; only one xz
-process runs at a time. A finite limit admits one full file pipeline at a time. The
+Downloading, compression and forwarding can overlap for different files when
+storage is unlimited; only one xz process runs at a time. A finite limit admits
+one full file pipeline at a time. The
 compression queue holds at most two waiting files. When it fills, the downloader
 waits before starting another download. Newly downloaded raw backlog is bounded
 by the active compression, two queued files, and the current download; previously
-retained recovery files may already occupy additional disk space. Queues contain
-paths and metadata, not file contents. Per-file ownership passes between stages,
-and atomic JSON state updates are serialized under a lock.
+retained recovery files may already occupy additional disk space.
 
-The main thread monitors download and upload independently and shuts down only
-the stalled transfer's tracked sockets after
+Download and upload stalls are handled independently. A stalled transfer stops after
 `stall_timeout_seconds` (300 by default) without progress. Socket timeouts enforce
 the same idle bound; connection/control operations use
 `connect_timeout_seconds` (30 by default). There is no ten-minute whole-file

@@ -20,8 +20,31 @@ foreach(name IN LISTS RTKLIB_FILES)
     if(name STREQUAL "rinex")
         # Share the pinned core's clock merge without modifying vendored files.
         file(READ "${RTKLIB_SOURCE}/${name}.c" RTKLIB_RINEX)
+        # Cache raw records; retain the original cross-file STD interpolation.
+        string(FIND "${RTKLIB_RINEX}" "    // Interpolate the standard deviations." CLOCK_INTERP_START)
+        string(FIND "${RTKLIB_RINEX}" "\n    return nav->nc>0;" CLOCK_INTERP_END)
+        if(CLOCK_INTERP_START LESS 0 OR CLOCK_INTERP_END LESS CLOCK_INTERP_START)
+            message(FATAL_ERROR "Recheck the pinned RTKLIB clock interpolation adaptation")
+        endif()
+        math(EXPR CLOCK_INTERP_LENGTH "${CLOCK_INTERP_END} - ${CLOCK_INTERP_START}")
+        string(SUBSTRING "${RTKLIB_RINEX}" ${CLOCK_INTERP_START} ${CLOCK_INTERP_LENGTH} CLOCK_INTERPOLATION)
+        string(REPLACE "${CLOCK_INTERPOLATION}"
+            "    if (!ngo_raw_clock_read) ngo_interpolate_precise_clocks(nav);\n"
+            RTKLIB_RINEX "${RTKLIB_RINEX}")
+        string(REPLACE "static int readrnxclk(FILE *fp"
+            "static int ngo_raw_clock_read = 0;\nvoid ngo_interpolate_precise_clocks(nav_t *nav);\nstatic int readrnxclk(FILE *fp"
+            RTKLIB_RINEX "${RTKLIB_RINEX}")
+        string(REPLACE "    combpclk(nav);" "    if (!ngo_raw_clock_read) combpclk(nav);" RTKLIB_RINEX "${RTKLIB_RINEX}")
+        string(APPEND RTKLIB_RINEX "\nvoid ngo_interpolate_precise_clocks(nav_t *nav) {\n${CLOCK_INTERPOLATION}\n}\n")
+        string(APPEND RTKLIB_RINEX "\nint ngo_read_raw_precise_clocks(const char *path, nav_t *nav) {\n  ngo_raw_clock_read = 1;\n  int result = readrnxc(path, nav);\n  ngo_raw_clock_read = 0;\n  return result;\n}\n")
         string(APPEND RTKLIB_RINEX "\nvoid ngo_combine_precise_clocks(nav_t *nav) { combpclk(nav); }\n")
+        string(APPEND RTKLIB_RINEX "\nint ngo_read_navigation_header(const char *path, nav_t *nav) {\n  FILE *fp = fopen(path, \"r\");\n  if (!fp) return 0;\n  double ver; char type; int sys, tsys; sta_t sta = {0};\n  char tobs[RNX_NUMSYS][MAXOBSTYPE][4] = {{{0}}};\n  int ok = readrnxh(fp, &ver, &type, &sys, &tsys, tobs, nav, &sta, 0);\n  fclose(fp); return ok;\n}\n")
         file(CONFIGURE OUTPUT "${RTKLIB_BUILD_SOURCE}/${name}.c" CONTENT "${RTKLIB_RINEX}" @ONLY)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${RTKLIB_SOURCE}/${name}.c")
+    elseif(name STREQUAL "preceph")
+        file(READ "${RTKLIB_SOURCE}/${name}.c" RTKLIB_PRECEPH)
+        string(APPEND RTKLIB_PRECEPH "\nvoid ngo_combine_precise_orbits(nav_t *nav) { combpeph(nav, 0); }\n")
+        file(CONFIGURE OUTPUT "${RTKLIB_BUILD_SOURCE}/${name}.c" CONTENT "${RTKLIB_PRECEPH}" @ONLY)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${RTKLIB_SOURCE}/${name}.c")
     else()
         configure_file("${RTKLIB_SOURCE}/${name}.c" "${RTKLIB_BUILD_SOURCE}/${name}.c" COPYONLY)

@@ -2,14 +2,16 @@
 
 ## Recommended: 1:10 million
 
-`ne_10m_coastline.zip` is Natural Earth 1:10m Coastline version 4.1.0,
+The [bundled 10m archive](../../python-src/neognss_observatory/data/ne_10m_coastline.zip)
+is Natural Earth 1:10m Coastline version 4.1.0,
 downloaded from:
 
 <https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_coastline.zip>
 
 SHA-256: `bfa04cdbcbef07ef90dfca1dabb48062eca29900a113df0f389303e255484017`
 
-Use this archive for regional SBAS and IPP maps. Here `10m` means a map
+It is installed with the Python package and used by default for SBAS and IPP
+maps; it is not duplicated in this directory. Here `10m` means a map
 scale of 1:10 million, not a ground resolution of 10 meters.
 
 ## Retained: 1:110 million

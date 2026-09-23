@@ -17,6 +17,8 @@ Python orchestration, storage and visualization.
 Keep this guide about project-wide engineering workflow, conventions and safety.
 Update the owning document when behavior changes; link to it instead of copying
 schemas, per-tool defaults, CLI options, state machines or dataset runbooks here.
+Document usage and contracts, not internal scheduling, data structures or
+optimization walkthroughs that duplicate code.
 Keep current documentation distinct from design targets. Remove obsolete
 workflows and run histories; Git history is the archive. README files are
 public-facing, not local environment notebooks.

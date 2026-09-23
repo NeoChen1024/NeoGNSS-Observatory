@@ -11,11 +11,9 @@ as a lossless replacement for raw archives.
   filtering, retaining supported GPS, Galileo, BeiDou, QZSS and SBAS signals.
   Unknown mappings are counted rather than assigned a guessed signal; GLONASS
   and NavIC are excluded. See `measurements.cpp` for the explicit current table.
-- The native Observatory reader handles epoch completion and builds nanoarrow
-  arrays, exporting ownership through Arrow C Data Interface capsules. Python
-  receives batches, not per-frame callbacks or JSON observation dictionaries.
-  Decode and array construction release the GIL.
-- Native Boost.Int128 arithmetic produces `DECIMAL(38,12)` timestamps. RAWX's
+- Native processing exchanges owned columnar batches with Python; see the
+  [interop contract](../native-architecture.md#selected-commonnex-interop-design).
+- Timestamp normalization produces `DECIMAL(38,12)` timestamps. RAWX's
   binary64 TOW is rounded directly from its exact binary rational to picoseconds,
   ties to even, before adding the integer week. SBF millisecond TOW is exact.
 - Complete RAWX is immediately usable without NAV-EOE. SBF Measurements is
@@ -23,15 +21,12 @@ as a lossless replacement for raw archives.
   as incomplete and the previous pending group is omitted. File/chunk boundaries
   do not reset framing or the pending group.
 - Python writes `observations`, `raw-bits`, `events` and `receiver-telemetry` catalogs with
-  Zstandard level 3 compression. Dictionary encoding is enabled only for
-  string/binary columns, including nested fields; numeric, boolean and decimal
-  columns do not use dictionaries. This is lossless physical encoding, not a
-  change to logical values or types. Events contain reported OBSERVATION/EPOCH and
+  Zstandard level 3 compression. Events contain reported OBSERVATION/EPOCH and
   NAVIGATION/EPOCH completion, with RECORD_STRUCTURE or PROTOCOL_BOUNDARY basis. Missing other
   events never implies continuity or absence of internal receiver clock adjustments.
 - `list` selects the latest revision independently for each day/catalog and
-  returns all its parts. Eight Parquet writers may remain open at once; returning
-  to an evicted partition creates another bounded part without rewriting it.
+  returns all its parts. A day/catalog can contain multiple parts without
+  rewriting earlier parts.
 
 Each quality struct includes nullable `stddev_is_lower_bound`; MeasExtra supplies
 variance-derived bounds, while RAWX bound semantics remain unknown.
@@ -174,63 +169,15 @@ is on stdout; processing progress and warnings are on stderr.
 
 ### Head-only ordering and time reversal
 
-Import uses an ordered parsing producer with a native stateless decode pool,
-one native Arrow construction thread and a Python Parquet write coordinator
-with four catalog-write workers.
-`--decode-workers` defaults to 4 (range 1-32, including the feeding thread);
-1 performs decoding and Arrow construction inline for comparison or constrained
-hosts. The Arrow and Python writer threads are additional to this decode-worker count.
-The pool parallelizes RAWX/MeasEpoch, MeasExtra and RawBits
-decoding, including canonical packing and independent navigation checks.
-Framing/transport checks, time association, restart detection, epoch assembly,
-MeasExtra joins remain sequential in original frame order. MeasExtra matching
-uses reusable sorted indexes of channel/signal/antenna keys, retaining the
-unmatched and ambiguous-key rules without per-epoch tree-node allocations.
-Worker completion order never determines scientific record order.
+Import preserves input order and scientific state regardless of worker
+scheduling. `--decode-workers` controls decoding concurrency; see `--help` for
+limits and defaults. It may change on resume without changing scientific state.
+Memory use includes decoded records, not just the `--chunk-mib` input buffer.
 
-Completed observations and RawBits move to the single-owner Arrow construction
-thread in bounded batches. Time, uptime and archive-day context are captured
-at their original stream position, not looked up later in the worker. At most
-two build jobs are outstanding, including the active job; other catalog arrays
-remain on the feeding thread. No builder is written from two threads. Each
-successful `feed()` drains build jobs before exporting arrays or allowing a
-checkpoint. Build failures propagate through the feeding call.
-
-Complete frames are copied into owned bounded batches (at most 2,048 frames,
-or a 1 MiB wire-byte threshold plus the final frame). Worker tasks claim small
-groups, not individual Python callbacks. Tiny batches run on the feeding
-thread. Each decode batch finishes before its results or errors are consumed
-in order; no jobs remain at a successful `feed()` return/checkpoint. A failed
-feed is not a resumable publication: retain the last published continuation
-state rather than attempting to checkpoint partially consumed work. Worker
-count is execution configuration, not scientific state, and may change on resume.
-
-The coordinator partitions Arrow batches by GPST day and submits independent
-catalog writes to a four-thread pool. Each catalog has at most one outstanding
-write, and a chunk's writes finish before the next chunk is dispatched. A given
-ParquetWriter is never written concurrently. Compression remains Zstandard
-level 3. Writer allocation, part numbering, counts and publication stay on the
-coordinator; workers only encode/write their assigned batch. Eviction drains
-outstanding writes before closing any writer, preserving the eight-open-writer
-limit. A write failure prevents queued chunks from publishing; shutdown waits
-for active writes before closing files and retaining unpublished staging.
-
-Native parsing continues during catalog writes. At most two input-chunk write
-tasks are outstanding (including the active coordinator task), bounding queued
-data to two decoded input chunks; decoded
-memory can be substantially larger than `--chunk-mib`. Arrow buffers cross the
-thread boundary without serialization. Writer failures propagate to the importer;
-each publication barrier drains its writes before updating continuation state. Decoder
-state remains sequential across files. The progress bar measures parsed input;
-the importer waits for the final queued writes before completing.
-
-Native buffers reserve leaf capacity from the previous bounded batch. Observation
-scalar and quality columns are populated per epoch, batching all-null columns
-and struct completion, with child-length and validity invariants
-checked before finishing each group. RawBits reads packed receiver words directly
-and retains the same canonical packing and scoped integrity results without
-byte-per-bit expansion. CRC lookup tables preserve the existing polynomials and
-initial states; transport and navigation checks remain enabled.
+The progress bar measures parsed input, not completed publication. Import waits
+for pending writes before reporting success. Parsing or writing errors prevent
+affected work from publishing; resume from the last published continuation
+state, not from partially consumed work.
 
 For each new input, inspect at most `min(size, max(ceil(size / 100), 1 MiB))`
 bytes from its beginning. No tail read or full indexing pass is performed.
@@ -330,7 +277,7 @@ checkpoint exactly aligned with emitted rows, the barrier also publishes any
 completed rows already emitted for the next day as its first small part; later
 batches append another part. No incomplete measurement group is published.
 End of input publishes remaining completed records and saves pending raw context.
-Daily publication continues in the writer thread, without resetting native state.
+Publication does not reset scientific state.
 
 Files are staged, closed and renamed without overwriting existing parts. Update
 state after publishing parts. Completed publications survive a later parsing or

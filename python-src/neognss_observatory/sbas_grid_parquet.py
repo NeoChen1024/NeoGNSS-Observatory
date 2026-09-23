@@ -82,7 +82,7 @@ class DailySink:
     def flush(self):
         for day, tables in self.buffer.items():
             path = self.staging / f"{day}-{len(self.parts[day])}.parquet"
-            pq.write_table(pa.concat_tables(tables), path, compression="zstd", compression_level=3)
+            pq.write_table(pa.concat_tables(tables), path, compression="zstd", compression_level=3, use_dictionary=True)
             self.parts[day].append(path)
         self.buffer.clear()
         self.count = 0
@@ -106,7 +106,7 @@ class DailySink:
                         b"tail_policy": b"stop at final observed epoch; no extrapolation",
                     }
                 )
-                with pq.ParquetWriter(path, schema, compression="zstd", compression_level=3) as writer:
+                with pq.ParquetWriter(path, schema, compression="zstd", compression_level=3, use_dictionary=True) as writer:
                     for part in parts:
                         with pq.ParquetFile(part) as source:
                             for batch in source.iter_batches():

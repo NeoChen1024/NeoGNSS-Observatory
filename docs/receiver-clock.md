@@ -18,10 +18,7 @@ No filename-derived measurement timestamp or original receiver archive is needed
 
 The default clock-estimate reference is GPST. Use `--reference-time-scale` to
 select another reported reference without changing the GPST sample axis.
-If more than one clock source remains (for example both SBF PVT forms), select
-`--clock-source SBF-PVTGeodetic` explicitly. Do not combine independent estimates
-or silently deduplicate same-time reports. PPS/status records retain their
-independent cadence and reference information.
+PPS/status records retain their independent cadence and reference information.
 
 Research outputs are published by directory rename after success. Use
 `--overwrite` to replace an existing output with a retained backup. This is a
@@ -35,12 +32,8 @@ Read completed CommonNEX publications; concurrent import/publication is not supp
 | receiver-telemetry | Integrated navigation clock, status and ordered measurement/pulse reports |
 | events | Receiver restart evidence and boundaries |
 
-The native importer owns protocol interpretation and time association. Analysis
-uses vectorized NumPy/Arrow batches, with state carried across rows, row groups,
-parts and days. It does not serialize science batches through JSON.
-Load at most one day's catalog data at a time; the restart prepass retains only
-compact boundary/index information. Temperature statistics read the small
-derived clock/status tables after publication staging has completed.
+The importer owns protocol interpretation and time association. Analysis
+preserves state across input parts and days.
 
 Adjustment evidence comes from each row's acquisition-cycle measurement list,
 without changing its recorded measurement times. The unwrap adapter uses any
@@ -129,7 +122,7 @@ these are descriptive, not evidence of causation.
 ngo-receiver-clock-reunwrap --input-dir work/era-c-clock --output work/era-c-clock-reunwrap
 ```
 
-Re-unwrapping shares the same vectorized algorithm and supports both imported
+Re-unwrapping follows the same adjustment rules and supports both imported
 UBX and SBF evidence. It preserves source columns and receiver-session context;
 rerun `ngo-receiver-clock` when changing that context.
 
@@ -137,4 +130,4 @@ The plot command produces separate hourly clock/PPS PNGs and daily overviews.
 It reads only derived Parquet, never raw receiver messages. Unusable unwrap
 rows are omitted from clock curves, not connected across; missing temperature
 and accuracy are displayed as unavailable. The green unwrapped curve is not
-rebased per hour or per file. PNG rendering remains multiprocessing-enabled.
+rebased per hour or per file.

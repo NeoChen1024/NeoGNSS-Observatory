@@ -22,12 +22,38 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import shapefile
 from matplotlib.cm import ScalarMappable
 from matplotlib.collections import LineCollection, PatchCollection
 from matplotlib.colors import Normalize
 from matplotlib.patches import Rectangle
 from tqdm import tqdm
+
+_coast_key = None
+_coast = None
+
+
+def initialize_coastline(path, extent):
+    global _coast_key, _coast
+    key = (str(Path(path).resolve()), tuple(extent))
+    if key == _coast_key:
+        return
+    west, east, south, north = extent
+    # Keep an outside margin for strokes/antialiasing clipped at the axes edge.
+    west, east, south, north = west - 1, east + 1, south - 1, north + 1
+    segments = []
+    for part in coastline_parts(path):
+        vertices = np.asarray(part, dtype=float)
+        if len(vertices) < 2:
+            continue
+        if vertices[:, 0].max() < west or vertices[:, 0].min() > east:
+            continue
+        if vertices[:, 1].max() < south or vertices[:, 1].min() > north:
+            continue
+        vertices.flags.writeable = False
+        segments.append(vertices)
+    _coast_key, _coast = key, segments
 
 
 def coastline_parts(path):
@@ -58,7 +84,12 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
     if not selected:
         raise ValueError("No hourly grid cells meet the coverage threshold")
     extent = extent if extent is not None else extent_for(selected)
-    coast = list(coastline_parts(coastline))
+    aspect = (extent[1] - extent[0]) / (extent[3] - extent[2])
+    # Size the canvas around the equal-aspect map, not an arbitrary wide page.
+    # A shared extent keeps all frames in a rendering batch the same size.
+    figsize = (max(8.8, 7.0 * aspect + 1.8), 8)
+    initialize_coastline(coastline, extent)
+    coast = _coast
     grouped = defaultdict(list)
     for row in selected:
         grouped[tuple(row[k] for k in (*IDENTITY, "hour_gpst"))].append(row)
@@ -74,7 +105,7 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
         directory.mkdir(exist_ok=True)
         label = gpst_label(hour)
         path = directory / (label.replace(":", "-") + ".png")
-        fig, ax = plt.subplots(figsize=(12, 8), dpi=150, constrained_layout=True)
+        fig, ax = plt.subplots(figsize=figsize, dpi=150, constrained_layout=True)
         ax.set_facecolor("white")
         patches = [Rectangle((cell["longitude"] - 2.5, cell["latitude"] - 2.5), 5, 5) for cell in cells]
         collection = PatchCollection(patches, cmap=cmap, norm=norm, edgecolor=(0, 0, 0, 0.22), linewidth=0.25, zorder=2)

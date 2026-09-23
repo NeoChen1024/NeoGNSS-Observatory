@@ -1,0 +1,10 @@
+Natural Earth 1:10m Coastline, version 4.1.0
+
+Source: https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_coastline.zip
+Terms: https://www.naturalearthdata.com/about/terms-of-use/
+
+Natural Earth raster and vector map data are in the public domain. This data
+is not licensed under the project's GPL-3.0-only software license.
+The archive is distributed unchanged. Made with Natural Earth.
+
+10m denotes a map scale of 1:10 million, not a 10-meter ground resolution.

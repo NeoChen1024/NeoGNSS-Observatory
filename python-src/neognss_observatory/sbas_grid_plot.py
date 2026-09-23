@@ -13,11 +13,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
+from .map_assets import with_coastline
 from .research_output import staged_output, write_json
 from .sbas_grid_parquet import SCHEMA
-from .sbas_grid_render import extent_for, parse_hour, render_job
+from .sbas_grid_render import extent_for, initialize_coastline, parse_hour, render_job
 from .sbas_streams import IDENTITY
-
 
 HOURLY_SCHEMA = pa.schema(
     [
@@ -102,7 +102,11 @@ def hourly_rows(path, day, start=None, end=None):
 @click.command()
 @click.option("--input-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
 @click.option("--output", type=click.Path(path_type=Path), required=True)
-@click.option("--coastline", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
+@click.option(
+    "--coastline",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Override the bundled Natural Earth 10m coastline ZIP.",
+)
 @click.option("--start", callback=parse_hour, help="First GPST hour, YYYY-MM-DDTHH.")
 @click.option("--end", callback=parse_hour, help="Exclusive final GPST hour, YYYY-MM-DDTHH.")
 @click.option("--vmin", type=float, default=0, show_default=True)
@@ -111,6 +115,7 @@ def hourly_rows(path, day, start=None, end=None):
 @click.option("--workers", type=click.IntRange(1, 32), default=min(4, os.cpu_count() or 1), show_default=True)
 @click.option("--png-compression", type=click.IntRange(0, 9), default=3, show_default=True)
 @click.option("--overwrite", is_flag=True, help="Replace output after success; retain the previous directory as a backup.")
+@with_coastline
 @staged_output
 def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, workers, png_compression):
     """Read daily GPST Parquet and export time-weighted hourly PNG maps."""
@@ -137,7 +142,13 @@ def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, work
             path = (input_dir / record["path"]).resolve()
             rows = hourly_rows(path, record["day_gpst_ms"], start, end)
             target = cache / (path.stem + ".parquet")
-            pq.write_table(pa.Table.from_pylist(rows, schema=HOURLY_SCHEMA), target, compression="zstd", compression_level=3)
+            pq.write_table(
+                pa.Table.from_pylist(rows, schema=HOURLY_SCHEMA),
+                target,
+                compression="zstd",
+                compression_level=3,
+                use_dictionary=True,
+            )
             daily_cache.append(target)
             visible = [r for r in rows if r["coverage"] >= min_coverage]
             if visible:
@@ -146,7 +157,12 @@ def cli(input_dir, output, coastline, start, end, vmin, vmax, min_coverage, work
             raise ValueError("No hourly cells meet the coverage threshold")
         extent = (min(b[0] for b in bounds), max(b[1] for b in bounds), min(b[2] for b in bounds), max(b[3] for b in bounds))
         images = []
-        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=initialize_coastline,
+            initargs=(coastline, extent),
+        ) as pool:
             for path in tqdm(daily_cache, desc="Render GPST days", unit="day"):
                 grouped = defaultdict(list)
                 with pq.ParquetFile(path) as parquet:

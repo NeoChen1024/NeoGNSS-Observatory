@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "rtklib.h"
+#include "rtklib_products.hpp"
 #include <algorithm>
 #include <limits>
 #include <mutex>
@@ -71,6 +72,7 @@ struct PppFloat::State {
     std::unique_ptr<nav_t> nav = std::make_unique<nav_t>();
     std::unique_ptr<rtk_t> rtk = std::make_unique<rtk_t>();
     Json settings, metadata;
+    PppProductCache product_cache;
     ReceiverAntenna receiver_antenna;
     bool initialized = false, ready = false;
     int64_t previous = -1, solved_time = -1, step_ns, gap_ns;
@@ -162,28 +164,17 @@ void PppFloat::products(const Json &p) {
     freenav(s.nav.get(), 0x7f);
     free(s.nav->erp.data);
     *s.nav = nav_t{};
-    for (const auto &file : p.at("sp3"))
-        readsp3(file.get<std::string>().c_str(), s.nav.get(), 0);
-    for (const auto &file : p.at("clk"))
-        if (!readrnxc(file.get<std::string>().c_str(), s.nav.get()))
-            throw std::runtime_error("Cannot read precise clocks");
-    obs_t unused{};
-    sta_t station{};
-    for (const auto &file : p.at("nav"))
-        if (readrnx(file.get<std::string>().c_str(), 1, "", &unused,
-                    s.nav.get(), &station) <= 0)
-            throw std::runtime_error("Cannot read broadcast navigation");
-    freeobs(&unused);
-    uniqnav(s.nav.get());
-    for (const auto &file : p.at("erp"))
-        if (!readerp(file.get<std::string>().c_str(), &s.nav->erp))
-            throw std::runtime_error("Cannot read ERP");
+    s.product_cache.orbits(*s.nav, p.at("sp3").get<std::vector<std::string>>());
+    s.product_cache.clocks.load(*s.nav,
+                                p.at("clk").get<std::vector<std::string>>());
+    s.product_cache.navigation(*s.nav,
+                               p.at("nav").get<std::vector<std::string>>());
+    s.product_cache.erp(*s.nav, p.at("erp").get<std::vector<std::string>>());
     if (s.nav->ne < 11 || s.nav->nc < 2)
         throw std::runtime_error("Insufficient precise orbit/clock records");
     const auto at = gpstime(p.at("time_ns").get<int64_t>());
-    if (!readsap(p.at("satellite_antex").get<std::string>().c_str(), at,
-                 s.nav.get()))
-        throw std::runtime_error("Cannot read satellite ANTEX");
+    s.product_cache.antennas(*s.nav, p.at("satellite_antex").get<std::string>(),
+                             at);
     s.biases.clear();
     for (const auto &b : p.at("biases"))
         s.biases[{b.at("prn"), b.at("signal")}].push_back(

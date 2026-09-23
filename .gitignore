@@ -2,6 +2,7 @@
 # Match the workspace directory or a symlink to external storage.
 /work
 data/
+!/python-src/neognss_observatory/data/
 products/
 *.ubx
 *.sbf

@@ -17,6 +17,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from .gpst import calendar, label
+from .map_assets import coastline_sha512, with_coastline
 from .sbas_grid_parquet import SCHEMA as SBAS_SCHEMA
 from .sbas_grid_plot import hourly_rows
 from .sbas_grid_render import coastline_parts, parse_hour
@@ -356,8 +357,7 @@ def render_hour(job):
 @click.option(
     "--coastline",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-    help="Natural Earth coastline ZIP, preferably 10m.",
+    help="Override the bundled Natural Earth 10m coastline ZIP.",
 )
 @click.option("--start", callback=parse_hour, help="First GPST hour, YYYY-MM-DDTHH.")
 @click.option("--end", callback=parse_hour, help="Exclusive final GPST hour, YYYY-MM-DDTHH.")
@@ -374,6 +374,7 @@ def render_hour(job):
 @click.option("--workers", type=click.IntRange(1, 32), default=min(4, os.cpu_count() or 1), show_default=True)
 @click.option("--png-compression", type=click.IntRange(0, 9), default=3, show_default=True)
 @click.option("--rebuild", is_flag=True, help="Regenerate all selected images; preserve previous output.")
+@with_coastline
 def cli(
     input_dir,
     output,
@@ -419,7 +420,7 @@ def cli(
                 dict(
                     input_dir=str(input_dir.resolve()),
                     lineage=source_summary["lineage"],
-                    coastline=[str(coastline.resolve()), coastline.stat().st_size, coastline.stat().st_mtime_ns],
+                    coastline_sha512=coastline_sha512(coastline),
                     start=start,
                     end=end,
                     sbas_grid=str(sbas_grid.resolve()) if sbas_grid else None,

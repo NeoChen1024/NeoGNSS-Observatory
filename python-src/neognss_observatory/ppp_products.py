@@ -29,19 +29,32 @@ class LocalProducts:
             if path.is_file():
                 self.files.setdefault(path.name, []).append(path)
         self.unpacked, self.loaded_key, self.current = {}, None, None
+        self.touched = set()
+        self.expansion_id = 0
 
     def unpack(self, path):
         path = Path(path).resolve()
+        self.touched.add(path)
         if path in self.unpacked:
             return self.unpacked[path]
         if path.suffix != ".gz":
             self.unpacked[path] = str(path)
         else:
-            target = self.scratch / f"{len(self.unpacked):04d}-{path.stem}"
+            target = self.scratch / f"{self.expansion_id:04d}-{path.stem}"
+            self.expansion_id += 1
             with gzip.open(path, "rb") as source, target.open("xb") as output:
                 shutil.copyfileobj(source, output)
             self.unpacked[path] = str(target)
         return self.unpacked[path]
+
+    def finish_window(self, *caches):
+        # Only private gzip expansions are removed, never source products.
+        for source in set(self.unpacked) - self.touched:
+            target = self.unpacked.pop(source)
+            if source.suffix == ".gz":
+                Path(target).unlink()
+            for cache in caches:
+                cache.pop(target, None)
 
     def find(self, name):
         candidates = self.files.get(name, [])
@@ -56,6 +69,7 @@ class Products(LocalProducts):
     def __init__(self, root, scratch, receiver_antenna, catalogs, margin_hours=6):
         super().__init__(root, scratch, margin_hours)
         self.receiver_antenna, self.catalogs = receiver_antenna, catalogs
+        self.bias_cache = {}
 
     def prepare(self, start_ns, end_ns):
         start, end = calendar(start_ns / 1e9), calendar(end_ns / 1e9)
@@ -63,6 +77,7 @@ class Products(LocalProducts):
         key = (first, last)
         if key == self.loaded_key:
             return None
+        self.touched.clear()
         days = [first + dt.timedelta(days=i) for i in range((last - first).days + 1)]
         out = dict(sp3=[], clk=[], nav=[], erp=[], biases=[], time_ns=start_ns)
         for day in days:
@@ -75,26 +90,9 @@ class Products(LocalProducts):
                 out[kind].append(self.find(f"COD0MGXFIN_{stamp}_{suffix}"))
             out["nav"].append(self.find(f"BRDC00IGS_R_{stamp}_01D_MN.rnx.gz"))
             path = self.find(f"COD0MGXFIN_{stamp}_01D_01D_OSB.BIA.gz")
-            with open(path, encoding="latin-1") as stream:
-                for line in stream:
-                    if "TIME_SYSTEM" in line and line.split()[-1] != "G":
-                        raise ValueError("Only GPST Bias-SINEX is supported")
-                    if not line.startswith(" OSB") or line[11:12] != "G" or line[15:24].strip() or line[25:26] != "C":
-                        continue
-                    if line[65:69].strip() != "ns":
-                        raise ValueError("Only nanosecond code OSB is supported")
-                    meters = float(line[70:91]) * 1e-9 * 299792458
-                    if not math.isfinite(meters):
-                        raise ValueError("Non-finite satellite code OSB")
-                    out["biases"].append(
-                        dict(
-                            prn=int(line[12:14]),
-                            signal=line[26:28],
-                            start_ns=bias_time(line[35:49]),
-                            end_ns=bias_time(line[50:64]),
-                            meters=meters,
-                        )
-                    )
+            if path not in self.bias_cache:
+                self.bias_cache[path] = self.read_biases(path)
+            out["biases"].extend(self.bias_cache[path])
         out["satellite_antex"] = self.unpack(self.catalogs[0])
         out["metadata"] = dict(
             family="COD0MGXFIN",
@@ -103,5 +101,31 @@ class Products(LocalProducts):
             margin_hours=self.margin.total_seconds() / 3600,
             receiver_antenna=model_metadata(self.receiver_antenna),
         )
+        self.finish_window(self.bias_cache)
         self.loaded_key, self.current = key, out["metadata"]
         return out
+
+    @staticmethod
+    def read_biases(path):
+        rows = []
+        with open(path, encoding="latin-1") as stream:
+            for line in stream:
+                if "TIME_SYSTEM" in line and line.split()[-1] != "G":
+                    raise ValueError("Only GPST Bias-SINEX is supported")
+                if not line.startswith(" OSB") or line[11:12] != "G" or line[15:24].strip() or line[25:26] != "C":
+                    continue
+                if line[65:69].strip() != "ns":
+                    raise ValueError("Only nanosecond code OSB is supported")
+                meters = float(line[70:91]) * 1e-9 * 299792458
+                if not math.isfinite(meters):
+                    raise ValueError("Non-finite satellite code OSB")
+                rows.append(
+                    dict(
+                        prn=int(line[12:14]),
+                        signal=line[26:28],
+                        start_ns=bias_time(line[35:49]),
+                        end_ns=bias_time(line[50:64]),
+                        meters=meters,
+                    )
+                )
+        return rows

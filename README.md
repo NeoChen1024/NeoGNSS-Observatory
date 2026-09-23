@@ -125,7 +125,8 @@ Insufficient calibration windows retain unavailable absolute
 values, never an assumed zero bias. Missing STEC products produce warnings and
 unavailable dependent fields without aborting other time periods.
 `ngo-stec-plot` renders hourly absolute-STEC
-IPP trajectories incrementally and in parallel, using a local coastline ZIP and optional pale
+IPP trajectories incrementally and in parallel, using the bundled Natural Earth
+10m coastline (overridable with `--coastline`) and optional pale
 SBAS VTEC backgrounds. See [the STEC guide](docs/stec.md) and
 [example configuration](config/stec.example.toml).
 

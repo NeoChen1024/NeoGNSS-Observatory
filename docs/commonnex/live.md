@@ -1,11 +1,9 @@
 # CommonNEX streaming infrastructure
 
 The runtime is shared with historical importing; this is an implementation API,
-not an extension of the CommonNEX scientific schema. Native `CnexEngine` lives
-in libneognss-obs and has no Python dependency. It accepts bytes and returns
-owned Arrow C Data Interface batches; the thin pybind11 adapter releases the
-GIL during feeding. `CnexTimeProbe` is likewise native. Small checkpoint and
-diagnostic objects use JSON, never the bulk scientific data.
+not an extension of the CommonNEX scientific schema. It accepts receiver bytes
+and delivers owned Arrow batches. See [native architecture](../native-architecture.md)
+for component ownership and interop requirements.
 
 ## Batch delivery
 
@@ -52,10 +50,9 @@ affected observations; catalog order is not chronological interleaving.
 ## TCP acquisition
 
 `tcp_groups(host, port, stream, max_latency=5.0, duration=None)` connects once
-and yields groups. An acquisition thread reads up to 64 KiB at a time into a
-bounded 4 MiB input queue (plus one active receive buffer). The processing owner
-feeds chunks and drains at approximately five-second intervals, or earlier at
-the output capacity threshold. Empty socket polls do not terminate epochs.
+and yields groups at approximately five-second intervals, or earlier at
+the output capacity threshold. Acquisition buffering is bounded to 4 MiB plus
+one receive buffer of up to 64 KiB. Empty socket polls do not terminate epochs.
 Host monotonic time drives delivery only, never GPST or receiver restart logic.
 
 Five seconds is a delivery target for completed records, not a hard real-time

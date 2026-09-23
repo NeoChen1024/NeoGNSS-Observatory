@@ -14,7 +14,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from .clock_status import StatusJoin
-from .cnex_import import day_directories, latest_parts
+from .cnex_import import day_directories, dictionary_columns, latest_parts
 from .receiver_clock_reunwrap import BatchUnwrapper
 from .research_output import staged_output, write_json
 from .setup_metadata import validate_setup
@@ -51,7 +51,7 @@ def nanoseconds(table, name):
     return pc.cast(pc.multiply(wide, pa.scalar(10**9, pa.int64())), pa.float64()).to_numpy(zero_copy_only=False)
 
 
-def catalog(day, name, setup_id):
+def catalog(day, name, setup_id, columns=None):
     parts = latest_parts(day, name)
     tables = []
     for path in parts:
@@ -63,7 +63,7 @@ def catalog(day, name, setup_id):
             key = "gpst"
             if meta.get(b"time.scale") != b"GPST" or schema.field(key).type != TIME:
                 raise ValueError(f"Expected CommonNEX GPST decimal time: {path}")
-            table = source.read()
+            table = source.read(columns=columns)
             if not pc.all(pc.fill_null(pc.equal(table["setup_id"], setup_id), False)).as_py() and len(table):
                 raise ValueError(f"Mixed Setup identity: {path}")
             tables.append(table)
@@ -74,9 +74,10 @@ def telemetry_status(table):
     if table is None:
         return None
     selected = pc.or_(pc.is_valid(table["ubx_status"]), pc.is_valid(table["sbf_status"]))
-    return table.filter(selected).select(
-        ["setup_id", "gpst", "receiver_uptime_s", "receiver_temperature_c", "fine_time", "ubx_status", "sbf_status"]
-    )
+    return table.select(STATUS_COLUMNS).filter(selected)
+
+
+STATUS_COLUMNS = ["setup_id", "gpst", "receiver_uptime_s", "receiver_temperature_c", "fine_time", "ubx_status", "sbf_status"]
 
 
 def telemetry_pulses(table):
@@ -93,13 +94,21 @@ def measurement_evidence(column):
     # Reduce only for the unwrap algorithm; the complete ordered source list
     # remains on the derived clock rows. Any explicit reset flags the cycle;
     # the last reported counter describes its final reported adjustment state.
-    flags, counters = [], []
-    for reports in column.to_pylist():
-        reported = [r["adjustment_reported"] for r in reports if r["adjustment_reported"] is not None]
-        cumulative = [r["cumulative_adjustment_ms"] for r in reports if r["cumulative_adjustment_ms"] is not None]
-        flags.append(any(reported) if reported else None)
-        counters.append(cumulative[-1] if cumulative else None)
-    return pa.array(flags, pa.bool_()), pa.array(counters, pa.uint64())
+    column = column.combine_chunks()
+    parents = pc.list_parent_indices(column).to_numpy(zero_copy_only=False)
+    values = pc.list_flatten(column)
+    reported = values.field("adjustment_reported")
+    valid = pc.is_valid(reported).to_numpy(zero_copy_only=False)
+    flags = np.zeros(len(column), dtype=bool)
+    present = np.zeros(len(column), dtype=bool)
+    np.logical_or.at(flags, parents, reported.fill_null(False).to_numpy(zero_copy_only=False))
+    present[parents[valid]] = True
+    cumulative = values.field("cumulative_adjustment_ms")
+    valid = pc.is_valid(cumulative).to_numpy(zero_copy_only=False)
+    last = np.full(len(column), -1, dtype=np.int64)
+    np.maximum.at(last, parents[valid], np.flatnonzero(valid))
+    counters = pc.take(cumulative, pa.array(last, mask=last < 0))
+    return pa.array(flags, mask=~present), counters
 
 
 class Sessions:
@@ -111,8 +120,8 @@ class Sessions:
         self.status_changes = {}
         session, last_time, pending = 0, -1, None
         for day in tqdm(days, desc="Receiver restart context", unit="day"):
-            status = telemetry_status(catalog(day, "receiver-telemetry", setup_id))
-            events = catalog(day, "events", setup_id)
+            status = telemetry_status(catalog(day, "receiver-telemetry", setup_id, STATUS_COLUMNS))
+            events = catalog(day, "events", setup_id, ["setup_id", "gpst", "kind", "receiver_uptime_s"])
             changes = []
             if events is not None:
                 events = events.filter(pc.equal(events["kind"], "RECEIVER_RESTART"))
@@ -206,7 +215,9 @@ class Writer:
         }
         table = table.replace_schema_metadata(metadata)
         if self.writer is None:
-            self.writer = pq.ParquetWriter(self.path, table.schema, compression="zstd", compression_level=3)
+            self.writer = pq.ParquetWriter(
+                self.path, table.schema, compression="zstd", compression_level=3, use_dictionary=dictionary_columns(table.schema)
+            )
         self.writer.write_table(table)
 
     def close(self):

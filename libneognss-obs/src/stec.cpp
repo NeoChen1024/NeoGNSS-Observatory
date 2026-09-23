@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "rtklib.h"
+#include "rtklib_products.hpp"
 #include <algorithm>
 #include <array>
 #include <climits>
@@ -12,8 +13,6 @@
 #include <neognss_obs/stec.hpp>
 #include <set>
 #include <tuple>
-
-extern "C" void ngo_combine_precise_clocks(nav_t *nav);
 
 namespace neognss_obs {
 namespace {
@@ -94,22 +93,6 @@ void free_products(nav_t &nav) {
     nav = nav_t{};
 }
 
-// Reuse RTKLIB's merge after each file, exactly as readrnxc() does.
-void append_clocks(nav_t &nav, const std::vector<pclk_t> &clocks) {
-    size_t count = size_t(nav.nc) + clocks.size();
-    if (count > size_t(INT_MAX))
-        throw std::overflow_error("Too many precise clock records");
-    auto buffer =
-        static_cast<pclk_t *>(std::realloc(nav.pclk, count * sizeof(pclk_t)));
-    if (!buffer)
-        throw std::bad_alloc();
-    nav.pclk = buffer;
-    std::copy(clocks.begin(), clocks.end(), nav.pclk + nav.nc);
-    nav.nc = nav.ncmax = int(count);
-    ngo_combine_precise_clocks(&nav);
-    if (!nav.pclk || nav.nc <= 0)
-        throw std::bad_alloc();
-}
 // Strict bilinear interpolation: no nearest-neighbour fill or zero
 // substitution.
 std::pair<double, double> grid(const tec_t &m, double latitude,
@@ -171,7 +154,7 @@ struct StecProcessor::State {
     std::map<int, ReceiverAntenna> antennas;
     bool antenna_required;
     std::unique_ptr<nav_t> nav = std::make_unique<nav_t>();
-    std::map<std::string, std::vector<pclk_t>> clock_cache;
+    PreciseClockCache clock_cache;
     std::map<std::pair<int, int>, std::vector<Bias>> biases;
     std::map<int, Track> tracks;
     double rr[3], pos[3], elevation, level_elevation, mapping_height;
@@ -446,31 +429,7 @@ void StecProcessor::products(const Json &p) {
             throw std::runtime_error("Cannot read nonempty STEC SP3: " +
                                      f.get<std::string>());
     }
-    std::set<std::string> clock_files;
-    for (const auto &f : p.at("clk"))
-        clock_files.insert(f.get<std::string>());
-    std::erase_if(s.clock_cache, [&](const auto &entry) {
-        return !clock_files.contains(entry.first);
-    });
-    for (const auto &f : p.at("clk")) {
-        auto path = f.get<std::string>();
-        auto found = s.clock_cache.find(path);
-        if (found == s.clock_cache.end()) {
-            auto parsed = std::unique_ptr<nav_t, void (*)(nav_t *)>(
-                new nav_t{}, [](nav_t *v) {
-                    free_products(*v);
-                    delete v;
-                });
-            if (!readrnxc(path.c_str(), parsed.get()))
-                throw std::runtime_error("Cannot read STEC CLK");
-            found =
-                s.clock_cache
-                    .emplace(path, std::vector<pclk_t>(
-                                       parsed->pclk, parsed->pclk + parsed->nc))
-                    .first;
-        }
-        append_clocks(*s.nav, found->second);
-    }
+    s.clock_cache.load(*s.nav, p.at("clk").get<std::vector<std::string>>());
     obs_t unused{};
     sta_t sta{};
     for (const auto &f : p.at("nav")) {

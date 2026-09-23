@@ -13,38 +13,16 @@ ngo-cnex-import run -p sbf --station /data/cnex /data/first.sbf /data/second.sbf
 
 ngo-sbas-grid-parquet --input-dir /data/cnex --output /data/sbas-grid
 
-ngo-sbas-grid-plot --input-dir /data/sbas-grid --output /data/sbas-maps \
-  --coastline contrib/natural-earth/ne_10m_coastline.zip
+ngo-sbas-grid-plot --input-dir /data/sbas-grid --output /data/sbas-maps
 ```
 
 Import, grid calculation and plotting are separate commands. Grid reads the
 ParquetNEX station's latest RawBits and Events revisions and all their parts.
 It has no protocol selection, raw-data path or reconstruction dependency.
 
-Grid reads only the required catalog columns in batches of up to 65,536 rows.
 The `SBAS input rows` progress bar counts all scanned RawBits and Events rows,
-including non-SBAS frames and non-navigation events that are filtered out. Its
-total comes from the selected Parquet footers, not compressed file sizes or
-the number of days. It advances after each consumed batch and shows row rate,
-ETA, GPST partition date and catalog, with display refreshes at most once per
-second. Native frame processing remains bounded to 8,192 frames per stream.
-The separate `Write SBAS intervals` bar counts output interval rows during
-daily compaction and updates after each written batch. Neither bar represents
-elapsed GNSS time or memory consumption.
-
-One background reader prefetches at most one batch while the ordered native
-processor works on the current batch. Arrow may also use its internal column
-decode threads. Read errors propagate to the caller; early termination joins
-the reader and closes its input before returning. This read-ahead mechanism is
-shared with STEC. No days or streams are reordered to gain parallelism.
-
-The grid processor consumes Arrow buffers directly and keeps frame decoding,
-navigation/gap boundaries and interval generation in C++ with the GIL released.
-Its hot path uses typed frames and intervals instead of Python dictionaries or
-JSON. Owned, read-only structured NumPy batches carry intervals back to Python,
-which splits midnight crossings and builds Arrow tables in batches. Small
-diagnostic summaries still use JSON. Writing remains under one owner; there is
-no asynchronous writer queue or per-day parallel state machine.
+including records excluded from grid calculation; it is not a count of usable
+SBAS frames. Output progress counts grid intervals, not elapsed GNSS time.
 
 ### Explicit wire protocol
 
@@ -96,8 +74,8 @@ and unsupported complete SBAS bodies remain available for inspection/re-decoding
 
 ### Grid and map products
 
-Grid re-decodes SBAS bodies in bounded C++ batches and verifies CRC metadata
-against their bytes. Receiver-rejected frames do not update masks or corrections.
+Grid verifies CRC evidence against the SBAS bodies. Receiver-rejected frames
+do not update masks or corrections.
 Independent stream state spans Parquet files and GPST midnight. Grid consumes
 navigation completion Events and rejects unsupported navigation event kinds;
 receiver-scope restart Events are currently filtered out, not applied as grid
@@ -125,59 +103,34 @@ invalid and unmonitored values produce no interval, not zero TEC. Values from
 different satellites are never averaged together. This is SBAS-broadcast equivalent
 VTEC, not receiver-observed STEC. Empty days have no grid Parquet.
 
-Grid uses bounded buffers and temporary shards, compacted into daily
-Zstandard level-3 Parquet without keeping all day writers open. Grid directory
-publication is atomic; `--overwrite` retains the previous output as a backup.
+Grid publishes daily Parquet after successful processing; `--overwrite`
+retains the previous output as a backup.
 RawBits publication uses ParquetNEX revision/part rules. Grid does not require
 the import-state sidecar, completion summaries or raw sources.
 
-`ngo-sbas-grid-plot` uses only grid Parquet and a coastline asset. It computes
+`ngo-sbas-grid-plot` uses grid Parquet and the bundled Natural Earth 10m coastline.
+Use `--coastline PATH` to supply another coastline ZIP. It computes
 valid-duration-weighted hourly means; `--min-coverage` defaults to 0.25.
 Hourly grid records are stored in `hourly/GPST-YYYY-MM-DD.parquet`, using
 Zstandard level 3 and explicit GPST, coordinate and VTEC units. Each file
 contains that day's hourly means, valid durations and coverage fractions;
-rendering reads these Parquet records rather than JSONL.
+these are the reusable hourly products for rendering.
 `--start/--end YYYY-MM-DDTHH` select GPST hours with an exclusive end.
-Missing cells stay absent. Rendering/PNG compression use independent worker
-processes (`--workers`), with compression level 3 by default
-(`--png-compression`). Color limits default to 0–200 TECU. The 5-degree cell
+Missing cells stay absent. See `--help` for rendering controls. Color limits
+default to 0–200 TECU. The 5-degree cell
 overlay and map coastlines are illustrative, not precision coverage polygons.
 
 ## Library API and routing
 
-Receiver framing and generated UBX/SBF message fields belong to libcppgnss.
-Observatory owns canonical RawBits normalization and satellite content decoding:
-
-```cpp
-#include <neognss_obs/raw_bits.hpp>
-#include <neognss_obs/sbas.hpp>
-
-// frame is a checksum-validated UBX or SBF cppgnss::FrameView.
-auto result = neognss_obs::decode_raw_bits(frame);
-if (result.record && result.record->family == "SBAS_L1") {
-    auto decoded = neognss_obs::SBAS::parse_l1(result.record->body);
-    // Check decoded.status before consuming typed correction content.
-}
-```
-
-The importer attaches receiver-time context separately. Grid reads the resulting
-CommonNEX records rather than invoking a raw receiver adapter. Add future
-constellation content parsers in libneognss-obs, beside neognss_obs/sbas.hpp;
-do not reinterpret another GNSS merely because its frame resembles SBAS.
-
-UBX::parse_subframe(frame) remains a stateless receiver-native SFRBX v2 word
-extractor. Its signal key retains constellation, satellite and signal identity,
-plus the GLONASS frequency slot; it owns no routing history or SBAS decoder.
-RXM-SFRBX has no reception timestamp. Source offsets and filenames are not time.
+See [native architecture](native-architecture.md) for library ownership and
+the [processing API](../libneognss-obs/README.md) for direct callers. Grid uses
+CommonNEX records, not receiver transport fields.
 
 ## SBAS L1 content support
 
-Scope is `gnssId=1, sigId=0` (L1 C/A), not SBAS L5 or QZSS L1S. Decode the
-first eight U4 words MSB-first into 250 over-air bits. Six trailing padding bits
-are retained separately and excluded from CRC-24Q. Validate the preamble and
-24-bit CRC before exposing typed content. Some UBX reports contain a ninth
-container word; it is outside the canonical 250-bit body and remains in the raw
-archive, not the receiver-independent SBAS content record.
+Scope is SBAS L1 C/A, not SBAS L5 or QZSS L1S. Canonical body layout and
+receiver mappings are defined in [RawBits layouts](commonnex/raw-bits-layouts.md);
+transport words and framing remain in the raw archive.
 
 | Message type | Typed content |
 | --- | --- |
