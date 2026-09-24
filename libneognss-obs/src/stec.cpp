@@ -9,6 +9,7 @@
 #include <iterator>
 #include <map>
 #include <neognss_obs/antenna.hpp>
+#include <neognss_obs/broadcast_navigation.hpp>
 #include <neognss_obs/rtklib_lock.hpp>
 #include <neognss_obs/stec.hpp>
 #include <set>
@@ -168,6 +169,7 @@ struct StecProcessor::State {
     uint64_t epochs = 0, sample_count = 0, arcs = 0, valid_arcs = 0,
              unhealthy = 0, missing_gim = 0;
     bool ready = false, finished = false;
+    std::shared_ptr<BroadcastNavigation> broadcast;
     explicit State(const Json &s)
         : settings(s), antenna_required(s.at("antenna_required")) {
         for (const auto &[key, model] : s.at("antennas").items())
@@ -270,6 +272,20 @@ struct StecProcessor::State {
     bool geometry(int sat, int64_t ns, double &az, double &el, double &lat,
                   double &lon, int32_t &issues) {
 
+        if (broadcast) {
+            double tau = .075, xyz[3], e[3];
+            for (int i = 0; i < 3; ++i) {
+                if (!broadcast->position(sat, ns, tau, xyz))
+                    return false;
+                const double angle = OMGE * tau, x = xyz[0], y = xyz[1];
+                xyz[0] = std::cos(angle) * x + std::sin(angle) * y;
+                xyz[1] = -std::sin(angle) * x + std::cos(angle) * y;
+                for (int j = 0; j < 3; ++j)
+                    e[j] = xyz[j] - rr[j];
+                tau = norm(e, 3) / CLIGHT;
+            }
+            return geometry_result(e, az, el, lat, lon);
+        }
         gtime_t t = time_of(ns);
         const eph_t *health = nullptr;
         double age = 7201;
@@ -359,9 +375,13 @@ struct StecProcessor::State {
                 e[j] = rs[j] - rr[j];
             tau = norm(e, 3) / CLIGHT;
         }
+        return geometry_result(e, az, el, lat, lon);
+    }
+    bool geometry_result(double *e, double &az, double &el, double &lat,
+                         double &lon) const {
         double range = norm(e, 3), azel[2];
-        for (double &v : e)
-            v /= range;
+        for (int j = 0; j < 3; ++j)
+            e[j] /= range;
         satazel(pos, e, azel);
         az = azel[0] * R2D;
         el = azel[1] * R2D;
@@ -417,9 +437,21 @@ StecProcessor::~StecProcessor() {
     std::lock_guard guard(rtklib_mutex);
     state_.reset();
 }
+void StecProcessor::navigation(
+    std::shared_ptr<BroadcastNavigation> navigation) {
+    std::lock_guard guard(rtklib_mutex);
+    if (!navigation || state_->ready || state_->finished)
+        throw std::runtime_error(
+            "Attach broadcast navigation before processing");
+    state_->broadcast = std::move(navigation);
+    state_->ready = true;
+}
 void StecProcessor::products(const Json &p) {
     std::lock_guard guard(rtklib_mutex);
     auto &s = *state_;
+    if (s.broadcast)
+        throw std::runtime_error(
+            "Broadcast STEC does not load precise products");
     s.ready = false;
     free_products(*s.nav);
     for (const auto &f : p.at("sp3")) {
@@ -732,7 +764,7 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
                     double rp = 6371 / (6371 + s.mapping_height) *
                                 std::sin(.9782 * (PI / 2 - el * D2R));
                     mapping = 1 / std::sqrt(1 - rp * rp);
-                    if (std::isfinite(mapping)) {
+                    if (!s.broadcast && std::isfinite(mapping)) {
                         std::tie(gim, rms) =
                             s.gim(epoch.gpst_ns, lat, lon, mapping);
                         if (!std::isfinite(gim)) {
@@ -760,7 +792,7 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
                 if (a->code_valid && b->code_valid)
                     code =
                         b->pseudorange_m - a->pseudorange_m - bias_value(p.id);
-                if (!std::isfinite(bias_value(p.id)))
+                if (!s.broadcast && !std::isfinite(bias_value(p.id)))
                     issues |= 8;
                 for (auto &[bit, count] : s.product_gaps)
                     if (issues & bit)

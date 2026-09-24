@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "stec_cnex.hpp"
 #include <mutex>
+#include <neognss_obs/broadcast_navigation.hpp>
 #include <neognss_obs/stec.hpp>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -36,6 +37,47 @@ auto lock(Processor &s) {
 } // namespace neognss_obs::python_bindings::stec
 void bind_stec(py::module_ &m) {
     using namespace neognss_obs::python_bindings::stec;
+    py::class_<BroadcastNavigation, std::shared_ptr<BroadcastNavigation>>(
+        m, "BroadcastNavigation")
+        .def(py::init<std::string>())
+        .def("feed",
+             [](BroadcastNavigation &s, const py::object &batch) {
+                 auto capsules =
+                     batch.attr("__arrow_c_array__")().cast<py::tuple>();
+                 auto schema = static_cast<ArrowSchema *>(
+                     PyCapsule_GetPointer(capsules[0].ptr(), "arrow_schema"));
+                 auto array = static_cast<ArrowArray *>(
+                     PyCapsule_GetPointer(capsules[1].ptr(), "arrow_array"));
+                 if (!schema || !array)
+                     throw py::error_already_set();
+                 py::gil_scoped_release release;
+                 s.feed(schema, array);
+             })
+        .def("clear", &BroadcastNavigation::clear,
+             py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("decoded", &BroadcastNavigation::decoded)
+        .def("ecef", [](BroadcastNavigation &s,
+                        const std::vector<int64_t> &times,
+                        const std::vector<std::string> &systems,
+                        const std::vector<int> &numbers) {
+            if (times.size() != systems.size() ||
+                times.size() != numbers.size())
+                throw std::invalid_argument(
+                    "Navigation query column lengths differ");
+            py::array_t<double> result(
+                {py::ssize_t(times.size()), py::ssize_t(3)});
+            auto out = result.mutable_data();
+            py::gil_scoped_release release;
+            for (size_t i = 0; i < times.size(); ++i) {
+                if (times[i] < 0 || systems[i].size() != 1)
+                    throw std::invalid_argument(
+                        "Invalid navigation query identity/time");
+                if (!s.ecef(systems[i][0], numbers[i], times[i], out + i * 3))
+                    std::fill(out + i * 3, out + i * 3 + 3,
+                              std::numeric_limits<double>::quiet_NaN());
+            }
+            return result;
+        });
     py::class_<StecCnexReader>(m, "StecCnexReader")
         .def(py::init([](std::string setup, py::list pairs) {
             return std::make_unique<StecCnexReader>(std::move(setup),
@@ -66,6 +108,14 @@ void bind_stec(py::module_ &m) {
                          "Concurrent CommonNEX reader use");
                  return s.flush();
              })
+        .def("complete",
+             [](StecCnexReader &s, int64_t through_ns) {
+                 std::unique_lock guard(s.mutex, std::try_to_lock);
+                 if (!guard.owns_lock())
+                     throw std::runtime_error(
+                         "Concurrent CommonNEX reader use");
+                 return s.complete(through_ns);
+             })
         .def("summary", [](StecCnexReader &s) {
             auto guard = std::unique_lock(s.mutex, std::try_to_lock);
             if (!guard.owns_lock())
@@ -90,6 +140,12 @@ void bind_stec(py::module_ &m) {
             py::gil_scoped_release release;
             return std::make_unique<Processor>(s);
         }))
+        .def("navigation",
+             [](Processor &s, std::shared_ptr<BroadcastNavigation> navigation) {
+                 py::gil_scoped_release release;
+                 auto guard = lock(s);
+                 s.value.navigation(std::move(navigation));
+             })
         .def("products",
              [](Processor &s, py::dict p) {
                  auto j = arg(p);

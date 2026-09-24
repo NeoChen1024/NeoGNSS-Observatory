@@ -3,6 +3,7 @@
 #include <neognss_obs/ppp.hpp>
 
 namespace neognss_obs {
+class BroadcastNavigation;
 struct StecSample {
     int64_t gpst_ns, arc_id, receiver_segment_start_ns;
     int32_t prn, system, pair_id, product_issues;
@@ -26,6 +27,7 @@ class StecProcessor {
     explicit StecProcessor(const Json &settings);
     ~StecProcessor();
     void products(const Json &products);
+    void navigation(std::shared_ptr<BroadcastNavigation> navigation);
     StecResult process(const ObservationBatch &batch);
     void restarts(std::span<const int64_t> boundaries);
     std::vector<StecArc> finish();

@@ -35,6 +35,10 @@ No RINEX/RTCM3 importer or DecodedNav catalog is planned.
       do not infer continuity from the absence of unsupported events.
 - [ ] Add CommonNEX PPP input and integrate Setup calibration where needed by
       remaining consumers. STEC already uses the selected ANTEX companion.
+- [ ] Extend the [realtime broadcast navigation consumer](../stec-realtime.md)
+      beyond GPS/QZSS LNAV to Galileo I/F-NAV and BeiDou D1/D2.
+- [ ] Join measurement-clock telemetry into realtime phase processing without
+      treating a measurement adjustment as receiver reboot.
 - [ ] Implement overlap reconciliation only on explicit request; the current
       input contract remains one continuous non-overlapping recording path.
 

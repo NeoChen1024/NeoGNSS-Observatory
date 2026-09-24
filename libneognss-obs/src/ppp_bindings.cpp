@@ -47,6 +47,13 @@ void bind_ppp(py::module_ &m) {
     PYBIND11_NUMPY_DTYPE(PppSatellite, gpst_ns, prn, used, slip, azimuth_deg,
                          elevation_deg, phase_residual_m, code_residual_m);
     py::class_<ObservationBatch>(m, "ObservationBatch")
+        .def_property_readonly("epochs_ns",
+                               [](const ObservationBatch &b) {
+                                   std::vector<int64_t> times;
+                                   for (const auto &e : b.epochs)
+                                       times.push_back(e.gpst_ns);
+                                   return times;
+                               })
         .def_property_readonly(
             "size", [](const ObservationBatch &b) { return b.epochs.size(); })
         .def_property_readonly("start_ns",

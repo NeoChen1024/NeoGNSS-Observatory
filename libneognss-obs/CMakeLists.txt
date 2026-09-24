@@ -9,7 +9,7 @@ add_library(neognss_obs src/ubx_archive.cpp src/reconstruction.cpp src/processin
     src/sbas.cpp src/raw_bits.cpp src/measurements.cpp src/observations.cpp)
 add_library(neognss_obs::neognss_obs ALIAS neognss_obs)
 find_package(Threads REQUIRED)
-target_sources(neognss_obs PRIVATE src/cnex_engine.cpp)
+target_sources(neognss_obs PRIVATE src/cnex_engine.cpp src/broadcast_navigation.cpp)
 target_include_directories(neognss_obs PRIVATE ../contrib/int128/include)
 target_link_libraries(neognss_obs PUBLIC nanoarrow_static PRIVATE Threads::Threads)
 target_compile_features(neognss_obs PUBLIC cxx_std_20)

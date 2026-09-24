@@ -7,6 +7,9 @@ pair results and equal-arithmetic-mean fused STEC. These are GIM-constrained,
 product-dependent estimates, not independently calibrated absolute TEC.
 PPP solutions, RINEX observation conversion and QA stamps are not required.
 
+For product-independent live arc-relative phase STEC with broadcast geometry,
+see [ngo-stec-realtime](stec-realtime.md). It is not the absolute/DCB pipeline.
+
 ## Run and automatic pairs
 
 Use [the example configuration](../config/stec.example.toml):

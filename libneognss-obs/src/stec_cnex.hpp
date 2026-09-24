@@ -249,6 +249,11 @@ class StecCnexReader {
         }
         return out;
     }
+    ObservationBatch complete(int64_t through_ns) {
+        if (pending_ && pending_->gpst_ns <= through_ns)
+            return flush();
+        return {};
+    }
     Json summary() const {
         return {{"rounded_epochs_to_ns", rounded_},
                 {"smoothed_selected_observations", smoothed_}};
