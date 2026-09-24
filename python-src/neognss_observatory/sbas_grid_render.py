@@ -5,16 +5,15 @@ import multiprocessing
 import os
 import shutil
 import tempfile
-import zipfile
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from io import BytesIO
 from pathlib import Path
 
 import click
 
 from .gpst import label as gpst_label
 from .gpst import parse_hour as parse_gpst_hour
+from .map_assets import coastline_parts
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / f"neognss-matplotlib-{os.getuid()}"))
 import matplotlib
@@ -22,7 +21,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import shapefile
 from matplotlib.cm import ScalarMappable
 from matplotlib.collections import LineCollection, PatchCollection
 from matplotlib.colors import Normalize
@@ -57,19 +55,6 @@ def initialize_coastline(path, extent):
             segment.flags.writeable = False
             segments.append(segment)
     _coast_key, _coast = key, segments
-
-
-def coastline_parts(path):
-    with zipfile.ZipFile(path) as archive:
-        names = archive.namelist()
-        shp = next(name for name in names if name.endswith(".shp"))
-        shx = next(name for name in names if name.endswith(".shx"))
-        dbf = next(name for name in names if name.endswith(".dbf"))
-        reader = shapefile.Reader(shp=BytesIO(archive.read(shp)), shx=BytesIO(archive.read(shx)), dbf=BytesIO(archive.read(dbf)))
-        for shape in reader.shapes():
-            boundaries = list(shape.parts) + [len(shape.points)]
-            for begin, finish in zip(boundaries, boundaries[1:]):
-                yield shape.points[begin:finish]
 
 
 def extent_for(rows):

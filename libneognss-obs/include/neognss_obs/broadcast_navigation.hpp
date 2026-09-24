@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 struct ArrowSchema;
@@ -18,6 +19,7 @@ class BroadcastNavigation {
     bool position(int satellite, int64_t observation_ns, double travel_seconds,
                   double *ecef) const;
     uint64_t decoded() const;
+    std::map<std::string, uint64_t> decoded_by_family() const;
     bool ecef(char system, int number, int64_t gpst_ns, double *xyz) const;
 
   private:

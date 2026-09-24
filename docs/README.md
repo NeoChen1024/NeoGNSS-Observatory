@@ -35,8 +35,10 @@ only when they affect present interpretation or processing.
   RawBits, receiver telemetry and Events to daily Parquet, tail parts and revisions.
 - [Multi-GNSS STEC and receiver DCB](stec.md): CommonNEX input, incremental phase leveling,
   GIM-constrained absolute estimates and hourly plots.
-- [Realtime relative STEC](stec-realtime.md): GPS/QZSS broadcast LNAV, CommonNEX Arrow API,
+- [Realtime relative STEC](stec-realtime.md): GPS/QZSS/Galileo/BeiDou broadcast geometry, CommonNEX Arrow API,
   per-epoch IPP and relative phase STEC JSONL.
+- [Realtime STEC viewer](stec-realtime-view.md): PySide6 map and signal-pair traces
+  for the latest hour of JSONL output.
 - [Receiver antenna calibration](antenna.md): shared PCO/PCV, same-frequency use, bounded interpolation and nearby-frequency substitution.
 - [Offline PPP Float](ppp.md): raw GPS observations, local precise products and numerical/plot outputs.
 - [Dataset QA and reconstruction](dataset-qa.md): optional scan and explicit restitch.

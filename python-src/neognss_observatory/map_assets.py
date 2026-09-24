@@ -3,8 +3,24 @@
 
 import functools
 import hashlib
+import zipfile
 from contextlib import nullcontext
 from importlib.resources import as_file, files
+from io import BytesIO
+
+import shapefile
+
+
+def coastline_parts(path):
+    """Read bundled coastline geometry without selecting a Matplotlib backend."""
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        members = {suffix: next(n for n in names if n.endswith("." + suffix)) for suffix in ("shp", "shx", "dbf")}
+        with shapefile.Reader(**{k: BytesIO(archive.read(n)) for k, n in members.items()}) as reader:
+            for shape in reader.iterShapes():
+                boundaries = list(shape.parts) + [len(shape.points)]
+                for begin, finish in zip(boundaries, boundaries[1:]):
+                    yield shape.points[begin:finish]
 
 
 def with_coastline(function):

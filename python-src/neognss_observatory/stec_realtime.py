@@ -40,7 +40,7 @@ class RealtimeStec:
     def __init__(self, setup, *, elevation_deg=10.0, navigation=None):
         self.setup = validate_setup(setup)
         pairs, models, _ = build_pairs(Path("."), self.setup, "none", {})
-        self.pairs = [p | dict(id=i) for i, p in enumerate(p for p in pairs if p["system"] in ("G", "J"))]
+        self.pairs = pairs
         self.navigation = navigation or _native.BroadcastNavigation(self.setup["setup_id"])
         self.segment = 0
         self.settings = NATIVE_DEFAULTS | dict(
@@ -141,7 +141,7 @@ class RealtimeStec:
                 setup_id=self.setup["setup_id"],
                 segment=result.segment,
                 gpst=f"{Decimal(stamp) / 10**9:.12f}",
-                orbit="broadcast_lnav",
+                orbit="broadcast",
                 phase="receiver_exported",
                 ipp_shell_radius_m=6821000,
                 samples=grouped.get(stamp, []),
@@ -176,7 +176,7 @@ def file_groups(path, stream):
 )
 @click.option("--output", type=click.Path(path_type=Path), help="Exclusive-create JSONL file; default stdout.")
 def cli(host, port, input_path, protocol, setup_path, max_latency, duration, elevation_deg, output):
-    """Emit per-epoch GPS/QZSS IPP and arc-relative STEC JSONL, without CDDIS."""
+    """Emit per-epoch GPS/QZSS/Galileo/BeiDou IPP and relative STEC JSONL."""
     if bool(host) == bool(input_path):
         raise click.UsageError("Specify exactly one of --host or --input")
     if input_path and duration is not None:
@@ -191,9 +191,7 @@ def cli(host, port, input_path, protocol, setup_path, max_latency, duration, ele
             if input_path
             else tcp_groups(host, port, stream, max_latency=max_latency, duration=duration)
         )
-        click.echo(
-            "Relative phase STEC; GPS/QZSS LNAV geometry; no DCB/antenna correction. Waiting for usable ephemerides.", err=True
-        )
+        click.echo("Relative phase STEC; broadcast geometry; no DCB/antenna correction. Waiting for usable ephemerides.", err=True)
         with output.open("x") if output else nullcontext(click.get_text_stream("stdout")) as target:
             for group in groups:
                 if group is None:
@@ -204,7 +202,11 @@ def cli(host, port, input_path, protocol, setup_path, max_latency, duration, ele
                 target.flush()
                 if group.notice:
                     click.echo(group.notice, err=True)
-        click.echo(f"Decoded ephemerides: {consumer.navigation.decoded}", err=True)
+        click.echo(
+            f"Decoded ephemerides: {consumer.navigation.decoded}; "
+            f"families={json.dumps(consumer.navigation.decoded_by_family, sort_keys=True)}",
+            err=True,
+        )
     except (OSError, ValueError, RuntimeError, BufferError, EOFError, OverflowError) as error:
         raise click.ClickException(str(error)) from error
 

@@ -56,6 +56,8 @@ void bind_stec(py::module_ &m) {
         .def("clear", &BroadcastNavigation::clear,
              py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("decoded", &BroadcastNavigation::decoded)
+        .def_property_readonly("decoded_by_family",
+                               &BroadcastNavigation::decoded_by_family)
         .def("ecef", [](BroadcastNavigation &s,
                         const std::vector<int64_t> &times,
                         const std::vector<std::string> &systems,

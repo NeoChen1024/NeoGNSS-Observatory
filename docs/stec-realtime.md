@@ -1,7 +1,7 @@
 # Realtime relative STEC
 
 `ngo-stec-realtime` is a CommonNEX streaming consumer example. It emits one JSONL
-record per completed observational epoch, with GPS/QZSS signal-pair relative
+record per completed observational epoch, with GPS/QZSS/Galileo/BeiDou signal-pair relative
 STEC and ionospheric pierce-point (IPP) coordinates. No RINEX conversion, CDDIS
 products, DCB estimation or precise-orbit download is needed.
 
@@ -25,6 +25,9 @@ JSONL still has one line per epoch, not one line per batch. Input antenna is 0.
 Progress, discontinuity and incomplete-tail notices go to stderr. A TCP error
 is not silently reconnected. `--duration` applies only to TCP.
 
+Pipe stdout into [`ngo-stec-realtime-view`](stec-realtime-view.md) for a PySide6
+map and time-series display of the latest hour.
+
 ## Output interpretation
 
 Each line includes:
@@ -32,7 +35,7 @@ Each line includes:
 - `setup_id`, `segment`, and `gpst`: GPST seconds since 1980-01-06 as a decimal
   string. Native numerical processing rounds CommonNEX picoseconds to integer
   nanoseconds, ties to even, like the existing STEC reader.
-- `orbit="broadcast_lnav"`, `phase="receiver_exported"` and
+- `orbit="broadcast"`, `phase="receiver_exported"` and
   `ipp_shell_radius_m=6821000`: explicit geometry/phase conventions.
 - `samples`: satellite identity, exact `signals` pair, `arc_id`,
   `relative_stec_tecu`, `ipp_latitude_deg`, `ipp_longitude_deg`, `elevation_deg`
@@ -59,27 +62,52 @@ Untimed restart Events cannot be safely placed and fail explicitly.
 
 ## Navigation support and time
 
-The initial backend accepts canonical `GPS_LNAV` and `QZS_LNAV` RawBits, not
-receiver envelopes. At least one recorded check must pass and none may fail.
-Subframes 1-3 must be available within a 120-second context window and pass
-RTKLIB's subframe/IOD consistency checks. Their latest navigation-context time
-is the complete ephemeris's availability time. Untimed RawBits do not update
-the navigation cache. Truncated week numbers are resolved against receiver GPST,
-not the host date; TOE/TOC remain the decoded model reference times.
+The backend accepts these canonical RawBits families, not receiver envelopes:
 
-Queries select only ephemerides already available at the observation time,
-within the broadcast fit half-window capped at two hours. The latest applicable
-health report is respected; an unhealthy update does not fall back to an older
-healthy record. Satellite positions include transmission-time iteration and
+| System | Family | Required ephemeris units |
+| --- | --- | --- |
+| GPS/QZSS | GPS_LNAV / QZS_LNAV | Subframes 1-3 |
+| Galileo | GAL_INAV | Nominal even/odd pairs for word types 1-5 |
+| Galileo | GAL_FNAV | Pages 1-4 |
+| BeiDou | BDS_D1 | Subframes 1-3 |
+| BeiDou GEO | BDS_D2 | Subframe 1 pages 1 and 3-10; page 2 is not required |
+
+At least one recorded check must pass and none may fail. Required units must
+be available within a 120-second context window, with source decoder checks on
+subframe/page identity, IOD and, for BeiDou, SOW and TOE/TOC consistency. Galileo
+satellite identity is checked against the decoded message. I/NAV alert pages
+remain unsupported. Families have separate assembly/cache histories; I/NAV and
+F/NAV never supply each other's missing pieces.
+
+The latest contributing navigation-context time is the complete ephemeris's
+availability time. Untimed RawBits do not update the cache. Finite/truncated week
+numbers are resolved against receiver GPST, not the host date. Galileo uses
+RTKLIB's nominal GST/GPST alignment for orbital geometry; no GGTO precision-clock
+correction is claimed. BeiDou model times use BDT with the 14-second GPST offset.
+TOE/TOC week carry is resolved around decoded transmission time. Broadcast GEO
+propagation uses the BeiDou GEO transform rather than a MEO orbit formula.
+
+Queries select only ephemerides whose availability is strictly earlier than
+the observation time. Same-time pages may arrive after an observation within
+the navigation window, so a newly completed ephemeris does not retroactively
+enable that epoch depending on delivery chunk size. Selection is additionally
+limited to the broadcast fit half-window capped at two hours. The latest applicable
+health report in each available family is respected; an unhealthy update does
+not fall back to an older healthy record or another family's healthy orbit.
+This is conservative satellite-level filtering, not a claim that every signal's
+health was reported by every family. Satellite positions include transmission-time iteration and
 Earth rotation for the line of sight used by IPP calculation.
 
 This is causality at navigation-context resolution, not exact wire-arrival
-ordering. Same-context records may be consumed together. Each satellite retains
+ordering. At higher measurement rates or with stale navigation context, it is
+still not an exact wire-arrival timestamp guarantee. Each satellite/family retains
 at most eight ephemeris entries, so feed bounded chronological batches instead
 of an entire archive of RawBits before processing observations. RawBits and
 Observation catalogs are independent; they need not contain matching timestamps.
-Galileo, BeiDou and modern CNAV orbit decoding are not implemented in this first
-backend. Existing RawBits preservation for those families is unchanged.
+Modern CNAV/CNAV-2/B-CNAV orbit decoding remains unimplemented. A supported
+legacy orbit can provide geometry for the same satellite's modern observation
+pairs; it does not provide their code-bias calibration. Existing RawBits
+preservation for unsupported navigation families is unchanged.
 
 ## Reusable Python API
 
@@ -112,6 +140,8 @@ with NaN rows when unavailable. This direct query has no receiver-specific
 light-time/Earth-rotation transformation. RTKLIB types remain private.
 Shared navigation contexts must be fed once by their owner, and discontinuity
 handling must be coordinated across consumers; they are not an IPC service.
+`decoded_by_family` reports inserted ephemeris updates by navigation family;
+repeated unchanged ephemerides are not counted again.
 
 Only the final example CLI converts numerical batches into JSONL. Numerical
 work and navigation decoding remain in native code with the GIL released.
