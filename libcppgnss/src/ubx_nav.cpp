@@ -30,10 +30,6 @@ bool ubx_nav_pvt_fix_ok(const ubx_nav_pvt &pvt) {
            pvt.data.fixType >= 2 && pvt.data.fixType <= 5;
 }
 
-bool ubx_nav_eoe_semantically_valid(const ubx_nav_eoe &eoe) {
-    return eoe.data.iTOW <= UINT32_C(86400) * 1000 * 7;
-}
-
 std::string ubx_nav_pvt_fix_type(const ubx_nav_pvt &pvt) {
     if (!ubx_nav_pvt_semantically_valid(pvt))
         return "INVALID";

@@ -34,8 +34,8 @@ build does not require either dependency.
 The library can also be configured directly with `cmake -S libcppgnss -B build/ubx`.
 Use `-DCPPGNSS_BUILD_EXAMPLES=OFF` for a library-only build and
 `-DBUILD_TESTING=OFF` to omit tests. Static builds are the default;
-`-DBUILD_SHARED_LIBS=ON` builds a shared library. The logger and current
-reader checks target POSIX systems. Cross-compilation of tests is not
+`-DBUILD_SHARED_LIBS=ON` builds a shared library. The logger targets POSIX
+systems. Cross-compilation of tests is not
 supported. No install/export package or stable ABI is promised in this version.
 
 ## Using the library
@@ -58,28 +58,18 @@ Public headers use `#include <cppgnss/ubx.hpp>` and the existing `UBX`
 namespace. Individual generated decoders are available through headers such
 as `<cppgnss/ubx_rxm_gen.hpp>`. SBF descriptors/decoders are under `cppgnss::SBF`.
 
-- `read_ubx_frame()` in `ubx_reader.hpp` accepts a caller-owned byte reader,
-  distinguishes EOF/truncation/timeout/error, and returns frame bytes without
-  sync. Construct `ubx_frame` from those bytes to validate length and checksum.
-- This byte-reader API discards partial state on callback failure,
-  and a corrupt length can consume a following frame.
-  It is not yet an archive-salvage or byte-offset-indexing API.
-- The logger uses `StreamDecoder` instead: bounded input chunks, validated
+- Use `StreamDecoder` for framing: bounded input chunks, validated
   complete wire frames and atomic skipping of foreign-protocol frames.
 - Successful `ParseResult<T>` means structural decoding succeeded. NAV semantic validity
   is separate. UBX scaled wire fields remain raw values; do not assume they are
   already expressed in physical units or that timestamps are valid UTC.
-- Generated UBX messages are independent decoded-data classes, not subclasses
-  of `ubx_any_msg`. They retain decoded fields and `dump()`, without
-  a duplicate raw payload or inherited frame identity. Keep the source frame
-  when raw bytes or transport identity are needed; `ubx_any_msg` remains the
-  separate generic raw-message container.
+- Generated UBX messages are independent decoded-data classes. They retain
+  decoded fields and `dump()`, without a duplicate raw payload or inherited
+  frame identity. Keep the source frame when raw bytes or transport identity
+  are needed; `cppgnss::dump(frame)` handles type-agnostic inspection.
 - Typed parsing returns errors as values and never invokes diagnostic callbacks.
-  The standalone legacy `ubx_frame` checksum reader still supports its silent-by-default
-  `set_parse_error_handler()`; it is not used by the validated-frame path.
 - Message `dump()` methods return `std::string`; callers handle text I/O.
-  Binary `write(FILE*)` helpers use caller-owned streams; the library never
-  opens files, reconnects sockets, or rotates recordings.
+  The library never opens files, reconnects sockets, or rotates recordings.
 
 The generated schema covers NAV, RXM, MON, TIM, ESF, HNR, LOG, SEC, CFG, and ACK.
 Names also cover upstream messages without generated decoders. Debug dispatch

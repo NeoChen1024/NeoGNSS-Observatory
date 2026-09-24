@@ -74,7 +74,7 @@ add_custom_command(
     COMMENT "Generating UBX parsers from the pinned pyubx2 schema"
     VERBATIM)
 add_custom_target(cppgnss_codegen DEPENDS ${generated_sources} ${generated_headers} ${sbf_generated} ${sbf_generated_headers} ${text_bit_generated})
-add_library(cppgnss src/parse.cpp src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/stream.cpp
+add_library(cppgnss src/parse.cpp src/ubx_nav.cpp src/stream.cpp
     src/ubx_subframe.cpp ${sbf_generated} ${text_bit_generated}
     ${generated_sources} ${generated_headers})
 add_library(cppgnss::cppgnss ALIAS cppgnss)
@@ -100,10 +100,8 @@ endif()
 if(BUILD_TESTING)
     add_executable(cppgnss_test tests/test_ubx.cpp)
     target_link_libraries(cppgnss_test PRIVATE cppgnss::cppgnss)
-    add_executable(cppgnss_reader_test tests/test_reader.cpp)
-    target_link_libraries(cppgnss_reader_test PRIVATE cppgnss::cppgnss)
     # Assertions perform checks (and some I/O) in these inherited tests.
-    foreach(test_target cppgnss_test cppgnss_reader_test)
+    foreach(test_target cppgnss_test)
         if(MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()
@@ -111,7 +109,6 @@ if(BUILD_TESTING)
         endif()
     endforeach()
     add_test(NAME cppgnss.decode COMMAND cppgnss_test)
-    add_test(NAME cppgnss.reader COMMAND cppgnss_reader_test)
     add_test(NAME cppgnss.codegen COMMAND "${CMAKE_COMMAND}" -E env
         PYTHONDONTWRITEBYTECODE=1
         "CPPGNSS_CXX=${CMAKE_CXX_COMPILER}"

@@ -7,7 +7,9 @@
 
 using namespace UBX;
 
-static ubx_frame make_frame(uint8_t class_id, uint8_t msg_id,
+using ubx_buf_t = std::vector<uint8_t>;
+
+static ubx_buf_t make_frame(uint8_t class_id, uint8_t msg_id,
                             const ubx_buf_t &payload) {
     ubx_buf_t raw = {class_id, msg_id, static_cast<uint8_t>(payload.size()),
                      static_cast<uint8_t>(payload.size() >> 8)};
@@ -19,16 +21,20 @@ static ubx_frame make_frame(uint8_t class_id, uint8_t msg_id,
     }
     raw.push_back(ck_a);
     raw.push_back(ck_b);
-    return ubx_frame(raw);
+    raw.insert(raw.begin(), {0xb5, 0x62});
+    return raw;
 }
 
 template <class T>
-static cppgnss::ParseResult<T> parse_frame(const ubx_frame &frame) {
-    return cppgnss::parse<T>(
-        {cppgnss::UbxHeader{uint16_t((frame.class_id << 8) | frame.msg_id)},
-         0,
-         {},
-         frame.payload});
+static cppgnss::ParseResult<T> parse_frame(const ubx_buf_t &wire) {
+    std::optional<cppgnss::ParseResult<T>> result;
+    cppgnss::StreamDecoder decoder(cppgnss::Protocol::ubx);
+    decoder.feed(wire, [&](const cppgnss::FrameView &frame) {
+        result = cppgnss::parse<T>(frame);
+    });
+    decoder.finish();
+    assert(result);
+    return std::move(*result);
 }
 
 template <UbxScalar T>
@@ -55,15 +61,14 @@ int main() {
     }
     assert(threw);
 
-    // Zero-length payloads are legal UBX frames. The buffer excludes sync
-    // bytes.
-    ubx_buf_t raw = {0x01, 0x02, 0x00, 0x00, 0x03, 0x0a};
-    const ubx_frame frame(raw);
-    assert(frame.valid);
-    assert(frame.payload.empty());
-
-    ubx_any_msg message(frame);
-    assert(message.valid);
+    // Zero-length payloads are legal UBX frames.
+    const ubx_buf_t raw = {0xb5, 0x62, 0x01, 0x02, 0x00, 0x00, 0x03, 0x0a};
+    cppgnss::StreamDecoder decoder(cppgnss::Protocol::ubx);
+    decoder.feed(raw, [](const cppgnss::FrameView &frame) {
+        assert(frame.payload.empty());
+    });
+    decoder.finish();
+    assert(decoder.frames == 1);
 
     ubx_nav_pvt pvt;
     pvt.data.valid_bit = 0x03;
@@ -116,10 +121,6 @@ int main() {
     pvt_payload.pop_back();
     assert(!parse_frame<ubx_nav_pvt>(
         make_frame(UBX_CLASS_NAV, UBX_NAV_PVT, pvt_payload)));
-    // Public frame fields can be modified by callers; never trust length alone.
-    auto inconsistent = make_frame(UBX_CLASS_NAV, UBX_NAV_PVT, pvt_payload);
-    inconsistent.length = 92;
-    assert(!parse_frame<ubx_nav_pvt>(inconsistent));
 
     assert(ubx_msg_name(0x06, 0x8a) == "CFG-VALSET");
     assert(ubx_msg_name(0x02, 0x36) == "RXM-SPARTN-KEY");
@@ -134,11 +135,6 @@ int main() {
     assert(ubx_msg_name(0x01, 0xfe) == "NAV-0xfe");
     assert(ubx_msg_name(0xff, 0xfe) == "0xff-0xfe");
     assert(ubx_msg_name(0xf1, 0) == "UBX-00");
-    assert(ubx_gnssid_name(2) == "GAL");
-    assert(ubx_gnssid_name(7) == "NavIC");
-    assert(ubx_gnssid_abbr_name(3) == "B");
-    assert(ubx_gnssid_abbr_name(7) == "N");
-    assert(ubx_gnssid_name(0xff) == "?");
 
     // Observation and navigation-word containers are usable without the logger.
     ubx_buf_t rawx_payload(48, 0);
@@ -186,17 +182,6 @@ int main() {
     sfrbx_payload.pop_back();
     assert(!parse_frame<ubx_rxm_sfrbx>(
         make_frame(UBX_CLASS_RXM, UBX_RXM_SFRBX, sfrbx_payload)));
-
-    FILE *fp = tmpfile();
-    assert(fp != NULL);
-    assert(frame.write(fp) == 0);
-    rewind(fp);
-    unsigned char written[8] = {};
-    assert(fread(written, 1, sizeof(written), fp) == sizeof(written));
-    const unsigned char expected[] = {0xb5, 0x62, 0x01, 0x02,
-                                      0x00, 0x00, 0x03, 0x0a};
-    assert(memcmp(written, expected, sizeof(expected)) == 0);
-    fclose(fp);
 
     return 0;
 }

@@ -75,7 +75,7 @@ def variant_condition(name, fields):
         size = compute_struct_size(fields)
         if size == 0:
             raise ValueError(f"{name}: length-selected variant must be fixed-size")
-        return f"frame.length == {size}"
+        return f"frame.payload.size() == {size}"
     return f"frame.payload.size() > {variant.offset} && " f"frame.payload[{variant.offset}] == {variant.value}"
 
 
@@ -156,7 +156,7 @@ def find_bitfield_subfield(fields: list[FieldInfo], subfield_name):
                 if bf.name == subfield_name:
                     bits = bf.bits
                     mask = (1 << bits) - 1
-                    return f"((this->{f.name} >> {offset}) & UINT64_C(0x{mask:x}))"
+                    return f"((self->{f.name} >> {offset}) & UINT64_C(0x{mask:x}))"
                 offset += bf.bits
     return None
 
@@ -375,13 +375,16 @@ def generate_parser_header(msg_name, fields, ubx_class):
 # ---------------------------------------------------------------------------
 
 
+PAYLOAD_FAILURE = 'return cppgnss::ParseError{cppgnss::ParseErrorCode::INVALID_PAYLOAD, off, error_detail.empty() ? "Unexpected payload length" : error_detail};'
+
+
 def gen_read_field(f, prefix, tab):
     """Generate bounds-checked code to read one scalar/array field."""
     lines = [
-        f"{tab}if(off > frame.length || size_t({f.size}) > frame.length - off)",
+        f"{tab}if(off > frame.payload.size() || size_t({f.size}) > frame.payload.size() - off)",
         f"{tab}{{",
-        f'{tab}\treport_parse_error(std::format("field {f.name} at offset {{}} exceeds payload length {{}}", off, frame.length));',
-        f"{tab}\treturn false;",
+        f'{tab}\terror_detail = (std::format("field {f.name} at offset {{}} exceeds payload length {{}}", off, frame.payload.size()));',
+        f"{tab}\t{PAYLOAD_FAILURE}",
         f"{tab}}}",
     ]
 
@@ -441,16 +444,16 @@ def generate_parser_impl(msg_name, fields, ubx_class):
         )
 
     if fixed and total_sz > 0:
-        lines.append(f"\tif(frame.length != sizeof(this->data))")
+        lines.append(f"\tif(frame.payload.size() != sizeof(self->data))")
         lines.append("\t{")
         lines.append(
-            f'\t\treport_parse_error(std::format("{cls}: length {{}} != expected {{}}", frame.length, sizeof(this->data)));'
+            f'\t\terror_detail = (std::format("{cls}: length {{}} != expected {{}}", frame.payload.size(), sizeof(self->data)));'
         )
-        lines.append("\t\treturn false;")
+        lines.append("\t\t" + PAYLOAD_FAILURE)
         lines.append("\t}")
         lines.append("")
 
-        lines.extend(gen_read_fields(fields, "this->data.", "\t"))
+        lines.extend(gen_read_fields(fields, "self->data.", "\t"))
     else:
         # Field-by-field parsing for variable-size messages
 
@@ -463,62 +466,50 @@ def generate_parser_impl(msg_name, fields, ubx_class):
 
                 if rc == "None" or rc is None:
                     lines.append(f"\t// repeating group: {f.name}")
-                    lines.append(f"\twhile(off + {elem_sz} <= frame.length)")
+                    lines.append(f"\twhile(off + {elem_sz} <= frame.payload.size())")
                     lines.append("\t{")
                     lines.append(f"\t\t{nest_type} item{{}};")
                     lines.extend(gen_read_fields(f.nested_fields, "item.", "\t\t"))
-                    lines.append(f"\t\tthis->{f.name}.push_back(item);")
+                    lines.append(f"\t\tself->{f.name}.push_back(item);")
                     lines.append("\t}")
                 elif isinstance(rc, str):
                     # Repeat count may be a top-level field or a bitfield sub-field
                     count_expr = find_bitfield_subfield(fields, rc)
                     if count_expr is None:
-                        count_expr = f"this->{rc}"
+                        count_expr = f"self->{rc}"
                     count_name = f"count_{f.name}"
                     lines.append(f"\tconst size_t {count_name} = static_cast<size_t>({count_expr});")
-                    lines.append(f"\tif({count_name} > (frame.length - off) / {elem_sz})")
+                    lines.append(f"\tif({count_name} > (frame.payload.size() - off) / {elem_sz})")
                     lines.append("\t{")
-                    lines.append(f'\t\treport_parse_error("{msg_name}.{f.name}: repeat count exceeds remaining payload");')
-                    lines.append("\t\treturn false;")
+                    lines.append(f'\t\terror_detail = ("{msg_name}.{f.name}: repeat count exceeds remaining payload");')
+                    lines.append("\t\t" + PAYLOAD_FAILURE)
                     lines.append("\t}")
-                    lines.append(f"\tthis->{f.name}.reserve({count_name});")
+                    lines.append(f"\tself->{f.name}.reserve({count_name});")
                     lines.append(f"\tfor(size_t i = 0; i < {count_name}; i++)")
                     lines.append("\t{")
                     lines.append(f"\t\t{nest_type} item{{}};")
                     lines.extend(gen_read_fields(f.nested_fields, "item.", "\t\t"))
-                    lines.append(f"\t\tthis->{f.name}.push_back(item);")
+                    lines.append(f"\t\tself->{f.name}.push_back(item);")
                     lines.append("\t}")
                 elif isinstance(rc, int):
                     lines.append(f"\t// fixed repeating group: {f.name} x {rc}")
                     lines.append(f"\tfor(int i = 0; i < {rc}; i++)")
                     lines.append("\t{")
-                    lines.extend(gen_read_fields(f.nested_fields, f"this->{f.name}[i].", "\t\t"))
+                    lines.extend(gen_read_fields(f.nested_fields, f"self->{f.name}[i].", "\t\t"))
                     lines.append("\t}")
             elif f.is_bitfield:
-                lines.extend(gen_read_field(f, "this->", "\t"))
+                lines.extend(gen_read_field(f, "self->", "\t"))
             else:
-                lines.extend(gen_read_field(f, "this->", "\t"))
+                lines.extend(gen_read_field(f, "self->", "\t"))
 
     lines.append("")
     if not fixed:
-        lines.append("\tif(off != frame.length) return false;")
+        lines.append("\tif(off != frame.payload.size()) " + PAYLOAD_FAILURE)
         lines.append("")
     lines.append(f"\treturn cppgnss::ParsedMessage<{cls}>{{std::move(message), off}};")
     lines.append("}")
     lines.append("")
 
-    # The field emitter is shared with dump generation; qualify decoded members
-    # against the local result, and return structured payload failures.
-    lines = [
-        line.replace("this->", "self->")
-        .replace("frame.length", "frame.payload.size()")
-        .replace("report_parse_error(", "error_detail = (")
-        .replace(
-            "return false;",
-            'return cppgnss::ParseError{cppgnss::ParseErrorCode::INVALID_PAYLOAD, off, error_detail.empty() ? "Unexpected payload length" : error_detail};',
-        )
-        for line in lines
-    ]
     lines += [f"std::string {cls}::dump() const {{", f'cppgnss::detail::TextDump out; out.text = "(UBX {msg_name}";']
     lines.extend(generate_dump_fields(fields, "data." if fixed else "this->"))
     lines += ["return std::move(out).finish();", "}"]
@@ -714,7 +705,7 @@ def write_dump_gen_impl(class_msgs, target_classes, ubx_payloads):
     for identity, names in by_id.items():
         lines.append(f"case {identity}: {{")
         for name in names:
-            lines.append(f'if ({variant_condition(name, ubx_payloads[name]).replace("frame.length", "frame.payload.size()")}) {{')
+            lines.append(f"if ({variant_condition(name, ubx_payloads[name])}) {{")
             lines.append(f"auto result = parse<UBX::{parser_class_name(name)}>(frame);")
             lines.append("return dump_parsed(frame, result); }")
         lines.append('ParseError error{ParseErrorCode::UNSUPPORTED_LAYOUT, {}, "Unsupported payload variant"};')
