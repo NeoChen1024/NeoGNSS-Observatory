@@ -40,8 +40,8 @@ decode_gps_observations(const cppgnss::FrameView &frame) {
         o.doppler_hz = m.doppler;
         o.cn0_dbhz = m.cn0;
         o.code_valid =
-            m.code_status != 1 && std::isfinite(m.code) && m.code > 0;
-        o.phase_valid = m.phase_status != 1 && std::isfinite(m.phase);
+            m.code_valid.value_or(true) && std::isfinite(m.code) && m.code > 0;
+        o.phase_valid = m.phase_valid.value_or(true) && std::isfinite(m.phase);
         o.doppler_valid = std::isfinite(m.doppler);
         o.cn0_valid = std::isfinite(m.cn0);
         o.half_cycle = m.half_ambiguity;

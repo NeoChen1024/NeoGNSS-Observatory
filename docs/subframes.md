@@ -155,7 +155,7 @@ CommonNEX records, not receiver transport fields.
 ## SBAS L1 content support
 
 Scope is SBAS L1 C/A, not SBAS L5 or QZSS L1S. Canonical body layout and
-receiver mappings are defined in [RawBits layouts](commonnex/raw-bits-layouts.md);
+receiver mappings are defined in [RawBits layouts](commonnex/raw-bits-formats.md);
 transport words and framing remain in the raw archive.
 
 | Message type | Typed content |

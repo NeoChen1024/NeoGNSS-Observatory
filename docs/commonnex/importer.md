@@ -1,85 +1,32 @@
-# CommonNEX batch importer pilot
+# CommonNEX batch importer
 
-`ngo-cnex-import` is an implemented observation-first pilot, not full CommonNEX
-acquisition support. Its `observation-pilot-1` Arrow/Parquet schema is experimental.
-The broader format documents remain the target design. Do not use this pilot
-as a lossless replacement for raw archives.
+`ngo-cnex-import` reads local UBX/SBF recordings into the current experimental
+CommonNEX schemas. Raw archives remain the preservation masters. Readers use
+current fields directly; no legacy-schema migration or compatibility layer is
+provided. Existing products are never rewritten merely because schemas change.
 
 ## Implemented path
 
-- `libcppgnss` decodes RAWX version 1 and MeasEpoch revisions 0/1 without RTKLIB
-  filtering, retaining supported GPS, Galileo, BeiDou, QZSS and SBAS signals.
-  Unknown mappings are counted rather than assigned a guessed signal; GLONASS
-  and NavIC are excluded. See `measurements.cpp` for the explicit current table.
-- Native processing exchanges owned columnar batches with Python; see the
-  [interop contract](../native-architecture.md#selected-commonnex-interop-design).
-- Timestamp normalization produces `DECIMAL(38,12)` timestamps. RAWX's
-  binary64 TOW is rounded directly from its exact binary rational to picoseconds,
-  ties to even, before adding the integer week. SBF millisecond TOW is exact.
-- Complete RAWX is immediately usable without NAV-EOE. SBF Measurements is
-  buffered until matching EndOfMeas; a different epoch before closure is counted
-  as incomplete and the previous pending group is omitted. File/chunk boundaries
-  do not reset framing or the pending group.
-- Python writes `observations`, `raw-bits`, `events` and `receiver-telemetry` catalogs with
-  Zstandard level 3 compression. Events contain reported OBSERVATION/EPOCH and
-  NAVIGATION/EPOCH completion, with RECORD_STRUCTURE or PROTOCOL_BOUNDARY basis. Missing other
-  events never implies continuity or absence of internal receiver clock adjustments.
-- `list` selects the latest revision independently for each day/catalog and
-  returns all its parts. A day/catalog can contain multiple parts without
-  rewriting earlier parts.
+The importer produces `observations`, `raw-bits`, `events` and
+`receiver-telemetry`, independently according to available input. See
+[receiver mappings](receiver-mappings.md) for source revisions, normalization,
+MeasExtra association, RawBits packing and validation limits; see
+[ParquetNEX](parquetnex.md) for persisted schemas and naming.
 
-Each quality struct includes nullable `stddev_is_lower_bound`; MeasExtra supplies
-variance-derived bounds, while RAWX bound semantics remain unknown.
-Quality structs use string enums, nullable standard deviations and RINEX-only
-fields left null. RAWX supplies code/phase validity, uncertainties, independent
-half-cycle flags and millisecond lock duration. MeasEpoch supplies reconstructed
-code/phase/Doppler, C/N0, half-cycle ambiguity and lock duration; source no-data
-sentinels become null, while absent validity declarations remain UNKNOWN.
-Clipped RAWX/SBF lock durations use lower bounds. No slip inference is performed.
+Completion and receiver-restart Events are implemented; cadence Events, Meas3
+and overlap reconciliation are not. RINEX/RTCM3 input is intentionally excluded,
+not a pending adapter. No decoded-navigation catalog is planned.
 
-MeasExtra revisions 0-3 are joined within the measurement epoch before
-EndOfMeas: code/phase/Doppler uncertainties, high-resolution C/N0, longer lock
-duration, modulo-256 continuity counter, Doppler variance factor and signed
-code/phase preprocessing corrections are retained. Code/phase are not adjusted.
-The join tolerates companion-block order and physical file boundaries, not
-interleaved unrelated epochs. Missing MeasExtra keeps base observations usable;
-ambiguous/unmatched extras are counted and not applied. Extra blocks arriving
-first are included in the raw-tail replay cursor. Summary counters distinguish
-excluded, unsupported, unmatched, ambiguous, pending and matched extras.
+Telemetry follows the common [receiver-telemetry contract](receiver-telemetry.md),
+including temperature, uptime, CPU load and ordered clock/pulse reports, rather
+than vendor status structs. It is assembled one PVT epoch late. File/day/chunk
+boundaries retain pending state; use `--finalize-telemetry` only at a true stream
+end. Unknown RawBits/telemetry time follows [receiver time](receiver-time.md).
 
-RawBits import covers the [implemented UBX/SBF adapters](raw-bits-importer.md),
-including documentary mappings without current samples. Independent and
-receiver checks remain separate. Failed-check bodies are retained; downstream
-acceptance is not stored as a canonical property. RawBits-only input is supported.
-UBX uses NAV-TIMEGPS independently of EOE and RAWX time. SBF uses synchronous
-receiver navigation TOW/WNc, not SIS headers. Both use a 10-period anchor timeout
-with nullable GPST and uptime association as specified in the
-[association policy](telemetry-time.md). No time-waiting backlog is retained.
-No whole-epoch completion is inferred from a single raw block.
-No transmission-time or observation-time equivalence is asserted.
-
-Status import retains float32 Celsius, receiver uptime and fine-time state.
-Clock and pulse estimates use the [auxiliary field mappings](auxiliary.md).
-Receiver restart Events retain uptime-decrease or fresh-pair offset-jump
-inference; nullable GPST never suppresses these records. The native batch order
-is observations, events, raw-bits, receiver-telemetry. `_archive_day` is Python
-routing only and is removed before persistence. Telemetry is assembled one PVT
-epoch late; see [Auxiliary](auxiliary.md) for fields, ordered report lists and
-explicit end-of-stream behavior. Pending telemetry is included in checkpoints.
-Use `--finalize-telemetry` only at a true stream end, not each daily continuation.
-
-SBF Type1/Type2 smoothing state remains in Observation receiver_corrections;
-UBX uses null for unavailable smoothing state.
-
-Not yet implemented: undefined future RawBits representations, cadence events,
-Meas3 decoding, RINEX/RTCM3 input, and automatic overlap reconciliation.
-
-STEC maps timed receiver-restart Events to independent phase arcs and receiver
-bias segments; see [STEC restart handling](../stec.md#receiver-restart-events).
-Untimed restart evidence and unsupported stream Events remain errors; do not
-remove these events to bypass validation. SBAS grid skips null-time RawBits.
-Observation values are not corrected using NAV-CLOCK or
-SBF navigation solutions. The CLI reports its restricted catalog coverage.
+STEC consumes Observation and receiver-restart Events; receiver-clock consumes
+telemetry and Events; SBAS grid selects SBAS L1 RawBits. Each processor applies
+its own missing-time/validity policy. See their tool documentation rather than
+treating successful import as proof that all processors can use every row.
 
 ## Initialize
 
@@ -236,16 +183,11 @@ The station uses `YYYY/MM/DD/` GPST directories. The latest receiver/observation
 context day receives `import-state.json`, a narrow continuation cursor. It records
 published parts, previously read input paths/sizes/positions, and raw ranges for
 tail replay. No SIS timestamp affects the directory or cursor location.
-The importer rejects the old flat-date directory layout and incompatible
-continuation cursors. Initialize a new station for these experimental products;
-it does not rename or relabel previously generated SIS-timed data.
-It also stores the last anchor, receiver uptime, fresh paired offset, archive
-day, timeout high-water mark, independent UBX completion context, required
-period and replay skip offset. Replay does not duplicate RawBits or telemetry.
-State version 3 additionally requires receiver-time policy 3, which preserves
-the full pending navigation completion timestamp; older association
-cursors and period changes are rejected. Rebuild old experimental imports.
-It is not a science catalog or general recovery manifest.
+The sidecar also preserves receiver-time/completion and pending telemetry state.
+It is private operational state, not a science catalog or a portable generic
+decoder checkpoint. Resume validates its supported state format and import
+configuration; incompatible state fails instead of silently starting over.
+Downstream readers never depend on it.
 Raw context files must remain available and unchanged; the basic size check does
 not detect every possible same-size alteration. No pending tail means no raw
 context replay is needed. Downstream processing ignores this sidecar.
@@ -298,26 +240,4 @@ writing failure and can be resumed automatically. Do not read while writing. Fai
 publication requires manual resolution before readers run; no atomic multi-file
 transaction or full crash recovery is promised. Old revisions are retained.
 
-## Remaining work
-
-- [x] Initializer, filename parsing/allocation and latest-revision selection.
-- [x] Head-only ordering and independent observation/receiver-navigation checks.
-- [x] Receiver-context RawBits time, nested GPST dates and incremental daily publication.
-- [x] Automatic latest-state continuation and previously read input skipping.
-- [x] RAWX/MeasEpoch decoding and native decimal Arrow observation batches.
-- [x] Measurement completion events and daily Parquet writing.
-- [x] Local raw-tail continuation with immutable parts and explicit rebuilding.
-- [x] MeasExtra uncertainty, C/N0, lock/continuity and preprocessing corrections.
-- [x] RAWX clock flags, SBF cumulative clock counters and independent smoothing state.
-- [x] Expiring navigation anchors, nullable RawBits time and receiver-time continuation.
-- [x] ReceiverStatus, ReceiverClock and PulseTiming Arrow/Parquet catalogs.
-- [x] Uptime and fresh GPST/uptime restart evidence in Events.
-- [x] Convert the receiver-clock analysis CLI to consume these CommonNEX catalogs.
-- [x] UBX navigation completion independent of RawBits output.
-- [ ] Cadence Events.
-- [x] Gate borrowed UBX navigation/uptime pairs on new-uptime freshness;
-  directly timestamped SBF status does not require a navigation anchor.
-- [x] Apply SBF MeasEpoch E6BUsed to Type2 as well as Type1 observations.
-- [x] Reviewed RawBits layouts and independent navigation-time association;
-  distinguish sample-verified and documentary adapters in the coverage table.
-- [ ] Additional input protocols and any explicitly requested reconciliation.
+See [remaining work](TODO.md) for explicitly deferred capabilities.

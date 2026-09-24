@@ -16,7 +16,6 @@ infer the source time scale from the constellation of each observation:
 | SBF MeasEpoch | GPS-aligned WNc plus integer millisecond TOW, converted exactly |
 | UBX RawBits anchor | Valid NAV-TIMEGPS week/iTOW/fTOW, preserving the full reported precision; no requirement that SFRBX precede EOE |
 | SBF RawBits anchor | Valid synchronous navigation block WNc/TOW; never RawNavBits SIS timestamp |
-| Future RINEX/RTCM3 adapters | Resolve declared scale, full date/week and any required leap-second context explicitly; not implemented by CommonNEX import yet |
 
 The GPS-only RINEX processing restriction below describes the existing solver
 input paths, not a finished general CommonNEX RINEX time-conversion adapter.
@@ -27,7 +26,7 @@ Timescale normalization does not remove receiver clock error. CommonNEX excludes
 inputs with applied observation clock-offset correction and never undoes one;
 internal receiver clock jumps remain native evidence, not a reason to reject RAWX.
 
-RawBits and telemetry use the [receiver-time policy](commonnex/telemetry-time.md).
+RawBits and telemetry use the [receiver-time policy](commonnex/receiver-time.md).
 Unknown GPST remains null. Untimed rows retain the last known archive day, or
 1980/01/06 before any known date; directory placement is not an assigned timestamp.
 Measurement time can advance its timeout high-water mark but cannot become a

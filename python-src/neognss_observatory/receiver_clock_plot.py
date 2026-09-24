@@ -103,7 +103,7 @@ def prepare(source, output, max_gap):
             "adjustments": len(adjustments),
             "inferred_adjustments": sum(e.get("evidence") == "bias_inferred_adjustment" for e in adjustments),
             "confirmed_adjustments": sum(e.get("evidence") == "rawx_confirmed_adjustment" for e in adjustments),
-            "counted_adjustments": sum(e.get("evidence") == "sbf_counted_adjustment" for e in adjustments),
+            "counted_adjustments": sum(e.get("evidence") == "counter_confirmed_adjustment" for e in adjustments),
             "adjustments_per_observed_hour": len(adjustments) * 3600 / exposure if exposure > 0 else None,
             "drift_p10_p50_p90": np.quantile(data["drift"], [0.1, 0.5, 0.9]).tolist(),
             "temperature_median_c": float(np.median(temp)) if len(temp) else None,
@@ -115,7 +115,9 @@ def prepare(source, output, max_gap):
             path,
             **{k: v[indices] for k, v in data.items() if k != "exposure"},
             adjustment_t=np.array(event_t),
-            confirmed=np.array([e.get("evidence") in ("rawx_confirmed_adjustment", "sbf_counted_adjustment") for e in adjustments]),
+            confirmed=np.array(
+                [e.get("evidence") in ("rawx_confirmed_adjustment", "counter_confirmed_adjustment") for e in adjustments]
+            ),
         )
         entry["cache"] = path.name
         hours.append(entry)

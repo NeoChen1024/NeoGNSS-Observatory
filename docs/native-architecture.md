@@ -57,7 +57,7 @@ and arithmetic types remain implementation choices, not format requirements.
 Do not construct large absolute timestamps through binary64 seconds. Keep
 timestamp and duration semantics distinct, with explicit checked conversion at
 numerical-engine boundaries. Follow the [time policy](time-policy.md) and
-[CommonNEX Core](commonnex/core.md) for rounding, units and missing-time rules.
+[CommonNEX shared types](commonnex/types.md) for rounding, units and missing-time rules.
 
 ## C++ toolchain portability
 

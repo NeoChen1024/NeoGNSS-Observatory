@@ -20,9 +20,9 @@ only when they affect present interpretation or processing.
 
 - [Ginan shim](ginan-shim.md): single-context native backend design,
   GIM/bias calibration investigation and implementation checklist.
-- [CommonNEX and ParquetNEX v0](commonnex/overview.md): Core observations and RawBits,
-  optional auxiliary schemas, receiver profiles, Parquet persistence
-  and batch/incremental/live processing contracts; broader than the implemented pilot.
+- [CommonNEX and ParquetNEX](commonnex/overview.md): current pre-Alpha record
+  contracts, receiver mappings, storage and batch/live APIs. Explicitly deferred
+  format work is tracked in the [CommonNEX TODO](commonnex/TODO.md).
 
 ## Tools
 
@@ -31,7 +31,7 @@ only when they affect present interpretation or processing.
 
 - [Mosaic push](mosaic-push.md): resumable receiver FTP mirroring, verified xz/SHA-512
   archives, optional storage limits and multiple FTPS targets.
-- [CommonNEX importer pilot](commonnex/importer.md): native UBX/SBF observations,
+- [CommonNEX importer](commonnex/importer.md): native UBX/SBF observations,
   RawBits, receiver telemetry and Events to daily Parquet, tail parts and revisions.
 - [Multi-GNSS STEC and receiver DCB](stec.md): CommonNEX input, incremental phase leveling,
   GIM-constrained absolute estimates and hourly plots.

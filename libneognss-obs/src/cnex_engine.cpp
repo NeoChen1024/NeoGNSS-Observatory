@@ -202,7 +202,7 @@ void decfield(ArrowSchema *s, const char *name, bool nullable = false) {
 }
 std::shared_ptr<Batch> observations() {
     auto b = std::make_shared<Batch>();
-    check(ArrowSchemaSetTypeStruct(&b->schema, 16));
+    check(ArrowSchemaSetTypeStruct(&b->schema, 12));
     auto c = b->schema.children;
     field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
     decfield(c[1], "gpst");
@@ -211,49 +211,38 @@ std::shared_ptr<Batch> observations() {
     field(c[4], "signal", NANOARROW_TYPE_STRING, false);
     const char *names[] = {"pseudorange_m", "carrier_phase_cycles",
                            "doppler_hz", "cn0_db_hz"};
-    const char *quality[] = {"code_quality", "phase_quality",
-                             "doppler_quality"};
     for (int i = 0; i < 4; ++i)
         field(c[i + 5], names[i], NANOARROW_TYPE_DOUBLE);
+    auto q = c[9];
+    check(ArrowSchemaSetTypeStruct(q, 8));
+    check(ArrowSchemaSetName(q, "quality"));
+    field(q->children[0], "code_valid", NANOARROW_TYPE_BOOL);
+    field(q->children[1], "phase_valid", NANOARROW_TYPE_BOOL);
+    const char *sigma[] = {"code_stddev_m", "phase_stddev_cycles",
+                           "doppler_stddev_hz"};
+    const char *bound[] = {"code_stddev_is_lower_bound",
+                           "phase_stddev_is_lower_bound",
+                           "doppler_stddev_is_lower_bound"};
     for (int i = 0; i < 3; ++i) {
-        auto q = c[i + 9];
-        check(ArrowSchemaSetTypeStruct(q, 4));
-        check(ArrowSchemaSetName(q, quality[i]));
-        field(q->children[0], "status", NANOARROW_TYPE_STRING, false);
-        field(q->children[1], "stddev", NANOARROW_TYPE_FLOAT);
-        field(q->children[2], "rinex_ssi", NANOARROW_TYPE_UINT8);
-        field(q->children[3], "stddev_is_lower_bound", NANOARROW_TYPE_BOOL);
+        field(q->children[2 + 2 * i], sigma[i], NANOARROW_TYPE_FLOAT);
+        field(q->children[3 + 2 * i], bound[i], NANOARROW_TYPE_BOOL);
     }
-    auto q = c[12];
-    check(ArrowSchemaSetTypeStruct(q, 7));
-    check(ArrowSchemaSetName(q, "phase_tracking"));
-    field(q->children[0], "loss_of_lock", NANOARROW_TYPE_BOOL);
-    field(q->children[1], "half_cycle_ambiguity", NANOARROW_TYPE_BOOL);
-    field(q->children[2], "half_cycle_subtracted", NANOARROW_TYPE_BOOL);
-    field(q->children[3], "rinex_lli", NANOARROW_TYPE_UINT8);
-    auto l = q->children[4];
-    check(ArrowSchemaSetTypeStruct(l, 3));
-    check(ArrowSchemaSetName(l, "lock"));
-    decfield(l->children[0], "lower_s");
-    decfield(l->children[1], "upper_s", true);
-    field(l->children[2], "representation", NANOARROW_TYPE_STRING, false);
-    field(q->children[5], "continuity_counter", NANOARROW_TYPE_UINT32);
-    field(q->children[6], "continuity_counter_modulus", NANOARROW_TYPE_UINT32);
-    q = c[13];
-    check(ArrowSchemaSetTypeStruct(q, 4));
-    check(ArrowSchemaSetName(q, "cn0_quality"));
-    field(q->children[0], "status", NANOARROW_TYPE_STRING, false);
-    field(q->children[1], "stddev", NANOARROW_TYPE_FLOAT);
-    field(q->children[2], "rinex_ssi", NANOARROW_TYPE_UINT8);
-    field(q->children[3], "stddev_is_lower_bound", NANOARROW_TYPE_BOOL);
-    q = c[14];
+    q = c[10];
+    check(ArrowSchemaSetTypeStruct(q, 6));
+    check(ArrowSchemaSetName(q, "tracking"));
+    field(q->children[0], "half_cycle_ambiguity", NANOARROW_TYPE_BOOL);
+    field(q->children[1], "half_cycle_subtracted", NANOARROW_TYPE_BOOL);
+    decfield(q->children[2], "lock_duration_s", true);
+    field(q->children[3], "lock_duration_is_lower_bound", NANOARROW_TYPE_BOOL);
+    field(q->children[4], "continuity_counter", NANOARROW_TYPE_UINT32);
+    field(q->children[5], "continuity_counter_modulus", NANOARROW_TYPE_UINT32);
+    q = c[11];
     check(ArrowSchemaSetTypeStruct(q, 4));
     check(ArrowSchemaSetName(q, "receiver_corrections"));
     field(q->children[0], "code_multipath_m", NANOARROW_TYPE_DOUBLE);
     field(q->children[1], "code_smoothing_m", NANOARROW_TYPE_DOUBLE);
     field(q->children[2], "phase_multipath_cycles", NANOARROW_TYPE_DOUBLE);
     field(q->children[3], "code_smoothing_applied", NANOARROW_TYPE_BOOL);
-    field(c[15], "doppler_variance_factor", NANOARROW_TYPE_FLOAT);
     b->init();
     return b;
 }
@@ -267,89 +256,68 @@ void finish_struct(ArrowArray &array, int64_t count) {
         check(ArrowBitmapAppend(bitmap, 1, count));
     array.length = length;
 }
-void reserve_boolean_fill(ArrowArray &array, int64_t count) {
-    // The pinned nanoarrow bulk empty/null path reserves only length + 1
-    // bits before filling count bits. Size the boolean data buffer first,
-    // including boolean children of a bulk-null struct.
-    auto buffer = ArrowArrayBuffer(&array, 1);
-    const auto bytes = (array.length + count + 7) / 8;
-    if (bytes > buffer->size_bytes)
-        check(ArrowBufferAppendFill(buffer, 0, bytes - buffer->size_bytes));
-}
 void append_details(Batch &b,
                     std::span<const neognss_obs::Measurement *const> rows) {
     auto c = b.array.children;
     const auto count = int64_t(rows.size());
-    for (int i = 0; i < 3; ++i) {
-        auto q = c[9 + i];
-        for (auto m : rows) {
-            const int status = i == 0   ? m->code_status
-                               : i == 1 ? m->phase_status
-                                        : 2;
-            str(q->children[0], status == 0   ? "valid"
-                                : status == 1 ? "invalid"
-                                              : "unknown");
-            const float sigma = i == 0   ? m->code_sigma
-                                : i == 1 ? m->phase_sigma
-                                         : m->doppler_sigma;
-            const auto bound = i == 0   ? m->code_sigma_lower_bound
-                               : i == 1 ? m->phase_sigma_lower_bound
-                                        : m->doppler_sigma_lower_bound;
-            number(q->children[1], sigma);
-            if (std::isfinite(sigma) && bound.has_value())
-                integer(q->children[3], *bound);
-            else
-                check(ArrowArrayAppendNull(q->children[3], 1));
-        }
-        check(ArrowArrayAppendNull(q->children[2], count));
-        finish_struct(*q, count);
-    }
-    auto q = c[12];
-    reserve_boolean_fill(*q->children[0], count);
-    check(ArrowArrayAppendNull(q->children[0], count));
-    check(ArrowArrayAppendNull(q->children[3], count));
-    for (auto row : rows) {
-        const auto &m = *row;
-        integer(q->children[1], m.half_ambiguity);
-        if (m.half_subtracted)
-            integer(q->children[2], *m.half_subtracted);
+    auto flag = [](ArrowArray *array, std::optional<bool> value) {
+        if (value.has_value())
+            integer(array, *value);
         else
-            check(ArrowArrayAppendNull(q->children[2], 1));
-        auto l = q->children[4];
-        if (m.lock_ms) {
-            decimal(l->children[0], Tick(*m.lock_ms) * 1000000000);
-            check(ArrowArrayAppendNull(l->children[1], 1));
-            str(l->children[2],
-                m.lock_lower_bound ? "lower_bound" : "reported_value");
-            check(ArrowArrayFinishElement(l));
-        } else
-            check(ArrowArrayAppendNull(l, 1));
-        if (m.continuity_counter) {
-            integer(q->children[5], *m.continuity_counter);
-            integer(q->children[6], 256);
-        } else {
-            check(ArrowArrayAppendNull(q->children[5], 1));
-            check(ArrowArrayAppendNull(q->children[6], 1));
+            check(ArrowArrayAppendNull(array, 1));
+    };
+    auto q = c[9];
+    for (auto m : rows) {
+        flag(q->children[0], m->code_valid);
+        flag(q->children[1], m->phase_valid);
+        const float sigma[] = {m->code_sigma, m->phase_sigma, m->doppler_sigma};
+        const std::optional<bool> bound[] = {m->code_sigma_lower_bound,
+                                             m->phase_sigma_lower_bound,
+                                             m->doppler_sigma_lower_bound};
+        for (int i = 0; i < 3; ++i) {
+            number(q->children[2 + 2 * i], sigma[i]);
+            flag(q->children[3 + 2 * i],
+                 std::isfinite(sigma[i]) ? bound[i] : std::nullopt);
         }
     }
     finish_struct(*q, count);
-    reserve_boolean_fill(*c[13]->children[3], count);
-    check(ArrowArrayAppendNull(c[13], count));
-    for (auto row : rows) {
-        const auto &m = *row;
-        if (m.has_extra || m.code_smoothing_applied.has_value()) {
-            auto x = c[14];
-            number(x->children[0], m.code_multipath_m);
-            number(x->children[1], m.code_smoothing_m);
-            number(x->children[2], m.phase_multipath_cycles);
-            if (m.code_smoothing_applied.has_value())
-                integer(x->children[3], *m.code_smoothing_applied);
-            else
-                check(ArrowArrayAppendNull(x->children[3], 1));
+    q = c[10];
+    for (auto m : rows) {
+        integer(q->children[0], m->half_ambiguity);
+        flag(q->children[1], m->half_subtracted);
+        if (m->lock_ms)
+            decimal(q->children[2], Tick(*m->lock_ms) * 1000000000);
+        else
+            check(ArrowArrayAppendNull(q->children[2], 1));
+        flag(q->children[3], m->lock_ms
+                                 ? std::optional<bool>(m->lock_lower_bound)
+                                 : std::nullopt);
+        if (m->continuity_counter) {
+            integer(q->children[4], *m->continuity_counter);
+            integer(q->children[5], 256);
+        } else {
+            check(ArrowArrayAppendNull(q->children[4], 1));
+            check(ArrowArrayAppendNull(q->children[5], 1));
+        }
+    }
+    finish_struct(*q, count);
+    for (auto m : rows) {
+        auto x = c[11];
+        if (m->has_extra || m->code_smoothing_applied.has_value()) {
+            number(x->children[0], m->code_multipath_m);
+            number(x->children[1], m->code_smoothing_m);
+            number(x->children[2], m->phase_multipath_cycles);
+            flag(x->children[3], m->code_smoothing_applied);
             check(ArrowArrayFinishElement(x));
-        } else
-            check(ArrowArrayAppendNull(c[14], 1));
-        number(c[15], m.doppler_variance_factor);
+        } else {
+            // Reserve the bool child before nanoarrow's bulk-null fill.
+            auto buffer = ArrowArrayBuffer(x->children[3], 1);
+            auto bytes = (x->children[3]->length + 1 + 7) / 8;
+            if (bytes > buffer->size_bytes)
+                check(ArrowBufferAppendFill(buffer, 0,
+                                            bytes - buffer->size_bytes));
+            check(ArrowArrayAppendNull(x, 1));
+        }
     }
 }
 void append_epoch(Batch &b,
@@ -886,71 +854,16 @@ struct Reader {
         new_navigation = false;
 
         restart(reason, sample, uptime, ev);
-        Json report = Json::object();
-        std::array<Json *, 9> c{&report["setup_id"],
-                                &report["gpst"],
-                                &report["receiver_uptime_s"],
-                                &report["time_basis"],
-                                &report["uptime_basis"],
-                                &report["source_message"],
-                                &report["receiver_temperature_c"],
-                                &report["fine_time"],
-                                &report["_archive_day"]};
-        str(c[0], setup_id);
-        if (sample)
-            decimal(c[1], *sample);
-        else
-            *c[1] = nullptr;
-        decimal(c[2], uptime);
-        str(c[3], sample ? (ubx ? "NAVIGATION" : "SOURCE") : "UNKNOWN");
-        str(c[4], "REPORTED");
-        str(c[5], ubx ? "UBX-MON-SYS" : "SBF-ReceiverStatus");
-        number(c[6], temperature);
-        if (fine)
-            integer(c[7], *fine);
-        else
-            *c[7] = nullptr;
-        integer(c[8],
-                sample ? int64_t(*sample / ps / 86400) : timeline.archive_day);
-
+        Json report = {{"gpst", sample ? time_parts(*sample) : Json(nullptr)},
+                       {"receiver_uptime_s", time_parts(uptime)}};
+        number(&report["receiver_temperature_c"], temperature);
         if (ubx) {
-            auto p = f.payload;
-            for (auto [name, index] :
-                 std::initializer_list<std::pair<const char *, int>>{
-                     {"cpu_load_percent", 2},
-                     {"cpu_load_max_percent", 3},
-                     {"memory_usage_percent", 4},
-                     {"memory_usage_max_percent", 5},
-                     {"io_usage_percent", 6},
-                     {"io_usage_max_percent", 7}})
-                report[name] = p[index];
-            report["ubx_status"] = {
-                {"boot_type", p[1]},
-                {"notice_count", UBX::read_le<uint16_t>(p, 12)},
-                {"warning_count", UBX::read_le<uint16_t>(p, 14)},
-                {"error_count", UBX::read_le<uint16_t>(p, 16)}};
+            report["cpu_load_percent"] = f.payload[2];
         } else {
             const auto block = cppgnss::parse<cppgnss::SBF::ReceiverStatus>(f);
-            const auto &v = block.value();
+            const auto load = block.value().CPULoad;
             report["cpu_load_percent"] =
-                v.CPULoad == 255 ? Json(nullptr) : Json(v.CPULoad);
-            auto &vendor = report["sbf_status"];
-            vendor = {
-                {"receiver_state_flags", UBX::read_le<uint32_t>(f.payload, 12)},
-                {"receiver_error_flags", UBX::read_le<uint32_t>(f.payload, 16)},
-                {"external_error_flags", f.payload[7]},
-                {"command_count",
-                 v.CmdCount ? Json(v.CmdCount) : Json(nullptr)},
-                {"frontends", Json::array()}};
-            for (const auto &a : v.group)
-                vendor["frontends"].push_back(
-                    {{"frontend_code", a.FrontEndID & 31},
-                     {"antenna_id", a.FrontEndID >> 5},
-                     {"gain_db", a.Gain == -128 ? Json(nullptr) : Json(a.Gain)},
-                     {"pll_locked", a.Gain != -128},
-                     {"sample_variance",
-                      a.SampleVar ? Json(a.SampleVar) : Json(nullptr)},
-                     {"blanking_percent", a.BlankingStat}});
+                load == 255 ? Json(nullptr) : Json(load);
         }
         telemetry.status(std::move(report), ubx);
     }
@@ -1087,7 +1000,6 @@ struct Reader {
             m.code_multipath_m = x.code_multipath_m;
             m.code_smoothing_m = x.code_smoothing_m;
             m.phase_multipath_cycles = x.phase_multipath_cycles;
-            m.doppler_variance_factor = x.doppler_variance_factor;
             m.continuity_counter = x.continuity_counter;
             if (std::isfinite(m.cn0))
                 m.cn0 += x.cn0_increment;
@@ -1186,7 +1098,7 @@ struct Reader {
                 telemetry.frame(f, timeline.navigation, timeline.archive_day);
             if (f.offset >= nav_skip_before &&
                 f.protocol() == cppgnss::Protocol::ubx && f.id() == 0x0120 &&
-                telemetry.current.contains("ubx_status") &&
+                telemetry.current.contains("receiver_uptime_s") &&
                 !telemetry.current.value("gpst", Json(nullptr)).is_null()) {
                 const auto u =
                     telemetry.current.value("receiver_uptime_s", Json(nullptr));

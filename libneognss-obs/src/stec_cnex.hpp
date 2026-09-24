@@ -114,24 +114,21 @@ class StecCnexReader {
         if (std::strcmp(gpst_schema->format, "d:38,12") != 0 &&
             std::strcmp(gpst_schema->format, "d:38,12,128") != 0)
             throw std::runtime_error("Expected GPST decimal128(38,12) seconds");
-        auto tracking = field("phase_tracking");
-        auto ts = schema_child(schema, "phase_tracking");
+        auto tracking = field("tracking");
+        auto ts = schema_child(schema, "tracking");
         auto setup = field("setup_id"), code_value = field("pseudorange_m"),
              phase_value = field("carrier_phase_cycles");
-        auto cq = field("code_quality"), pq = field("phase_quality");
-        auto cq_status =
-            child(cq, schema_child(schema, "code_quality"), "status");
-        auto pq_status =
-            child(pq, schema_child(schema, "phase_quality"), "status");
+        auto quality = field("quality");
+        auto qs = schema_child(schema, "quality");
+        auto code_valid = child(quality, qs, "code_valid");
+        auto phase_valid = child(quality, qs, "phase_valid");
         auto half = child(tracking, ts, "half_cycle_ambiguity"),
              sub_half = child(tracking, ts, "half_cycle_subtracted"),
-             loss = child(tracking, ts, "loss_of_lock"),
              counter = child(tracking, ts, "continuity_counter"),
              modulus = child(tracking, ts, "continuity_counter_modulus"),
-             lock = child(tracking, ts, "lock");
-        auto ls = schema_child(ts, "lock");
-        auto lower = child(lock, ls, "lower_s");
-        auto lower_schema = schema_child(ls, "lower_s");
+             lock = child(tracking, ts, "lock_duration_s"),
+             lock_bound = child(tracking, ts, "lock_duration_is_lower_bound");
+        auto lower_schema = schema_child(ts, "lock_duration_s");
         const bool valid_lock_type =
             std::strcmp(lower_schema->format, "d:38,12") == 0 ||
             std::strcmp(lower_schema->format, "d:38,12,128") == 0;
@@ -139,15 +136,12 @@ class StecCnexReader {
         auto smoothed =
             child(corrections, schema_child(schema, "receiver_corrections"),
                   "code_smoothing_applied");
-        auto quality = [&](ArrowArrayView *q, ArrowArrayView *status_field,
-                           int64_t row) {
-            if (ArrowArrayViewIsNull(q, row))
+        auto invalid = [&](ArrowArrayView *valid, int64_t row) {
+            if (ArrowArrayViewIsNull(quality, row))
                 return false;
-            auto status = text(status_field, row + q->offset);
-            if (status != "valid" && status != "invalid" && status != "unknown")
-                throw std::runtime_error(
-                    "Unsupported CommonNEX quality status");
-            return status == "invalid";
+            // Unknown source validity is not a veto; numerical acceptance
+            // remains this processor's policy, not a stored validity claim.
+            return !boolean(valid, row + quality->offset, true);
         };
         ObservationBatch out;
         for (int64_t i = 0; i < v->length; ++i) {
@@ -199,14 +193,13 @@ class StecCnexReader {
             m.pseudorange_m = number(code_value, row);
             m.phase_cycles = number(phase_value, row);
             m.code_valid = std::isfinite(m.pseudorange_m) &&
-                           m.pseudorange_m > 0 && !quality(cq, cq_status, row);
+                           m.pseudorange_m > 0 && !invalid(code_valid, row);
             m.phase_valid =
-                std::isfinite(m.phase_cycles) && !quality(pq, pq_status, row);
+                std::isfinite(m.phase_cycles) && !invalid(phase_valid, row);
             if (!ArrowArrayViewIsNull(tracking, row)) {
                 auto r = row + tracking->offset;
                 m.half_cycle = boolean(half, r);
                 m.sub_half_cycle = boolean(sub_half, r);
-                m.loss_of_lock = boolean(loss, r);
                 if (ArrowArrayViewIsNull(counter, r) !=
                     ArrowArrayViewIsNull(modulus, r))
                     throw std::runtime_error(
@@ -222,12 +215,16 @@ class StecCnexReader {
                         throw std::runtime_error(
                             "Continuity counter outside modulus");
                 }
-                auto l = lock;
-                if (!ArrowArrayViewIsNull(l, r)) {
+                if (ArrowArrayViewIsNull(lock, r) !=
+                    ArrowArrayViewIsNull(lock_bound, r))
+                    throw std::runtime_error(
+                        "Incomplete lock duration/bound flag");
+                if (!ArrowArrayViewIsNull(lock, r)) {
                     if (!valid_lock_type)
                         throw std::runtime_error(
                             "Expected decimal128(38,12) lock duration");
-                    auto tick = ticks(lower, r + l->offset);
+                    (void)boolean(lock_bound, r);
+                    auto tick = ticks(lock, r);
                     m.lock_seconds = double(tick) / 1e12;
                     m.lock_valid = true;
                 }

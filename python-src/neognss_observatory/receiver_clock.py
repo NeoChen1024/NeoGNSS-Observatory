@@ -73,11 +73,11 @@ def catalog(day, name, setup_id, columns=None):
 def telemetry_status(table):
     if table is None:
         return None
-    selected = pc.or_(pc.is_valid(table["ubx_status"]), pc.is_valid(table["sbf_status"]))
+    selected = pc.or_(pc.is_valid(table["receiver_uptime_s"]), pc.is_valid(table["receiver_temperature_c"]))
     return table.select(STATUS_COLUMNS).filter(selected)
 
 
-STATUS_COLUMNS = ["setup_id", "gpst", "receiver_uptime_s", "receiver_temperature_c", "fine_time", "ubx_status", "sbf_status"]
+STATUS_COLUMNS = ["setup_id", "gpst", "receiver_uptime_s", "receiver_temperature_c", "cpu_load_percent"]
 
 
 def telemetry_pulses(table):
@@ -108,7 +108,8 @@ def measurement_evidence(column):
     last = np.full(len(column), -1, dtype=np.int64)
     np.maximum.at(last, parents[valid], np.flatnonzero(valid))
     counters = pc.take(cumulative, pa.array(last, mask=last < 0))
-    return pa.array(flags, mask=~present), counters
+    moduli = pc.take(values.field("cumulative_adjustment_modulus_ms"), pa.array(last, mask=last < 0))
+    return pa.array(flags, mask=~present), counters, moduli
 
 
 class Sessions:
@@ -375,9 +376,10 @@ def cli(input_dir, output, reference_time_scale, max_gap, jump_tolerance_ns, tem
                     table = add(table, "clock_drift_ns_s", numeric(table, "clock_frequency_offset") / 1e6, pa.float64())
                     table = add(table, "time_accuracy_ns", nanoseconds(table, "time_accuracy_s"), pa.float64())
                     table = add(table, "frequency_accuracy_ps_s", numeric(table, "frequency_accuracy") / 1e3, pa.float64())
-                    flags, counters = measurement_evidence(table["measurement_clock"])
+                    flags, counters, moduli = measurement_evidence(table["measurement_clock"])
                     table = add(table, "rawx_clock_reset", flags)
                     table = add(table, "cumulative_clock_jumps_ms", counters)
+                    table = add(table, "cumulative_clock_jumps_modulus_ms", moduli)
                     for name, dtype in (
                         ("clock_arc_id", pa.int64()),
                         ("clock_adjustment_total_ns", pa.int64()),

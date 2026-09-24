@@ -35,20 +35,21 @@ class BatchUnwrapper:
         bias, drift = (integer(n, float("nan")) for n in ("clock_bias_ns", "clock_drift_ns_s"))
         session = integer("receiver_session_id")
         flag = integer("rawx_clock_reset", False)
-        cumulative = (
-            integer("cumulative_clock_jumps_ms", 256) if "cumulative_clock_jumps_ms" in table.column_names else np.full(len(t), 256)
-        )
-        sbf = (
-            np.array([s in ("SBF-PVTGeodetic", "SBF-PVTCartesian") for s in table["source_message"].to_pylist()])
-            if "source_message" in table.column_names
-            else np.zeros(len(t), bool)
-        )
+        counters = table["cumulative_clock_jumps_ms"].combine_chunks()
+        moduli = table["cumulative_clock_jumps_modulus_ms"].combine_chunks()
+        cumulative = counters.fill_null(0).to_numpy(zero_copy_only=False)
+        modulus = moduli.fill_null(0).to_numpy(zero_copy_only=False)
+        # Bound signed arithmetic used by the derived nanosecond analysis.
+        usable = (modulus > 0) & (modulus <= np.iinfo(np.int64).max // 1000000)
+        usable &= counters.is_valid().to_numpy(zero_copy_only=False) & (cumulative < modulus)
+        cumulative = np.where(usable, cumulative, 0).astype(np.int64)
+        modulus = np.where(usable, modulus, 0).astype(np.int64)
         valid = (t >= 0) & np.isfinite(bias) & np.isfinite(drift)
         if "continuity_known" in table.column_names:
             valid &= integer("continuity_known", False)
-        current = (t, bias, drift, session, cumulative, sbf, valid)
-        before = self.previous or (-1, 0, 0, int(session[0]), 256, False, False)
-        pt, pb, pd, ps, pc, prev_sbf, prior_valid = (np.r_[value, values[:-1]] for value, values in zip(before, current))
+        current = (t, bias, drift, session, cumulative, modulus, valid)
+        before = self.previous or (-1, 0, 0, int(session[0]), 0, 0, False)
+        pt, pb, pd, ps, pc, pm, prior_valid = (np.r_[value, values[:-1]] for value, values in zip(before, current))
         restart = session != ps
         dt = (t - pt) / 1e9
         if np.any(valid & prior_valid & ~restart & (dt <= 0)):
@@ -61,11 +62,9 @@ class BatchUnwrapper:
         if np.any(np.abs(milliseconds) > np.iinfo(np.int64).max // 1000000):
             raise ValueError("Clock adjustment exceeds int64 range")
         rounded = milliseconds.astype(np.int64) * 1000000
-        counted = comparable & sbf & prev_sbf & (cumulative < 256) & (pc < 256)
-        # The adapter-specific modulo is not inferred from uint64 storage.
-        current_counter = np.where(cumulative < 256, cumulative, 256).astype(np.int64)
-        previous_counter = np.where(pc < 256, pc, 256).astype(np.int64)
-        delta = (current_counter - previous_counter + 128) % 256 - 128
+        counted = comparable & (modulus > 0) & (modulus == pm)
+        safe_modulus = np.where(counted, modulus, 1)
+        delta = (cumulative - pc + safe_modulus // 2) % safe_modulus - safe_modulus // 2
         rounded = np.where(counted, delta * 1000000, rounded)
         adjusted = comparable & (rounded != 0) & (np.abs(jump - rounded) <= self.tolerance)
         unresolved = comparable & ~adjusted & ((np.abs(jump) > self.tolerance) | flag | (counted & (delta != 0)))
@@ -83,7 +82,7 @@ class BatchUnwrapper:
         quality[unresolved] = "unresolved_adjustment"
         quality[adjusted & ~flag] = "bias_inferred_adjustment"
         quality[adjusted & flag] = "rawx_confirmed_adjustment"
-        quality[adjusted & counted] = "sbf_counted_adjustment"
+        quality[adjusted & counted] = "counter_confirmed_adjustment"
         self.previous = tuple(values[-1].item() for values in current)
         self.arc, self.adjustment = int(arc[-1]), int(total[-1])
         self.counts.update(
@@ -94,7 +93,7 @@ class BatchUnwrapper:
                 "unusable_samples": int(np.sum(~valid)),
                 "bias_inferred_adjustment": int(np.sum(adjusted & ~flag & ~counted)),
                 "rawx_confirmed_adjustment": int(np.sum(adjusted & flag & ~counted)),
-                "sbf_counted_adjustment": int(np.sum(adjusted & counted)),
+                "counter_confirmed_adjustment": int(np.sum(adjusted & counted)),
             }
         )
         for name, values in (

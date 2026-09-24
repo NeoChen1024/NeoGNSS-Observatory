@@ -10,12 +10,6 @@ constexpr TelemetryField telemetry_fields[] = {
     {"receiver_uptime_s", NANOARROW_TYPE_DECIMAL128},
     {"receiver_temperature_c", NANOARROW_TYPE_FLOAT},
     {"cpu_load_percent", NANOARROW_TYPE_FLOAT},
-    {"cpu_load_max_percent", NANOARROW_TYPE_FLOAT},
-    {"memory_usage_percent", NANOARROW_TYPE_FLOAT},
-    {"memory_usage_max_percent", NANOARROW_TYPE_FLOAT},
-    {"io_usage_percent", NANOARROW_TYPE_FLOAT},
-    {"io_usage_max_percent", NANOARROW_TYPE_FLOAT},
-    {"fine_time", NANOARROW_TYPE_BOOL},
     {"clock_bias_s", NANOARROW_TYPE_DECIMAL128},
     {"clock_frequency_offset", NANOARROW_TYPE_INT64},
     {"time_accuracy_s", NANOARROW_TYPE_DECIMAL128},
@@ -40,7 +34,7 @@ void telemetry_struct(ArrowSchema *s, const char *name,
 std::shared_ptr<Batch> telemetry_schema() {
     auto b = std::make_shared<Batch>();
     check(
-        ArrowSchemaSetTypeStruct(&b->schema, std::size(telemetry_fields) + 4));
+        ArrowSchemaSetTypeStruct(&b->schema, std::size(telemetry_fields) + 2));
     size_t i = 0;
     for (auto f : telemetry_fields)
         telemetry_field(b->schema.children[i++], f,
@@ -49,10 +43,12 @@ std::shared_ptr<Batch> telemetry_schema() {
                             std::string_view(f.name) != "_archive_day");
     auto m = b->schema.children[i++];
     field(m, "measurement_clock", NANOARROW_TYPE_LIST, false);
-    telemetry_struct(m->children[0], "item",
-                     {{"gpst", NANOARROW_TYPE_DECIMAL128},
-                      {"adjustment_reported", NANOARROW_TYPE_BOOL},
-                      {"cumulative_adjustment_ms", NANOARROW_TYPE_UINT64}});
+    telemetry_struct(
+        m->children[0], "item",
+        {{"gpst", NANOARROW_TYPE_DECIMAL128},
+         {"adjustment_reported", NANOARROW_TYPE_BOOL},
+         {"cumulative_adjustment_ms", NANOARROW_TYPE_UINT64},
+         {"cumulative_adjustment_modulus_ms", NANOARROW_TYPE_UINT64}});
     m->children[0]->flags &= ~ARROW_FLAG_NULLABLE;
     m->children[0]->children[0]->flags &= ~ARROW_FLAG_NULLABLE;
     auto p = b->schema.children[i++];
@@ -69,30 +65,6 @@ std::shared_ptr<Batch> telemetry_schema() {
                       {"sync_age_s", NANOARROW_TYPE_DECIMAL128},
                       {"sync_age_saturated", NANOARROW_TYPE_BOOL}});
     p->children[0]->flags &= ~ARROW_FLAG_NULLABLE;
-    telemetry_struct(b->schema.children[i++], "ubx_status",
-                     {{"boot_type", NANOARROW_TYPE_UINT8},
-                      {"notice_count", NANOARROW_TYPE_UINT16},
-                      {"warning_count", NANOARROW_TYPE_UINT16},
-                      {"error_count", NANOARROW_TYPE_UINT16}});
-    auto s = b->schema.children[i++];
-    check(ArrowSchemaSetTypeStruct(s, 5));
-    check(ArrowSchemaSetName(s, "sbf_status"));
-    field(s->children[0], "receiver_state_flags", NANOARROW_TYPE_UINT32);
-    field(s->children[1], "receiver_error_flags", NANOARROW_TYPE_UINT32);
-    field(s->children[2], "external_error_flags", NANOARROW_TYPE_UINT8);
-    field(s->children[3], "command_count", NANOARROW_TYPE_UINT8);
-    field(s->children[4], "frontends", NANOARROW_TYPE_LIST, false);
-    telemetry_struct(s->children[4]->children[0], "item",
-                     {{"frontend_code", NANOARROW_TYPE_UINT8},
-                      {"antenna_id", NANOARROW_TYPE_UINT8},
-                      {"gain_db", NANOARROW_TYPE_INT8},
-                      {"pll_locked", NANOARROW_TYPE_BOOL},
-                      {"sample_variance", NANOARROW_TYPE_UINT8},
-                      {"blanking_percent", NANOARROW_TYPE_UINT8}});
-    s->children[4]->children[0]->flags &= ~ARROW_FLAG_NULLABLE;
-    for (int index : {0, 1, 3, 5})
-        s->children[4]->children[0]->children[index]->flags &=
-            ~ARROW_FLAG_NULLABLE;
     b->init();
     return b;
 }
@@ -216,10 +188,7 @@ struct TelemetryAssembler {
                 std::string_view(f.name) != "_archive_day" &&
                 report.contains(f.name))
                 fields[f.name] = report[f.name];
-        for (const char *name : {"ubx_status", "sbf_status"})
-            if (report.contains(name))
-                fields[name] = report[name];
-        if (is_ubx && before.contains("ubx_status") &&
+        if (is_ubx && before.contains("receiver_uptime_s") &&
             before.value("receiver_uptime_s", Json(nullptr)) !=
                 fields.value("receiver_uptime_s", Json(nullptr))) {
             before["collection_complete"] = false;
@@ -240,14 +209,17 @@ struct TelemetryAssembler {
         } catch (const std::runtime_error &) {
             return;
         }
-        Json item = {{"gpst", time_parts(t)},
-                     {"adjustment_reported", e.adjustment_reported
-                                                 ? Json(*e.adjustment_reported)
-                                                 : Json(nullptr)},
-                     {"cumulative_adjustment_ms",
-                      e.cumulative_adjustment_ms_mod256
-                          ? Json(*e.cumulative_adjustment_ms_mod256)
-                          : Json(nullptr)}};
+        Json item = {
+            {"gpst", time_parts(t)},
+            {"adjustment_reported", e.adjustment_reported
+                                        ? Json(*e.adjustment_reported)
+                                        : Json(nullptr)},
+            {"cumulative_adjustment_ms",
+             e.cumulative_adjustment_ms_mod256
+                 ? Json(*e.cumulative_adjustment_ms_mod256)
+                 : Json(nullptr)},
+            {"cumulative_adjustment_modulus_ms",
+             e.cumulative_adjustment_ms_mod256 ? Json(256) : Json(nullptr)}};
         merge(ubx ? before : target(int64_t(t / 1000000000)),
               {{"measurement_clock", Json::array({item})}});
         ++updates;

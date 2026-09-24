@@ -1,7 +1,7 @@
 # ParquetNEX persistence mapping
 
-Status: v0 design draft. An [observation-first pilot](importer.md) implements a
-subset; the complete format and all catalog schemas are not implemented.
+This is the current experimental persistence contract for the four supported
+catalogs. Deferred capabilities are tracked in [TODO](TODO.md).
 
 [Overview](overview.md)
 
@@ -14,38 +14,19 @@ adapter path. See the [pipeline and modes](overview.md#processing-pipeline).
 RawBits and receiver telemetry permit null GPST. Untimed rows remain in arrival
 order in the last known GPST day, or `1980/01/06/` before any date is known;
 that placement does not assert an actual timestamp. No retrospective move or
-time backfill is required. See [receiver-time association](telemetry-time.md).
+time backfill is required. See [receiver-time association](receiver-time.md).
 Native batches carry an internal `_archive_day` routing column so a later
 anchor in the same batch cannot misdate earlier untimed rows. Python removes
 this implementation column before Parquet storage. Append via new parts, not
 by modifying a closed Parquet file.
 
-Use PyArrow RecordBatches backed by the native Arrow-compatible buffers for
-writing, and pass replay batches to the relevant CommonNEX consumer interface,
-not back to the raw-byte importer. Do not route bulk values through JSON, lists of dictionaries or
-per-row Python objects. Nullable columns use Arrow validity bitmaps and become
-Parquet nulls. This does not require Arrow IPC serialization between C++ and
-Python, or a Parquet round trip for direct processing.
-
-Arrow describes in-memory columnar data; Parquet describes encoded on-disk
-storage. They are complementary, not interchangeable byte layouts. Parquet
-encoding/decoding and compression still perform work even when the native/Python
-boundary can share buffers. The [interop design](../native-architecture.md#selected-commonnex-interop-design)
-defines the selected nanoarrow/PyCapsule integration; native output is implemented
-in the observation importer. STEC also consumes replayed Observation Arrow
-batches natively; other analysis consumers are migrated separately.
-
-Use `pyarrow.parquet.ParquetWriter` for bounded writes, `ParquetFile.iter_batches()`
-for replay, and `pyarrow.dataset` for multi-file selection. PyArrow invokes native
-Parquet encoding/compression; Python orchestration does not imply per-row Python
-encoding. Keep the native libraries independent of Parquet. nanoarrow supplies
-the interchange helpers, not a Parquet encoder. Do not add a DataFrame conversion
-between native batches and the writer. Batch size and row-group size are separate
-tuning choices; neither requires buffering an entire GPST day.
+Python/PyArrow owns Parquet I/O; see [native architecture](../native-architecture.md)
+for Arrow buffer ownership and interchange. Persistence is not required for
+direct processing, and Parquet bytes are not Arrow in-memory buffers.
 
 The unified `receiver-telemetry` catalog follows the same daily revision/part
 names and Zstandard level 3. Its ordered measurement/pulse lists and status
-fields are defined in [Auxiliary](auxiliary.md). Pending navigation windows
+fields are defined in [receiver telemetry](receiver-telemetry.md). Pending navigation windows
 survive file boundaries and ordinary daily-import checkpoints.
 
 ## Storage initialization
@@ -56,7 +37,7 @@ The vendor configuration file's format is opaque to this specification. Validate
 the reference names a file in that directory, not an arbitrary external path.
 Keep Setup metadata at Setup scope, outside daily revisions.
 
-Daily input consists of observation recordings such as UBX, SBF or RINEX. It
+Daily input consists of observation recordings such as UBX or SBF. It
 does not carry or recopy Setup metadata/configuration. Daily Parquet records
 reference the initialized Setup; readers resolve it from the
 storage root. A detached daily directory alone is not a self-contained Setup.
@@ -72,7 +53,7 @@ constructed from free-form `setup_id`. Its metadata carries the logical ID.
 <root>/<setup-directory>/
   setup.json
   receiver-config.txt       # Example vendor_config filename; format unrestricted
-  antenna.atx                # Optional selected receiver calibration
+  antenna.atx                # Optional selected antenna calibration
   2025/08/15/
     r00-observations-part00.parquet
     r00-observations-part01.parquet  # Completed deferred tail
@@ -109,8 +90,8 @@ day's first partial part to align the cursor with all emitted rows. See
 ### Shared encodings and observation/raw-navigation rules
 
 ParquetNEX defines an interoperable mapping of CommonNEX logical records to
-Parquet schemas, file metadata, and dataset layout. Unlike CommonNEX transport,
-these mappings must eventually be specified rather than left writer-specific.
+Parquet schemas, file metadata, and dataset layout. The current mappings below
+are shared by writers and readers, not selected independently per file.
 
 - Represent `GpstTimestamp`, `TimeDelta` and `Duration` as `DECIMAL(38,12)` over a 16-byte
   `FIXED_LEN_BYTE_ARRAY`, with signed big-endian two's-complement unscaled
@@ -122,9 +103,9 @@ these mappings must eventually be specified rather than left writer-specific.
   and durations, and strictly positive periods separately;
   signed timestamp differences may be negative. Parquet and Arrow buffer
   layouts are distinct; the Parquet writer handles their conversion.
-- Preserve nullability, semantic identifiers/constraints, enums, units, and
-  source-extension definitions. The schema version resolves standard semantic
-  definitions; store additional field constraints where needed. Writers validate
+- Preserve nullability, enums, units and the field definitions in the owning
+  catalog document. Current metadata keys are listed below; no generic
+  per-field constraint-expression metadata is required. Writers validate
   the logical rules rather than assuming Parquet physical types enforce them.
   Serialize logical null as Parquet null, not NaN or infinity. Convert any
   implementation-specific NaN missing-value representation at this boundary.
@@ -132,8 +113,8 @@ these mappings must eventually be specified rather than left writer-specific.
   floating-point physical type only for an explicitly justified logical float
   field; do not expand scaled integers to floats on disk. Round trips must
   preserve integer counts, nullability, units, and scale exactly.
-  Store schema versions, record family, GPST epoch/unit, and necessary schema
-  interpretation in file metadata. Scientific interpretation does not require
+  Store the current schema label, catalog and GPST epoch/unit metadata.
+  Scientific interpretation does not require
   provenance sidecars, execution snapshots, or artifact hash inventories.
 - Partition Observation by its `gpst` and RawBits by its `nav_epoch_gpst`, within
   the station and GPST day. Neither requires an epoch-table join. Each day may contain several
@@ -142,7 +123,7 @@ these mappings must eventually be specified rather than left writer-specific.
 - Close each part before publishing it by rename. Published files are immutable;
   deferred tail completion adds a new part to the same revision. Do not append
   bytes to a closed Parquet file. See the daily revision and publication rules below.
-- Use the [Core wide observation layout](core.md): one row per epoch/satellite/
+- Use the [wide observation layout](observations.md): one row per epoch/satellite/
   signal occurrence, C/L/D/S in separate nullable columns with independent
   quality fields. Do not serialize scalar observable rows as a second v0 layout.
 - Present Setup metadata references must resolve in the declared dataset scope.
@@ -166,19 +147,36 @@ these mappings must eventually be specified rather than left writer-specific.
   physical choices to measure. Do not promise a compression ratio relative to RINEX;
   compare equal retained content, including compressed RINEX baselines.
 
-Concrete family schemas, metadata keys, and event context selection
-mapping remain to be finalized. Use one v0 mapping rather than alternate layouts.
+## Current catalog encoding and metadata
+
+Record fields follow [Observation](observations.md), [RawBits](raw-bits.md),
+[Events](events.md) and [receiver telemetry](receiver-telemetry.md). Enums use
+strings, bodies use binary, and nested records/lists use Parquet structs/lists.
+The internal `_archive_day` column is not persisted.
+
+| File metadata key | Current value |
+| --- | --- |
+| `commonnex.schema` | `observation-pilot-1` (experimental label shared by all four catalogs) |
+| `commonnex.catalog` | Catalog filename component |
+| `time.scale` | `GPST` |
+| `time.origin` | `1980-01-06T00:00:00` |
+| `time.unit` | `s` |
+| `setup_id` | Parent station identity |
+
+The existing experimental schema label is not a compatibility promise or an
+old-schema dispatch mechanism. Readers use the current field definitions.
+Do not reinterpret older products solely because they carry the same label.
 
 ## Daily revisions
 
-The fixed relative filename pattern within a station or navigation collection is:
+The fixed relative filename pattern within a station is:
 
 ```text
 <GPST YYYY>/<MM>/<DD>/r<revision:02d>-<catalog>-part<part:02d>.parquet
 ```
 
 Revision and part are two-digit decimal numbers, starting at `00`. Each is
-scoped to its day/catalog (and parent station or collection); part numbering
+scoped to its day/catalog (and parent station); part numbering
 restarts at `00` for a new revision. No revision directory or repeated date in
 the filename is used. Exhausting `99` requires an explicit naming-policy
 extension, not wrapping or silently emitting a different-width filename.
@@ -224,26 +222,3 @@ parts, allocate the next revision/part, and reject accidental overwrite. It does
 not provide automatic overlap merging or a generic version-management system.
 Immutable existing parts let synchronization transfer only new tail parts or
 new days; a rebuilt revision may require transferring a complete new catalog.
-
-## Progress
-
-- [x] Select PyArrow I/O and native Arrow-compatible batches without C++ Parquet.
-- [x] Recommend explicit ZSTD level 3 for ParquetNEX storage, without requiring
-  that codec or level for format conformance.
-- [x] Select direct decimal timestamps, no epoch tables or required row references.
-- [x] Fix GPST date directories and two-digit revision/part filenames.
-- [x] Separate deferred tail parts from complete replacement catalog revisions;
-  do not introduce ID-driven cascading rebuilds or reading while writing.
-- [x] Select daily Events with context lookup beyond the requested day when needed.
-- [ ] Finalize full family schemas, enum encoding, metadata keys
-  and equal-time conflict applicability with Events.
-- [x] Implement pilot initialization, bounded writing and revision/part selection.
-- [x] Implement measurement-tail raw replay using a daily import-state sidecar.
-- [x] Implement a native Arrow Observation replay consumer for GPS STEC.
-- [ ] Implement remaining catalogs and migrate other native replay consumers.
-- [ ] Validate remaining catalogs and source-specific RINEX offset replay.
-
-## References
-
-- [Parquet logical types](https://parquet.apache.org/docs/file-format/types/logicaltypes/).
-- [Parquet compression](https://parquet.apache.org/docs/file-format/data-pages/compression/).

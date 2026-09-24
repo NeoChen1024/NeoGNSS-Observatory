@@ -1,18 +1,16 @@
-# CommonNEX Core
-
-Status: selected v0 design with an implemented UBX/SBF subset; see [importer](importer.md).
+# CommonNEX shared types and identity
 
 [Overview](overview.md)
 
 ## Context and identity
 
-This document defines shared context and the Observation family. The
-[RawBits family](raw-bits.md) is also part of the core model, specified separately
-for readability. Either family may be present alone. In a RawBits-only dataset,
+These definitions apply to [Observation](observations.md), [RawBits](raw-bits.md),
+[Events](events.md) and [receiver telemetry](receiver-telemetry.md).
+Observation and RawBits are independent core record families. Either family may be present alone. In a RawBits-only dataset,
 Setup still names one logical station; it does not assert
 that code, carrier-phase, Doppler or signal-strength observations are available.
 
-All records follow the format-wide [RINEX interoperability and string rules](overview.md#rinex-interoperability-and-strings).
+All records follow the format-wide [naming and string rules](overview.md#naming-and-strings).
 Logical fields are not constrained by RINEX output widths or character limits.
 
 Observation Setup (Setup) describes a fixed receiver, antenna installation,
@@ -22,7 +20,7 @@ not Core identities. V0 does not model a general equipment-configuration history
 
 | Record | Required fields | Optional context |
 | --- | --- | --- |
-| Setup | `setup_id: string`, receiver/antenna identities, firmware/configuration identity | Marker, position, antenna offsets and installation metadata |
+| Setup | `setup_id: string`, required configuration structure defined in Setup JSON | Known receiver/antenna identities, marker, position and installation metadata |
 
 IDs are scoped to the declared dataset/session and must remain resolvable in
 replay. No UUID service or artifact hash chain is required. Coordinates and
@@ -61,159 +59,6 @@ serialization, field groups, single antenna, examples and validation
 rules are specified separately in [Setup JSON](setup-json.md). ParquetNEX imports
 this metadata at directory initialization, not with each daily recording.
 
-## Independent epoch times, without epoch tables
-
-Measurement epochs and navigation epochs are distinct time contexts, not
-required record tables. Observation stores its own `gpst`; RawBits stores
-`nav_epoch_gpst`. Observation time is non-null; RawBits time is nullable.
-Both use `GpstTimestamp` backed by
-`DECIMAL(38,12)` seconds. RAWX/Measurements measurement time must not be
-overwritten with navigation context. No one-to-one or equal-time relationship
-is required between the two.
-
-There are no mandatory epoch/occurrence IDs or row-to-row foreign keys.
-Timestamps are coordinates, not unique keys: retain distinct occurrences with
-equal times and payloads. Optional implementation row counters are file-local,
-can be reassigned on reconstruction, and carry no cross-file/revision meaning.
-Setup metadata references remain resolvable shared context.
-
-The [Events family](events.md) carries completion and discontinuities.
-Measurement-clock evidence belongs to [Auxiliary](auxiliary.md). Consumers load required event
-context, possibly from preceding days, without per-row event references.
-Observation quality remains signal-local. Events are not epoch lookup tables.
-
-Skip untimeable Observation and report counts; preserve raw archives.
-RawBits with unknown time is retained with null GPST under the
-[receiver time association policy](telemetry-time.md).
-RawBits-only sources need no observations.
-Legitimate untimed RINEX special events retain separate mapping semantics.
-Completion closes the relevant producer epoch, not a promise of every signal
-being received. Navigation completion does not close measurements or future
-pulses; source-local completion does not imply merged-stream completion.
-
-A complete UBX RXM-RAWX frame contains its measurement epoch and `numMeas`
-records; validated structure completes that measurement record without NAV-EOE.
-NAV-EOE closes navigation messages, not RAWX. SBF Measurements group completion
-uses a matching EndOfMeas. Complete messages can span a group/file boundary;
-missing optional observables do not make a structurally complete RAWX incomplete.
-
-## Observation: one row per epoch/satellite/signal occurrence
-
-The logical record and primary Parquet layout are wide, not scalar observable
-rows. A normal row groups C/L/D/S of one system-specific signal. If genuinely
-distinct or conflicting occurrences share those values, retain separate rows
-and expose conflicts without treating timestamps as unique row identities.
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `setup_id` | string | Parent logical station Setup |
-| `gpst` | GpstTimestamp | Source measurement time stored directly, not navigation-context time |
-| `satellite_system`, `satellite_number` | string, uint16 | RINEX satellite identity |
-| `signal` | string | System-specific RINEX band/attribute, such as 1C |
-| `pseudorange_m` | float64? | C observable |
-| `carrier_phase_cycles` | float64? | L observable |
-| `doppler_hz` | float64? | D observable |
-| `cn0_db_hz` | float64? | S observable only when its unit is known to be dB-Hz |
-| `code_quality`, `phase_quality`, `doppler_quality`, `cn0_quality` | ObservableQuality? | Independent per-observable quality |
-| `phase_tracking` | PhaseTracking? | Phase-specific indicators and reported lock duration |
-| `receiver_corrections` | ReceiverCorrections? | Reported per-observable preprocessing corrections, not applied or undone by import |
-| `doppler_variance_factor` | float32? | Finite nonnegative factor in Hz2/cycles2 used to derive Doppler variance from phase variance |
-
-### ObservableQuality
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `status` | enum | `valid`, `invalid`, or `unknown`: source-reported validity, not downstream scientific acceptance |
-| `stddev` | float32? | Finite nonnegative standard deviation in the corresponding observable's unit |
-| `stddev_is_lower_bound` | bool? | Whether the uncertainty represents a lower bound rather than an uncensored estimate |
-| `rinex_ssi` | uint8? | Original RINEX strength indicator, 1-9; zero/blank becomes null |
-
-Store only standard deviation, not a second variance column. Decode a source
-variance's units and no-data rules before taking its square root; do not infer
-uncertainty from C/N0. This normalization does not promise bitwise reversibility
-of a floating-point square root. Missing quality is not evidence of validity.
-`stddev_is_lower_bound` belongs to each observable's quality independently,
-not the entire row. True identifies a known lower-bound uncertainty, including
-one derived from a clipped variance. False requires an established uncensored
-source mapping; null means unknown or unavailable. A null stddev requires a
-null bound flag. This describes uncertainty, not clipping of the observable,
-RF signal or ADC. Keep stddev as float32: converted bounds have the same
-rounding limits as other uncertainties, not exact interval-arithmetic semantics.
-There is no generic `saturated` flag: lock saturation has its own representation,
-and RF/ADC clipping belongs to receiver diagnostics, not inferred from C/N0.
-
-### PhaseTracking and LockDuration
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `loss_of_lock` | bool? | Explicit source indication of loss of lock; unknown is not false |
-| `half_cycle_ambiguity` | bool? | Source indicates unresolved half-cycle ambiguity |
-| `half_cycle_subtracted` | bool? | Source explicitly reports a half-cycle already subtracted from the exported phase |
-| `rinex_lli` | uint8? | Original RINEX phase LLI bitmask, 0-7; blank becomes null |
-| `lock` | LockDuration? | Source-reported duration or bounds, not an importer-generated counter |
-| `continuity_counter` | uint32? | Source-reported signal continuity-change counter, not an inferred loss-of-lock boolean |
-| `continuity_counter_modulus` | uint32? | Modulus of that counter, greater than one; null when counter is absent |
-
-| LockDuration field | Type | Meaning |
-| --- | --- | --- |
-| `lower_s` | Duration | Reported duration or lower bound in seconds |
-| `upper_s` | Duration? | Exclusive upper bound, used only for `interval` |
-| `representation` | enum | `reported_value`, `interval`, or `lower_bound` |
-
-An interval is `[lower_s, upper_s)` with upper greater than lower. The other
-representations require null upper bounds. A reported value retains source
-quantization; it does not claim perfect duration accuracy. Saturated counters
-use lower bounds. No lock information means a null lock record.
-
-Continuity counter and modulus are supplied together, with counter less than
-modulus. SBF MeasExtra reports modulo 256; acquisition and cycle slips can both
-increment it. Preserve the reported value without unwrapping or deriving a
-receiver restart from a decrease. An unchanged value is not proof of continuity
-across a gap, and a change does not uniquely identify a PLL loss of lock.
-
-### ReceiverCorrections
-
-| Field | Type | Unit |
-| --- | --- | --- |
-| `code_multipath_m` | float64? | m |
-| `code_smoothing_m` | float64? | m |
-| `phase_multipath_cycles` | float64? | cycles |
-| `code_smoothing_applied` | bool? | Source explicitly reports whether pseudorange is smoothed; null means unavailable |
-
-The three numerical fields are signed finite amounts to add to the receiver's exported observable
-to undo the corresponding preprocessing correction. Import retains the exported
-code and phase; it does not add these values back or confuse them with clock
-corrections. Null is unavailable; zero is a reported zero, not proof that the
-feature is disabled. Numerical fields use physical-unit float64 values, not source-specific
-scaled integer encodings. These non-time corrections are an explicit exception
-to the integer-first preference, like the observables they accompany.
-The boolean is independent: false means explicitly unsmoothed; null means no
-declaration. Preserve it even when every correction amount is unavailable.
-
-### Tracking interpretation
-
-Half-cycle ambiguity and subtraction are independent. Subtraction reports an
-operation already performed, not an instruction to subtract again. See the
-[adapter mapping](receiver-profiles.md#observation-quality-mapping).
-Preserve RINEX LLI while mapping its defined semantics to common phase flags;
-zero/blank does not establish scientifically verified continuity. Do not infer
-slips from phase jumps or invent half-cycle subtraction from lock resets.
-
-Absent fields and source no-data sentinels become null. Zero is a numerical
-value, not a universal sentinel. Finite in-domain but unreliable measurements
-remain numerical values with quality flags. Do not create a general missing-
-reason taxonomy; retain explicit diagnostics only where interpretation needs it.
-Missing C, L, D or S does not invalidate the remaining columns. Consumer
-requirements such as dual-frequency TEC do not constrain Core compliance.
-
-Only dB-Hz signal-strength observations are supported. Explicit non-DBHZ RINEX
-S-observable units produce an unsupported-unit error, not a guessed conversion
-or silent omission. Missing unit headers follow the applicable supported RINEX
-version's rules; absence alone is not a declaration of another unit. SSI alone
-cannot populate `cn0_db_hz`, and importers do not synthesize SSI from C/N0.
-Derive full C/L/D/S codes from system and signal only when justified; do not
-force unlike signal attributes into one row.
-
 ## Time representation
 
 ### Shared semantic types
@@ -248,8 +93,7 @@ Required epoch timestamps cannot be unknown. Other families may permit null
 time under their own semantics; zero denotes the origin, not unknown time.
 The type specifies representation resolution, not receiver measurement accuracy.
 
-Convert source time scales at the input boundary. Preserve necessary native
-navigation time fields with their standards-defined meanings. GPST calendar
+Convert source time scales at the input boundary. GPST calendar
 partitions and labels do not use UTC suffixes or timezone conversion.
 
 Normalize source epoch values to the nearest picosecond, using round half to
@@ -274,14 +118,12 @@ context are distinct and must not be substituted for one another.
 
 Exact timestamp differences use `TimeDelta` with checked arithmetic.
 Normalized durations and clock offsets use `Duration` and `TimeDelta`.
-Native standard week/TOW and
-navigation-model time parameters are not replaced by this canonical timestamp.
 Arrow maps the type to `decimal128(38,12)`; neither Arrow nor a particular
 integer implementation is a CommonNEX conformance requirement.
 
 ## Logical types and naming
 
-The proposed schema uses `uint8`, `uint16`, `uint32`, `uint64`, `int32`, `int64`,
+The logical schema uses `uint8`, `uint16`, `uint32`, `uint64`, `int32`, `int64`,
 `float32`, `float64`, `DECIMAL(38,12)`, `bool`, `string`, `bytes`, enums, and records/lists of
 these types. Every field declaration includes `name`, `data_type`,
 `nullable: bool`, and `semantics`, together with applicable units and constraints.
@@ -290,7 +132,7 @@ definition reuses the relevant GNSS standard rather than introducing competing
 physical meanings. Constraints restrict representable values beyond the type.
 Nullability is a schema property, not another value repeated in each record.
 In this specification, `T?` abbreviates `data_type: T, nullable: true`; a type
-without `?` has `nullable: false`. Enum wire encodings remain unspecified.
+without `?` has `nullable: false`. The current Arrow/Parquet mapping stores enums as strings; see [ParquetNEX](parquetnex.md).
 
 For example, this is an illustrative schema declaration, not a wire format:
 
@@ -338,13 +180,13 @@ Raw observables are an agreed exception to integer-first storage: retain the
 observation `float64` values and uncertainty `float32` fields. Direct
 source binary64 observations and phase/Doppler reconstruction involving
 frequency ratios justify avoiding additional fixed-point quantization here.
-No conversion of these fields to scaled integers is planned for v0. A RINEX-specific
-auxiliary epoch-local clock-offset estimate uses `TimeDelta`. Continuous non-time
+No conversion of these fields to scaled integers is planned for v0. Continuous non-time
 physical parameters may use `float64` with defined units; do not
 force them onto a broadcast fixed-point grid solely for integer-first storage.
 Telemetry integer types and scales
-in [Auxiliary](auxiliary.md) are agreed design choices; implementation must still validate source
-conversion, rounding, and overflow rather than claim measured fidelity already.
+in [receiver telemetry](receiver-telemetry.md) are field-specific choices, not a
+requirement to quantize all physical quantities into integers. Source conversion,
+rounding and overflow must respect each declared type.
 
 Logical null means no usable numerical value is available, including absent
 source fields and source-defined no-data sentinels. It is not zero, an empty
@@ -380,7 +222,6 @@ Initial semantic rules:
 | Carrier phase (`L` observable) | Finite cycles; signed values permitted |
 | Doppler (`D` observable) | Finite hertz; signed values permitted |
 | Standard deviation | Finite, greater than or equal to zero, in the observable's unit |
-| Variance | Finite, greater than or equal to zero, in the squared observable unit |
 | Lock duration | Finite seconds, greater than or equal to zero; saturation remains separate |
 | Clock offset, residual, or additive correction | Finite signed value in its declared unit |
 | C/N0 in dB-Hz | Finite; no generic nonnegative constraint on a logarithmic quantity |
@@ -429,48 +270,7 @@ a globally unique signal identifier. Do not invent a competing canonical
 signal-name vocabulary.
 
 Importers map native satellite/signal identifiers to the common identity.
-Do not repeat UBX/SBF/RTCM identity structs on normal Observation rows.
+Do not repeat source-protocol identity structs on normal Observation rows.
 Unresolved or unsupported signal mappings exclude the affected observation
 with a diagnostic; never guess the nearest-looking code. Raw archives preserve
-native identifiers. RINEX 2 and its ambiguous legacy codes are out of scope.
-
-
-## Normalization and processing boundary
-
-Apply source unit/time conventions and decode RINEX scale factors into physical
-values; downstream consumers never reapply ASCII storage scaling. Preserve
-phase convention and already-applied correction metadata with explicit scope.
-Do not apply or undo receiver clock corrections during import. Accept only
-inputs without applied observation clock-offset correction and retain the
-source's consistent epoch/code/phase values. GPST time-scale
-normalization is not receiver clock-error removal. NAV-CLOCK and SBF PVT clock
-bias/drift remain telemetry; never use them to fill or correct raw observations.
-
-There is no general clock-correction application-state mechanism. RINEX input
-with `RCV CLOCK OFFS APPL=1` is an unsupported-input error; zero is accepted,
-and an absent header follows that supported version's specified default.
-Optional RINEX epoch offset estimates may be retained as
-`rinex_receiver_clock_offset_s: TimeDelta?` in a source-specific auxiliary
-record, never applied, interpolated or held forward. That adapter is not yet
-implemented. Internal receiver clock steering/integer-millisecond adjustments
-are not this RINEX correction workflow: retain their reported measurement-clock
-evidence independently, without inferring reboot, loss of lock or adjustment size.
-SBF smoothing state remains known even without MeasExtra correction amounts;
-UBX has no equivalent declaration here and uses null, not false.
-Import does not smooth, interpolate, repair slips, unwrap clocks or estimate
-missing observations. Inferred arcs and scientific corrections are outputs of
-processing facilities, not mutations of imported records.
-
-Shared continuity events identify stream, explicit time scope, event kind
-and reported/inferred evidence. They must distinguish actual restart/loss from
-transport completion; batch boundaries have no scientific meaning.
-Selected Events semantics are defined in [Events](events.md); exact payload
-encodings and source mappings remain review items.
-
-See [current GPST policy](../time-policy.md) for implemented products; this
-draft's decimal representation does not retroactively reinterpret them.
-
-## Reference
-
-- [RINEX 4.02 specification](https://files.igs.org/pub/data/format/rinex_4.02.pdf):
-  identifier and semantic reference, not a claim of complete adapter support.
+native identifiers.

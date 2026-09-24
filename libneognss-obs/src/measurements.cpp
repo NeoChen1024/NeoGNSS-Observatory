@@ -111,8 +111,8 @@ std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
             m.phase = v.cpMes;
             m.doppler = v.doMes;
             m.cn0 = v.cno;
-            m.code_status = (v.trkStat_bit & 1) ? 0 : 1;
-            m.phase_status = (v.trkStat_bit & 2) ? 0 : 1;
+            m.code_valid = bool(v.trkStat_bit & 1);
+            m.phase_valid = bool(v.trkStat_bit & 2);
             m.half_ambiguity = !(v.trkStat_bit & 4);
             m.half_subtracted = bool(v.trkStat_bit & 8);
             m.lock_ms = v.locktime;
@@ -256,7 +256,6 @@ decode_measurement_extras(const cppgnss::FrameView &f) {
             m.phase_sigma_lower_bound = pv == 65534;
         }
         if (std::isfinite(factor) && factor >= 0) {
-            m.doppler_variance_factor = factor;
             if (pv != 65535) {
                 m.doppler_sigma = std::sqrt(pv * 1e-6 * double(factor));
                 m.doppler_sigma_lower_bound = factor > 0 && pv == 65534;

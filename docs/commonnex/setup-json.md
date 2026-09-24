@@ -1,15 +1,15 @@
 # Setup JSON metadata
 
 Status: v0 with an implemented [single-station initializer](importer.md#initialize),
-basic field validation, vendor-config copying and ANTEX selection. This is not
-a complete RINEX importer or machine-readable JSON Schema.
+basic field validation, vendor-config copying and ANTEX selection. A complete
+machine-readable JSON Schema is not provided.
 
-[Overview](overview.md) | [Core identities](core.md#context-and-identity)
+[Overview](overview.md) | [Core identities](types.md#context-and-identity)
 
 ## Purpose and field groups
 
 The ParquetNEX directory initializer imports `setup.json` and its referenced
-vendor configuration file once. Daily UBX/SBF/RINEX inputs do not carry or
+vendor configuration file once. Daily UBX/SBF inputs do not carry or
 recopy these files. See [storage initialization](parquetnex.md#storage-initialization).
 JSON describes one logical station with one receiver and one antenna, not every
 piece of dataset metadata. Different receiver/antenna observation sources use
@@ -21,11 +21,9 @@ that affect interpretation require a new Setup rather than rewriting old metadat
 Scope is fixed base stations with upright antennas. Mobile operation, tilted
 installations, vehicle body frames and center-of-mass metadata are out of scope.
 
-## Strings and RINEX interoperability
+## Strings
 
-This section applies the [CommonNEX-wide interoperability policy](overview.md#rinex-interoperability-and-strings)
-to Setup JSON; Unicode support and asymmetric import/export guarantees are not
-limited to this file.
+The [format-wide string policy](overview.md#naming-and-strings) applies here.
 
 Encode `setup.json` as UTF-8 JSON. String values
 may contain Unicode and special characters, with normal JSON escaping. Do not
@@ -34,18 +32,11 @@ Do not silently transliterate, normalize Unicode, case-fold or sanitize values.
 JSON property names and
 standardized external identifiers retain their specified spelling.
 
-Preserve imported RINEX metadata content without loss; retain source-specific
-header information outside Setup where appropriate. This does not require
-reproducing fixed-column padding in normalized fields. Setup can express more
-than RINEX, so lossless RINEX export is not guaranteed. A future exporter must
-report unrepresentable values and require an explicit conversion policy rather
-than silently truncating them. Permissive strings do not remove field semantics,
-reference validation or the same-directory filename constraint on `vendor_config`.
+Permissive strings do not remove field semantics, reference validation or the
+same-directory filename constraint on `vendor_config`. RINEX counterparts below
+are naming/semantic references, not an import or export mapping.
 
-The selected metadata groups are below. The complete RINEX header import mapping
-remains a separate task; initialization does not read RINEX observations.
-
-| Group | Contents |
+| Group | Meaning |
 | --- | --- |
 | `setup_id` | Required nonempty free-form string identifying this Setup; not a filename or RINEX marker name |
 | Marker | RINEX-like marker name, number and type; coordinates with frame, units and position basis |
@@ -62,7 +53,7 @@ remains a separate task; initialization does not read RINEX observations.
 Do not infer cable delay from type or length or add an independent cable-delay
 field. Receiver compensation settings remain in the vendor configuration.
 The specification does not prescribe that file's format or require the importer
-to decode every vendor format. The pilot optionally interprets the Septentrio
+to decode every vendor format. The initializer optionally interprets the Septentrio
 tracking command as described below. It should allow the original receiver settings to be recovered,
 or be directly applicable to a compatible receiver. Keep its contents out of
 `setup.json`. No automatic configuration tracking, dump comparison or update
@@ -76,11 +67,8 @@ known GPS L1/L5-only source immediately. Unknown configuration is not proof of
 incompatibility, and enabled signals do not guarantee measurements at every
 epoch. The tracking representation and unknown/disabled distinction are defined below.
 
-RINEX source headers, comments, conversion details and observation events do
-not all belong in Setup. Map them to source metadata or the appropriate record
-family. RINEX-like observation coverage plus extra receiver setup information
-is the intended superset; lossless RINEX import still requires explicit field,
-correction and event mappings rather than merely retaining a JSON container.
+Setup describes the station configuration, not every quantity or event in
+the recording. Observation, receiver telemetry and Events retain their own data.
 
 ## Setup identity and RINEX marker identity
 
@@ -146,7 +134,7 @@ Example mosaic-X5 declaration (illustrative, not a promise of actual coverage):
 ### Septentrio vendor-config import
 
 When `receiver.vendor` is `Septentrio` (case-insensitive recognition only;
-stored strings are unchanged), the pilot
+stored strings are unchanged), the initializer
 reads the referenced/copied UTF-8 config and recognizes `setSignalTracking`,
 its `snt` alias, and a `SignalTracking` response line. It only reads these
 comma-separated assignments; it does not execute commands, apply configuration,
@@ -241,7 +229,7 @@ nominal approximation, not an exact rational timing representation. This avoids
 restricting the format to the rates of currently used receivers. Actual epoch
 timestamps remain authoritative: never generate, snap or accumulate timestamps
 from this metadata. CommonNEX defines a per-epoch interval tolerance of +/-20%
-in the [cadence classification rules](import-policy.md#epoch-interval-classification).
+in the [cadence classification rules](import-policy.md#planned-cadence-classification).
 This is a diagnostic threshold, not permission to round timestamps. Preserve an
 imported source interval outside Setup as well when its precision or meaning
 cannot be represented here exactly.
@@ -322,7 +310,7 @@ Comments are descriptive, not machine-readable correction settings: downstream
 tools must not infer or apply clock corrections by parsing this free text.
 
 RINEX `REC # / TYPE / VERS` carries number, type and version, not a separate
-vendor field. Keep an imported TYPE intact as `rinex_name`; do not heuristically
+vendor field. Keep the standardized TYPE name intact as `rinex_name`; do not heuristically
 split it to fabricate vendor/model, or concatenate vendor/model to guess a
 standardized name. Vendor-config recognition uses `vendor`, not `rinex_name`.
 No RINEX column-width restriction is imposed on JSON strings; exporting is a
@@ -407,41 +395,6 @@ Explicit catalogs override the input calibration-file reference.
 The selected record describes only the receiver antenna. Satellite antenna
 calibrations and processing-time product selection remain engine inputs.
 
-A phase-center declaration in imported RINEX remains source metadata rather
-than a new Setup PCO field. Preserve it and any applied-correction declarations
-so downstream processing can distinguish source information from its selected
-ANTEX model and avoid applying a correction twice. This boundary does not
-establish a fallback or precedence policy for conflicting calibration sources.
-
-## RINEX coverage review
-
-Compared with [RINEX 4.02](https://files.igs.org/pub/data/format/rinex_4.02.pdf),
-sections 5.2 and 8.2, the following Setup decisions are settled:
-
-- [x] Include observer/agency; store station-information links in `comment`.
-- [x] Place orientation in the single antenna entry and obtain PCO/PCV from ANTEX.
-- [x] Use true-north clockwise azimuth for upright antennas only.
-- [x] Exclude mobile operation, tilt, body frames and center of mass.
-- [x] Define marker identity, ECEF XYZ and named marker-to-ARP N/E/U offsets.
-- [x] Allow Unicode without RINEX width restrictions; lossless export is not required.
-- [x] Keep vendor configuration in an initialization-time companion file,
-  and declare nominal period using decimal seconds.
-
-Implementation status and remaining work:
-
-- [x] Initialize a single station directory with Setup and optional companion files.
-- [x] Preserve free-form Setup identity separately from RINEX marker identity.
-- [x] Define tracking signal examples and model-independent Septentrio vendor-config inference.
-- [x] Validate period, tracking shape, strings, vector components, azimuth and cable length.
-- [x] Use single-station storage with `setup_id` on native records and no Stream file.
-- [x] Select and preserve complete ANTEX receiver-calibration records during init.
-- [ ] Implement RINEX metadata import and downstream use of the selected companion.
-
-File metadata (producer, dates, comments, DOI/license), actual observation
-inventory/interval/coverage, time interpretation, and applied DCB/PCV,
-scale and phase corrections belong to source/observation mappings, not fixed
-Setup fields. Their import remains to be specified; do not discard them or
-infer them from declared tracking configuration. Observation clock-offset
-correction declarations are instead used to reject corrected RINEX input;
-they do not establish a supported correction mode. GLONASS mapping remains
-outside v0 scope. This is not a complete lossless RINEX mapping claim.
+STEC can use the selected calibration companion; other consumer support is
+listed in the [remaining work](TODO.md). Actual observation inventory and
+coverage are determined from records, not declared tracking configuration.

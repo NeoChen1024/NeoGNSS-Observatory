@@ -43,7 +43,7 @@ There is no old-catalog fallback or source-selection option.
 
 ## Restart and missing time
 
-Follow the importer's [receiver-time contract](commonnex/telemetry-time.md).
+Follow the importer's [receiver-time contract](commonnex/receiver-time.md).
 Receiver restart Events are matched to their originating status report using
 the reported uptime and nullable GPST, in record order. Analysis does not
 re-detect a restart from a counter rollover or fit uptime to GPST.
@@ -70,16 +70,17 @@ jump_ns = bias_now - bias_previous - drift_previous * elapsed_seconds
 unwrapped_bias_ns = raw_bias_ns - accumulated_adjustment_ns
 ```
 
-SBF-reported cumulative counts use the documented signed modulo-256 difference
-only for known SBF PVT sources and counts in 0..255. The uint64 container itself
-does not imply modulo semantics. Check the count-derived adjustment against the
-bias/drift residual; inconsistent evidence starts a new arc.
+Cumulative counters use a signed modular difference when successive reports
+have the same known modulus and counters within range. SBF currently reports
+modulus 256; no protocol-name inference is used. Unknown or excessively large
+moduli fall back to bias/drift evidence. Check the count-derived adjustment
+against the bias/drift residual; inconsistent evidence starts a new arc.
 
 Otherwise, round the residual to the nearest integer millisecond. Accept a
 nonzero adjustment only within `--jump-tolerance-ns` (default 50,000 ns).
 An exactly matched RAWX flag labels it `rawx_confirmed_adjustment`; otherwise
-use `bias_inferred_adjustment`. Counted SBF evidence is labeled
-`sbf_counted_adjustment`. An unresolved jump or adjustment flag starts a new
+use `bias_inferred_adjustment`. Counted evidence is labeled
+`counter_confirmed_adjustment`. An unresolved jump or adjustment flag starts a new
 arc without claiming reboot.
 
 Short gaps preserve accumulated adjustment; intervals greater than the timeout

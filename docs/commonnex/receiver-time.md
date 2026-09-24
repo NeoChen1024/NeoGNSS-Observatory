@@ -1,9 +1,9 @@
 # Receiver time association
 
-Status: agreed contract; see the importer checklist for implementation coverage.
+Shared receiver-time interpretation for RawBits and receiver telemetry.
 
 RawBits and receiver telemetry share this association policy. Observation and
-MeasurementClock retain their own measurement time; navigation time never
+measurement-clock list items retain their own measurement time; navigation time never
 overwrites it. All absolute coordinates use GPST decimal seconds.
 
 ## Missing absolute time
@@ -37,9 +37,9 @@ a physical reception-age guarantee.
 
 Associated uptime uses the same freshness limit and retains its native
 resolution. MON-SYS seconds are acceptable; do not interpolate subsecond uptime.
-Directly reported uptime and associated uptime are distinguished. A nearby
-status report usually gives roughly second-level pulse context at normal
-cadence, not a guaranteed subsecond target-pulse timestamp.
+Telemetry stores source-reported uptime for its navigation window; RawBits
+labels borrowed uptime as ASSOCIATED. Pulse items retain their own target
+time, not a separately estimated pulse uptime.
 
 ## Restart boundaries
 

@@ -195,9 +195,10 @@ field exposes `_scale` and `_encoding` metadata from pyrtcm. Sign-magnitude
 fields retain their encoded unsigned bits. Satellite/signal/cell masks and
 repeated wire groups are preserved, not replaced with normalized observations
 or RINEX identities. Python-derived PRN/signal labels are not wire fields.
-Range reconstruction, missing-value interpretation, full-week resolution and
-CommonNEX normalization belong to the processing adapter. RTCM parser support
-alone does not add an RTCM CommonNEX importer.
+Range reconstruction, missing-value interpretation and full-week resolution
+belong to callers, not this protocol library. RTCM3-to-CommonNEX conversion is
+[intentionally out of scope](../docs/commonnex/overview.md#scope);
+framing, typed parsing, dumps and mixed-protocol recognition remain supported.
 
 NMEA numeric fields use optional integers/doubles; hexadecimal integers use
 `HexInteger::digits` to preserve arbitrary widths and leading zeroes. Empty or

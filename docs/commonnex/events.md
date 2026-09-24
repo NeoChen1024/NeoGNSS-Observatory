@@ -1,7 +1,7 @@
 # CommonNEX events and scoped context
 
-Status: selected v0 design; UBX/SBF completion and receiver restart evidence are
-implemented. Other payloads and adapters remain pending.
+UBX/SBF completion and receiver restart evidence are implemented. Planned
+cadence kinds and reserved applicability rules are explicitly marked below.
 [Overview](overview.md) | [Import policy](import-policy.md)
 
 ## Purpose
@@ -15,16 +15,20 @@ Protocol completion is not discontinuity, proof of all signals being present,
 or an instruction to reset a solver. Signal-local slip/lock/quality indicators
 remain on Observation rows.
 
-## Event kinds
+## Implemented and planned event kinds
 
-| Kind | Meaning |
+| Kind | Status and meaning |
 | --- | --- |
-| `OBSERVATION_GAP` | Adjacent measurement interval exceeds 1.2 times nominal period |
-| `EPOCH_INTERVAL_SHORT` | Positive measurement interval below 0.8 times nominal period |
-| `TIME_REVERSAL` | Time decreases in established acquisition order |
-| `REPEATED_TIMESTAMP` | Distinct epochs have equal time; not duplicate proof |
+| `OBSERVATION_GAP` | Planned: Adjacent measurement interval exceeds 1.2 times nominal period |
+| `EPOCH_INTERVAL_SHORT` | Planned: Positive measurement interval below 0.8 times nominal period |
+| `TIME_REVERSAL` | Planned: Time decreases in established acquisition order |
+| `REPEATED_TIMESTAMP` | Planned: Distinct epochs have equal time; not duplicate proof |
 | `RECEIVER_RESTART` | Supported restart evidence, not mere logger reconnection |
 | `EPOCH_COMPLETION` | Complete/incomplete/unknown closure of an observation or navigation epoch, including epochs with no retained science rows |
+
+Only completion and restart are emitted today. Time reversal currently fails
+import instead of emitting a TIME_REVERSAL Event. Cadence kinds and their
+payloads below are design targets, not implemented columns.
 
 ## Shared fields and applicability
 
@@ -37,8 +41,8 @@ remain on Observation rows.
 | `receiver_uptime_s` | Duration? | Reported uptime for receiver restart evidence; null for completion |
 | `applicability` | enum | `POINT`, `EPOCH`, `INTERVAL` or `STATE` |
 | `end_gpst` | GpstTimestamp? | Exclusive interval/state end, if explicitly supplied |
-| `evidence` | enum | Reported versus inferred basis; exact adapter vocabulary pending |
-| `payload` | typed union | Kind-specific fields below, not arbitrary JSON |
+| `evidence` | enum | `REPORTED` for current completion; `INFERRED` for current restart |
+| `payload` | struct | Nullable `epoch_completion` struct and `restart_reason` string; see below |
 
 `GpstTimestamp`, `TimeDelta` and `Duration` use `DECIMAL(38,12)` seconds.
 No event ID or epoch foreign key is required. Multiple events may share time.
@@ -47,7 +51,8 @@ permit null GPST. Other event kinds must define their time constraints before
 implementation; nullable storage is not permission to omit required times.
 `EPOCH` applies only to its declared epoch context, never implicitly forward.
 `INTERVAL` is `[gpst,end_gpst)` with a required end later than the start.
-`STATE` starts inclusively and lasts until explicit end or a superseding
+`INTERVAL` and `STATE` are reserved applicability designs; current output uses
+`EPOCH` for completion and `POINT` for restart. `STATE` starts inclusively and lasts until explicit end or a superseding
 declaration in the same scope. A date, file boundary or absence of a new event
 does not end it.
 `POINT` records an occurrence, not an enduring state.
@@ -59,7 +64,7 @@ source/conflict selectors are a remaining schema task, not permission to guess.
 
 ## Kind-specific payloads
 
-Interval/discontinuity events contain `previous_gpst: GpstTimestamp?`,
+Planned interval/discontinuity payloads contain `previous_gpst: GpstTimestamp?`,
 `next_gpst: GpstTimestamp?`, `interval_s: TimeDelta?`, and
 `expected_period_s: Duration?`. These are direct coordinates, not references.
 For cadence/reversal events, `gpst=next_gpst`; previous/next describe acquisition
@@ -71,14 +76,18 @@ measurement-cadence thresholds for asynchronous navigation messages.
 `EPOCH_COMPLETION` uses `applicability=EPOCH`, with `completion` equal to
 `COMPLETE`, `INCOMPLETE` or `UNKNOWN`, and `completion_basis` equal to
 `PROTOCOL_BOUNDARY`, `RECORD_STRUCTURE`, `INCOMPLETE_TAIL` or `UNKNOWN`.
+Current import emits `COMPLETE` with `RECORD_STRUCTURE` (RAWX) or
+`PROTOCOL_BOUNDARY` (EndOfMeas/matched NAV-EOE). Other completion values are
+reserved; incomplete input is currently reported through importer state/counts,
+not an emitted incomplete measurement Event.
+These fields are stored in `payload.epoch_completion`; for restart that member
+is null and `payload.restart_reason` is populated instead.
 Its scope identifies observation versus navigation; closure does not tie their
 timestamps together. A source-local boundary alone is not merged completion.
-Source RINEX `rinex_epoch_flag: uint8?` belongs to the corresponding event;
-special events retain their own typed mapping, not fabricated observations.
 
 Clock-corrected observation input is out of scope; there is no clock-correction
 application-state Event. Raw receiver adjustment evidence is independently
-stored in the [receiver-telemetry measurement list](auxiliary.md#ordered-report-lists).
+stored in the [receiver-telemetry measurement list](receiver-telemetry.md#ordered-report-lists).
 Do not infer a restart, gap or loss of lock merely from a clock adjustment.
 
 ## Reading and persistence
@@ -87,7 +96,7 @@ Receiver restart Events use `kind=RECEIVER_RESTART`, `scope=RECEIVER`,
 `applicability=POINT`, `evidence=INFERRED`, and a nullable `gpst`.
 `receiver_uptime_s` retains the new uptime; `payload.restart_reason` is
 `UPTIME_DECREASE` or `GPST_UPTIME_OFFSET_JUMP`. The completion payload is null.
-These untimed Events follow the same [placement policy](telemetry-time.md) as
+These untimed Events follow the same [placement policy](receiver-time.md) as
 receiver telemetry; they do not invent a GPST or require an epoch reference.
 
 Consumers needing discontinuity interpretation load the relevant Events context before
@@ -115,18 +124,5 @@ is not necessarily receiver acquisition order. File rollover and handover are
 not discontinuities. No events file is necessary when no events/context exist.
 Capability/coverage metadata distinguishes unavailable detection from no detected
 event; neither is a universal continuity guarantee or prerequisite QA stamp.
-Legitimate untimed RINEX special events remain separately mapped, not assigned
-fictional GPST to fit this timed schema.
 
-## Progress
-
-- [x] Remove required epoch tables and row-to-row time references.
-- [x] Separate observation/navigation time scopes and completion from discontinuity.
-- [x] Exclude applied clock-correction input; keep measurement-clock evidence in Auxiliary.
-- [x] Define interval/state applicability and cross-day context lookup semantics.
-- [ ] Finalize typed payload serialization, evidence vocabulary, and selectors
-  for conflicting acquisition contexts at equal times.
-- [ ] Validate remaining source-specific completion mappings; define retained
-  RINEX special/header-change events.
-- [x] Import and persist RAWX/EndOfMeas and matching UBX navigation completion.
-- [ ] Implement remaining Events and context-aware replay.
+Remaining cadence/context work is tracked in [TODO](TODO.md).

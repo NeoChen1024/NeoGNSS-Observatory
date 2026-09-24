@@ -17,7 +17,7 @@ struct Measurement {
     float code_sigma = NAN, phase_sigma = NAN, doppler_sigma = NAN;
     std::optional<bool> code_sigma_lower_bound, phase_sigma_lower_bound,
         doppler_sigma_lower_bound;
-    int code_status = 2, phase_status = 2; // valid, invalid, unknown
+    std::optional<bool> code_valid, phase_valid;
     bool half_ambiguity = false;
     std::optional<bool> half_subtracted;
     std::optional<uint32_t> lock_ms;
@@ -26,7 +26,6 @@ struct Measurement {
     std::optional<bool> code_smoothing_applied;
     double code_multipath_m = NAN, code_smoothing_m = NAN,
            phase_multipath_cycles = NAN, cn0_increment = 0;
-    float doppler_variance_factor = NAN;
     std::optional<uint8_t> continuity_counter;
 };
 struct Measurements {
