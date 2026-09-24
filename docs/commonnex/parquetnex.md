@@ -82,7 +82,7 @@ constructed from free-form `setup_id`. Its metadata carries the logical ID.
 ```
 
 Only applicable catalogs are written. A catalog is the storage name for a
-record family, such as `observations`, `raw-bits`, `events`, or `decoded-nav`.
+record family, such as `observations`, `raw-bits`, `events`, or `receiver-telemetry`.
 The [Events family](events.md) uses daily part files when
 present, not a global file. Interval events are assigned to the next available
 epoch's GPST day and carry previous timestamps directly. Event absence is
@@ -105,48 +105,6 @@ day's first partial part to align the cursor with all emitted rows. See
 [publication and continuation](importer.md#tail-continuation-and-reconstruction).
 
 ## Serialization rules
-
-### Decoded navigation collections
-
-[DecodedNav](decoded-nav.md) is stored separately in the `decoded-nav` catalog,
-using `r00-decoded-nav-part00.parquet` and the naming rules below.
-This is a file within an applicable partition/revision, not a perpetually
-appended global file. It uses the common header and typed EPH/STO/EOP/ION
-payload branches; no JSON parameter blobs are introduced.
-
-Receiver-derived DecodedNav may live in its station's daily revision when the
-model's partition day matches that directory. Standalone navigation collections
-(including merged RINEX NAV) live outside receiver Setup hierarchies and
-do not require synthetic receiver metadata. Both use the same record schema.
-The standalone collection directory naming and collection metadata encoding
-remain to be finalized. Collection identity is file/collection metadata;
-acquisition context carries explicit times rather than mandatory RawBits row references.
-
-GPS LNAV and Galileo I/NAV/F/NAV EPH use the day of native `toc` nominally
-aligned to GPST. Native reference times and their additional GPST coordinates
-follow DecodedNav's `NavigationTime` definition. Applying or updating a fine
-broadcast time-offset model does not change the partition day, even if the
-corrected `gpst` crosses midnight. Acquisition on a different day does
-not change that partition: a receiver-derived record belongs in the model's
-reference-day output, potentially requiring a new revision of that day rather
-than insertion into the acquisition-day directory. Other navigation models
-must define their partition reference field explicitly. No duplicate
-`partition_gpst` value is stored. These dates are storage partitions, not
-validity windows; consumers select relevant neighboring partitions as needed.
-Close and publish files by rename as for the other families.
-
-The [additional model definitions](navigation-models.md) select TOC for the
-other Keplerian EPH models, shared reference time for SBAS EPH, and model
-reference time for STO/EOP. All partition dates use nominal GPST alignment.
-ION uses known transmission time, or reliable acquisition epoch when transmission
-time is absent; these remain distinct semantics on replay. ION lacking both is
-skipped with diagnostics/counts. Do not create an untimed collection-level
-DecodedNav file or use an arbitrary date for it.
-
-DecodedNav is logically a tagged union, physically represented by mutually
-exclusive nullable typed structs. Validate the active branch against the
-record-kind/system/message-type/subtype discriminator. Shared field shapes do
-not imply interchangeable models or algorithms.
 
 ### Shared encodings and observation/raw-navigation rules
 
@@ -188,7 +146,7 @@ these mappings must eventually be specified rather than left writer-specific.
   signal occurrence, C/L/D/S in separate nullable columns with independent
   quality fields. Do not serialize scalar observable rows as a second v0 layout.
 - Present Setup metadata references must resolve in the declared dataset scope.
-  Standalone DecodedNav does not require those references. There are no required
+  There are no required
   epoch tables, row IDs, or per-row event foreign keys. Optional row counters
   are file-local and may be reassigned in a new revision.
   Setup metadata is imported at initialization, not replicated for daily input

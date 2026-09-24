@@ -21,7 +21,7 @@ only when they affect present interpretation or processing.
 - [Ginan shim](ginan-shim.md): single-context native backend design,
   GIM/bias calibration investigation and implementation checklist.
 - [CommonNEX and ParquetNEX v0](commonnex/overview.md): Core observations and RawBits,
-  optional DecodedNav/auxiliary schemas, receiver profiles, Parquet persistence
+  optional auxiliary schemas, receiver profiles, Parquet persistence
   and batch/incremental/live processing contracts; broader than the implemented pilot.
 
 ## Tools

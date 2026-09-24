@@ -71,8 +71,7 @@ Use `--finalize-telemetry` only at a true stream end, not each daily continuatio
 SBF Type1/Type2 smoothing state remains in Observation receiver_corrections;
 UBX uses null for unavailable smoothing state.
 
-Not yet implemented: undefined future RawBits representations, DecodedNav,
-cadence events,
+Not yet implemented: undefined future RawBits representations, cadence events,
 Meas3 decoding, RINEX/RTCM3 input, and automatic overlap reconciliation.
 
 STEC maps timed receiver-restart Events to independent phase arcs and receiver

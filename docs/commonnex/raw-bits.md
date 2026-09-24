@@ -10,8 +10,7 @@ Status: selected v0 design with an implemented UBX/SBF subset; see
 The record family is `RawBits`, an individual received occurrence is a
 `RawBitsOccurrence`, and its ParquetNEX catalog is `raw-bits`. These names are
 receiver-independent; standardized source names such as `UBX-RXM-SFRBX` and
-the SBF `RawNavBits` group retain their original spelling. `DecodedNav` remains
-the separate family for decoded parameters.
+the SBF `RawNavBits` group retain their original spelling.
 
 RawBits is a first-class record family in the core data model, with
 capability-dependent presence. It stores receiver-delivered navigation bits for all in-scope systems

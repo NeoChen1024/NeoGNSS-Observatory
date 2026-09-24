@@ -14,14 +14,31 @@ Python orchestration, storage and visualization.
 - [Dataset notes](docs/dataset-notes.md): acquisition and interpretation caveats.
 - Tool documentation and executable `--help` own usage and implemented options.
 
-Keep this guide about project-wide engineering workflow, conventions and safety.
-Update the owning document when behavior changes; link to it instead of copying
-schemas, per-tool defaults, CLI options, state machines or dataset runbooks here.
-Document usage and contracts, not internal scheduling, data structures or
-optimization walkthroughs that duplicate code.
-Keep current documentation distinct from design targets. Remove obsolete
-workflows and run histories; Git history is the archive. README files are
-public-facing, not local environment notebooks.
+## Documentation
+
+- Describe the current supported contract, usage and explicitly agreed future
+  scope. Distinguish implemented behavior, unsupported behavior and plans.
+- Give each topic one primary home. Elsewhere, provide a necessary summary and
+  link rather than duplicating the full content.
+- Keep architecture and stable interfaces needed to understand, use or extend
+  the project. Avoid source walkthroughs, internal scheduling, data structures
+  and optimization details that duplicate code or are likely to change soon.
+- Scientific and format documentation must let readers correctly interpret data
+  and results without reading the implementation. Preserve field types, units,
+  time semantics, null/validity rules, calibration assumptions and source
+  selection policies; cite upstream specifications where needed.
+- Do not turn ordinary documentation into decision histories, debugging notes,
+  benchmark logs or test transcripts. Report validation evidence in the task
+  response unless a report is explicitly requested.
+- Omit incidental local paths, hostnames, personal hardware settings and test
+  dates. Retain acquisition caveats or operational details when necessary for
+  scientific interpretation, supported operation or an explicitly requested
+  report, without preserving the troubleshooting history.
+- Update the owning document when behavior changes; remove superseded plans,
+  obsolete workflows and stale references. Git history is the archive. Keep
+  READMEs public-facing, not local environment notebooks, and this guide limited
+  to project-wide workflow, conventions and safety rather than per-tool schemas,
+  defaults, CLI options or runbooks.
 
 ## Scope and scientific integrity
 

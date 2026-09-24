@@ -339,8 +339,8 @@ observation `float64` values and uncertainty `float32` fields. Direct
 source binary64 observations and phase/Doppler reconstruction involving
 frequency ratios justify avoiding additional fixed-point quantization here.
 No conversion of these fields to scaled integers is planned for v0. A RINEX-specific
-auxiliary epoch-local clock-offset estimate uses `TimeDelta`. Continuous non-time physical parameters, including
-decoded navigation parameters, may use `float64` with defined units; do not
+auxiliary epoch-local clock-offset estimate uses `TimeDelta`. Continuous non-time
+physical parameters may use `float64` with defined units; do not
 force them onto a broadcast fixed-point grid solely for integer-first storage.
 Telemetry integer types and scales
 in [Auxiliary](auxiliary.md) are agreed design choices; implementation must still validate source

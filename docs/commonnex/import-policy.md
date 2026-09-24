@@ -46,17 +46,8 @@ Report unsupported RINEX content and mapping limitations; a partial import must
 not be labeled lossless. Preserve source metadata and interpretation alongside
 normalized fields without requiring a lossless reverse RINEX export.
 
-Skip and count ION models with neither known transmission time nor reliable
-acquisition epoch, including otherwise complete untimed RINEX header
-coefficients. Do not infer their time from filenames, filesystem timestamps,
-import time, or neighboring ephemerides. Reliable acquisition context may locate
-ION records but must not be relabeled as transmission time or a validity period.
-This exception does not relax mandatory model reference times for EPH/STO/EOP.
-Do not create collection-level untimed DecodedNav files. Other usable input
-records continue normally and the raw archive remains unchanged.
-
 Decode each source stream once and route all supported records to observation,
-navigation, raw-bit, telemetry, metadata, and event batches. Share time/epoch
+raw-bit, telemetry, metadata, and event batches. Share time/epoch
 association and maintain state across file/day boundaries. Consumers may read
 only the families they need; recording telemetry must not require enabling a
 PPP, SBAS, or clock-analysis algorithm.

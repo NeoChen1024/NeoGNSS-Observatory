@@ -23,8 +23,6 @@ for range, rounding and nullability, and [ParquetNEX](parquetnex.md) for storage
 | [RawBits](raw-bits.md) | First-class core record family for received navigation occurrences; presence is capability-dependent |
 | [RawBits layouts](raw-bits-layouts.md) | Canonical bit layouts, verified receiver mappings, check scopes and pending validation |
 | [RawBits registry](raw-bits-registry.md) | Primary-source signal vocabulary, legal family/format pairs and reserved extensions |
-| [DecodedNav](decoded-nav.md) | Optional standardized decoded navigation parameters |
-| [Additional navigation models](navigation-models.md) | Additional EPH, STO, EOP and ION structures and mapping constraints |
 | [Auxiliary](auxiliary.md) | Typed receiver clock, pulse, environment, status and solution records |
 | [Receiver profiles](receiver-profiles.md) | Input message requirements and adapter mapping contracts |
 | [RINEX mapping](rinex-mapping.md) | RINEX-only observation fields and source metadata |
@@ -33,8 +31,10 @@ for range, rounding and nullability, and [ParquetNEX](parquetnex.md) for storage
 
 Core model membership and mandatory data presence are different. Observation
 and RawBits are first-class core record families sharing Setup identity, epoch
-and continuity semantics; neither must accompany the other. DecodedNav remains
-a standardized optional extension, and auxiliary families remain optional.
+and continuity semantics; neither must accompany the other. Auxiliary families
+remain optional. Decoded navigation models and their parsing are outside the
+CommonNEX format scope; downstream processors decode preserved RawBits as needed.
+RINEX NAV and other decoded navigation products are not CommonNEX import targets.
 Each supplied family obeys its schema; consumers need only implement the
 families they use, not every navigation-content decoder.
 
@@ -182,8 +182,6 @@ Checked items mean a design decision or stated research validation, not shipped 
   including earlier-day context lookup and UNKNOWN when declarations are absent.
 - [x] Separate RawBits satellite identity, bitstream_source, semantic family and
   unpacking format; record validated bit layouts and check scopes.
-- [x] Select DecodedNav typed model families, native/GPST reference times and
-  partition-time policies; model-specific mappings are not implied complete.
 - [x] Select GPST date directories and `r00-<catalog>-part00.parquet` naming;
   tail completion adds parts, while reconstruction replaces affected day/catalog
   revisions. Local counter changes do not force subsequent revisions.
@@ -205,8 +203,8 @@ Checked items mean a design decision or stated research validation, not shipped 
   (events.md); avoid restoring a row-reference graph.
 - [ ] Complete missing receiver/family validation only when supported output
   is available (raw-bits-layouts.md); do not block verified families on it.
-- [ ] Complete DecodedNav model mappings and auxiliary catalogs as needed;
-  see their focused checklists rather than treating selected structures as code.
+- [ ] Complete auxiliary catalogs as needed; see their focused checklists
+  rather than treating selected structures as code.
 - [ ] Finalize full Parquet schemas/enum encodings and metadata keys beyond the
   observation pilot; station location and revision/part naming are decided.
 
