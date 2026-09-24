@@ -4,6 +4,7 @@
 #include <memory>
 #include <nanoarrow/nanoarrow.h>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -22,7 +23,9 @@ class CnexEngine {
   public:
     CnexEngine(const std::string &protocol, const std::string &setup_id,
                unsigned antenna, int64_t period_seconds, int64_t period_ps,
-               unsigned workers = 4);
+               unsigned workers = 4,
+               std::optional<int64_t> rtcm_reference_gpst_s = {},
+               std::optional<uint16_t> rtcm_station_id = {});
     ~CnexEngine();
     CnexBatches feed(std::span<const uint8_t> bytes);
     CnexBatches finish_telemetry();
@@ -37,7 +40,9 @@ class CnexEngine {
 };
 class CnexTimeProbe {
   public:
-    explicit CnexTimeProbe(const std::string &protocol);
+    explicit CnexTimeProbe(const std::string &protocol,
+                           std::optional<int64_t> rtcm_reference_gpst_s = {},
+                           std::optional<uint16_t> rtcm_station_id = {});
     ~CnexTimeProbe();
     void feed(std::span<const uint8_t> bytes);
     nlohmann::json result();

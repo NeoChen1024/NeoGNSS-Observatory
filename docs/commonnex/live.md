@@ -5,6 +5,11 @@ not an extension of the CommonNEX scientific schema. It accepts receiver bytes
 and delivers owned Arrow batches. See [native architecture](../native-architecture.md)
 for component ownership and interop requirements.
 
+RTCM3 is observation-only and requires `rtcm_reference_gpst_s`; the optional
+`rtcm_station_id` selects one source station. The live CLI exposes
+`--rtcm-reference-gpst` and `--rtcm-station-id`. See the [RTCM3 adapter](rtcm3.md)
+for MSM coverage, sequence completion and explicit week resolution.
+
 ## Batch delivery
 
 `neognss_observatory.cnex_stream.CnexBatchGroup` contains a session-local

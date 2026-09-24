@@ -49,7 +49,10 @@ void bind_cnex(py::module_ &m) {
     using Batch = neognss_obs::CnexBatch;
     using Reader = neognss_obs::CnexEngine;
     py::class_<Probe>(m, "CnexTimeProbe")
-        .def(py::init<const std::string &>(), py::arg("protocol"))
+        .def(py::init<const std::string &, std::optional<int64_t>,
+                      std::optional<uint16_t>>(),
+             py::arg("protocol"), py::arg("rtcm_reference_gpst_s") = py::none(),
+             py::arg("rtcm_station_id") = py::none())
         .def("feed",
              [](Probe &r, py::bytes bytes) {
                  char *p;
@@ -65,10 +68,13 @@ void bind_cnex(py::module_ &m) {
              py::arg("requested_schema") = py::none());
     py::class_<Reader>(m, "CnexObservationReader")
         .def(py::init<const std::string &, const std::string &, unsigned,
-                      int64_t, int64_t, unsigned>(),
+                      int64_t, int64_t, unsigned, std::optional<int64_t>,
+                      std::optional<uint16_t>>(),
              py::arg("protocol"), py::arg("setup_id"), py::arg("antenna"),
              py::arg("period_seconds"), py::arg("period_ps"),
-             py::arg("decode_workers") = 4)
+             py::arg("decode_workers") = 4,
+             py::arg("rtcm_reference_gpst_s") = py::none(),
+             py::arg("rtcm_station_id") = py::none())
         .def("feed",
              [](Reader &r, py::bytes bytes) {
                  char *p;

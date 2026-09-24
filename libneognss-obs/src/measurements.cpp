@@ -126,7 +126,8 @@ std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
         }
         return e;
     }
-    if (f.id != uint16_t(cppgnss::SbfMessageId::MEAS_EPOCH))
+    if (f.protocol != cppgnss::Protocol::sbf ||
+        f.id != uint16_t(cppgnss::SbfMessageId::MEAS_EPOCH))
         return {};
     auto parsed = cppgnss::parse<cppgnss::SBF::MeasEpoch>(f);
     if (!parsed)
@@ -272,6 +273,66 @@ decode_measurement_extras(const cppgnss::FrameView &f) {
         if (v.revision3)
             m.cn0_increment = v.revision3->Misc.CN0HighRes / 32.0;
         e.rows.push_back(m);
+    }
+    return e;
+}
+Measurements
+normalize_rtcm_observations(const cppgnss::RTCM3::ObservationMessage &raw,
+                            int64_t gpst_ms) {
+    constexpr int64_t week_ms = 604800000;
+    if (gpst_ms < 0 || gpst_ms / week_ms >= 65535)
+        throw std::runtime_error(
+            "RTCM observation GPST outside supported range");
+    Measurements e;
+    e.week = static_cast<uint16_t>(gpst_ms / week_ms);
+    e.tow_ms = static_cast<uint32_t>(gpst_ms % week_ms);
+    e.tow_seconds = *e.tow_ms * .001;
+    e.rows.reserve(raw.cells.size());
+    for (const auto &cell : raw.cells) {
+        if (cell.observation_code.empty()) {
+            ++e.unsupported;
+            continue;
+        }
+        Measurement m;
+        m.system = raw.system;
+        m.signal = cell.observation_code;
+        // RINEX J01 is PRN 193; S20 is PRN 120. MSM indices begin at one.
+        m.satellite = cell.satellite_id + (raw.system == 'S' ? 19 : 0);
+        const double frequency = freq(m.system, m.signal);
+        if (!frequency) {
+            ++e.unsupported;
+            continue;
+        }
+        m.code = cell.pseudorange_m.value_or(NAN);
+        m.phase = cell.phase_range_m.value_or(NAN) * frequency / 299792458.0;
+        m.doppler =
+            -cell.phase_range_rate_m_s.value_or(NAN) * frequency / 299792458.0;
+        m.cn0 = cell.cn0_dbhz.value_or(NAN);
+        m.half_ambiguity = cell.half_cycle_ambiguity;
+        // DF417 selects the smoothing type; DF418 zero declares no smoothing.
+        m.code_smoothing_applied = raw.smoothing_interval != 0;
+        const auto indicator = cell.lock_indicator;
+        if (cell.lock_bits == 4 && indicator <= 15) {
+            m.lock_ms = indicator == 0 ? 0 : uint32_t(1) << (indicator + 4);
+            if (indicator == 15)
+                m.lock_lower_bound = true;
+            else
+                m.lock_upper_ms = uint32_t(1) << (indicator + 5);
+        } else if (cell.lock_bits == 10 && indicator <= 704) {
+            const auto lower = [](uint16_t value) -> uint32_t {
+                if (value < 64)
+                    return value;
+                const unsigned group = value / 32 - 1;
+                return uint32_t(value % 32 + 32) << group;
+            };
+            m.lock_ms = lower(indicator);
+            if (indicator == 704)
+                m.lock_lower_bound = true;
+            else
+                m.lock_upper_ms = lower(indicator + 1);
+        }
+        domain(m);
+        e.rows.push_back(std::move(m));
     }
     return e;
 }

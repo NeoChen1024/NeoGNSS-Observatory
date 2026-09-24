@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include <cmath>
+#include <cppgnss/rtcm3.hpp>
 #include <cppgnss/stream.hpp>
 #include <optional>
 #include <string>
@@ -21,6 +22,7 @@ struct Measurement {
     bool half_ambiguity = false;
     std::optional<bool> half_subtracted;
     std::optional<uint32_t> lock_ms;
+    std::optional<uint32_t> lock_upper_ms;
     bool lock_lower_bound = false;
     bool has_extra = false;
     std::optional<bool> code_smoothing_applied;
@@ -45,4 +47,9 @@ std::optional<Measurements> decode_measurements(const cppgnss::FrameView &);
 // MeasExtra rows carry epoch-local channel/signal keys, not satellite identity.
 std::optional<Measurements>
 decode_measurement_extras(const cppgnss::FrameView &);
+// RTCM MSM quantities normalized to RINEX signal units at an explicitly
+// resolved absolute GPST millisecond timestamp. No receiver telemetry fields.
+Measurements
+normalize_rtcm_observations(const cppgnss::RTCM3::ObservationMessage &,
+                            int64_t gpst_ms);
 } // namespace neognss_obs

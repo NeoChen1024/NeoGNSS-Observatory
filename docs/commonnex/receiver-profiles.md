@@ -1,6 +1,6 @@
 # CommonNEX minimal receiver message profiles
 
-Status: v0 design draft with an implemented UBX/SBF importer subset.
+Status: v0 design draft with implemented UBX/SBF and RTCM3 observation subsets.
 
 [Overview](overview.md)
 
@@ -19,7 +19,7 @@ incomplete status under the adapter contract, not guessed completion.
 | --- | --- | --- | --- |
 | UBX | RXM-RAWX, NAV-TIMEGPS, NAV-EOE | RXM-SFRBX | NAV-CLOCK, NAV-PVT, TIM-TP, MON-SYS |
 | SBF | Measurements: MeasEpoch, MeasExtra, EndOfMeas | RawNavBits group plus synchronous receiver navigation time | Clock/pulse/environment/status blocks; decoded navigation if wanted |
-| RTCM3 | MSM7 for each enabled in-scope constellation, resolvable full time context | Not supplied by ordinary decoded ephemeris messages | Applicable broadcast ephemerides for DecodedNav; station descriptors |
+| RTCM3 | MSM4/5/6/7 for each enabled in-scope constellation, explicit full time context | Not supplied by ordinary decoded ephemeris messages | No auxiliary or decoded-navigation import |
 | RINEX | Supported observation records and interpretation metadata | Not reconstructed from decoded NAV | Supported NAV records for DecodedNav |
 
 This is the agreed configuration direction, not a claim that complete
@@ -82,8 +82,8 @@ RTCM3 mapping must resolve the full epoch/date/time-scale context; a partial
 time-of-week alone is not a complete GPST timestamp. The adapter must validate
 MSM multiple-message completion across the relevant station/message sequence,
 not close an epoch merely because one selected constellation was processed.
-Exact message IDs, time anchoring and sequence rules remain mapping review
-items; Core does not invent them.
+The [RTCM3 adapter](rtcm3.md) specifies implemented message IDs, explicit time
+anchoring and sequence rules. Parsed ephemerides are intentionally skipped.
 
 RINEX epochs use their declared time system and record structure. Decode header
 scale factors and applicable event metadata. Nonzero `SYS / PHASE SHIFT`

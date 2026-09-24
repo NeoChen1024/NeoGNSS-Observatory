@@ -53,10 +53,21 @@ def batch_group(sequence, native_batches, *, include_empty=False):
 class CnexStream:
     """Single-owner producer. Drain never finishes a pending measurement epoch."""
 
-    def __init__(self, protocol, setup_id, period_seconds=1, period_ps=0, antenna=0, decode_workers=1, max_bytes=4 * 1024**2):
+    def __init__(
+        self,
+        protocol,
+        setup_id,
+        period_seconds=1,
+        period_ps=0,
+        antenna=0,
+        decode_workers=1,
+        max_bytes=4 * 1024**2,
+        rtcm_reference_gpst_s=None,
+        rtcm_station_id=None,
+    ):
         if max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
-        self.args = (protocol, setup_id, antenna, period_seconds, period_ps, decode_workers)
+        self.args = (protocol, setup_id, antenna, period_seconds, period_ps, decode_workers, rtcm_reference_gpst_s, rtcm_station_id)
         self.reader = _native.CnexObservationReader(*self.args)
         self.max_bytes = max_bytes
         self.sequence = 0
@@ -112,7 +123,7 @@ class CnexStream:
 
     def tail_status(self):
         s = self.reader.summary()
-        return {k: s[k] for k in ("pending_epoch", "pending_frame_bytes", "measextra_pending")}
+        return {k: s[k] for k in ("pending_epoch", "pending_frame_bytes", "measextra_pending", "rtcm_resync") if k in s}
 
     def finish(self):
         if self.closed:
@@ -290,14 +301,20 @@ def tcp_groups(host, port, stream, *, max_latency=5.0, duration=None, buffer_byt
 @click.command()
 @click.option("--host", required=True, help="Receiver TCP hostname or unbracketed IPv6 address.")
 @click.option("--port", type=click.IntRange(1, 65535), default=2006, show_default=True)
-@click.option("-p", "--protocol", type=click.Choice(["ubx", "sbf"]), required=True)
+@click.option("-p", "--protocol", type=click.Choice(["ubx", "sbf", "rtcm3"]), required=True)
+@click.option(
+    "--rtcm-reference-gpst",
+    type=click.IntRange(0, 39635567999),
+    help="Required for RTCM3: explicit GPST seconds since 1980-01-06 within half a week of the first epoch.",
+)
+@click.option("--rtcm-station-id", type=click.IntRange(0, 4095), help="Select one RTCM reference station.")
 @click.option("--setup", "setup_path", type=click.Path(exists=True, path_type=Path), required=True)
 @click.option("--max-latency", type=click.FloatRange(min=0, min_open=True), default=5.0, show_default=True)
 @click.option(
     "--duration", type=click.FloatRange(min=0, min_open=True), help="Stop after this many seconds; otherwise run until interrupted."
 )
 @click.option("--output", type=click.Path(path_type=Path), help="Exclusive-create framed CommonNEX IPC output, not ParquetNEX.")
-def cli(host, port, protocol, setup_path, max_latency, duration, output):
+def cli(host, port, protocol, setup_path, max_latency, duration, output, rtcm_reference_gpst, rtcm_station_id):
     """Normalize a live receiver stream; print machine-readable batch summaries."""
     from contextlib import nullcontext
 
@@ -306,7 +323,14 @@ def cli(host, port, protocol, setup_path, max_latency, duration, output):
     try:
         setup = validate_setup(json.loads(setup_path.read_text()))
         seconds, fraction = setup["epoch_period_s"].split(".")
-        stream = CnexStream(protocol, setup["setup_id"], int(seconds), int(fraction))
+        stream = CnexStream(
+            protocol,
+            setup["setup_id"],
+            int(seconds),
+            int(fraction),
+            rtcm_reference_gpst_s=rtcm_reference_gpst,
+            rtcm_station_id=rtcm_station_id,
+        )
         with output.open("xb") if output else nullcontext() as target:
             for group in tcp_groups(host, port, stream, max_latency=max_latency, duration=duration):
                 if target:

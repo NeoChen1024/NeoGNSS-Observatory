@@ -1,6 +1,6 @@
 # CommonNEX and ParquetNEX v0
 
-Status: v0 specification under review with an implemented UBX/SBF importer and
+Status: v0 specification under review with implemented UBX/SBF and RTCM3 observation import and
 selected downstream consumers. The [importer](importer.md) identifies shipped
 coverage; unchecked design tasks do not imply working adapters or APIs.
 

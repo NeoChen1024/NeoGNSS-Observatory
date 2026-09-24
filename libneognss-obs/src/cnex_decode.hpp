@@ -14,11 +14,34 @@ namespace neognss_obs {
 struct CnexDecodedFrame {
     cppgnss::FrameView frame;
     std::optional<neognss_obs::Measurements> measurements, extras;
+    std::optional<cppgnss::RTCM3::ObservationMessage> rtcm;
+    std::optional<cppgnss::RTCM3::MsmHeader> rtcm_header;
+    uint64_t invalid_frames_before = 0;
     neognss_obs::RawBitsResult bits;
     std::exception_ptr error;
 
     void decode() noexcept {
         try {
+            if (frame.protocol == cppgnss::Protocol::rtcm3) {
+                if (!cppgnss::RTCM3::is_observation_message(frame.id))
+                    return;
+                auto result = cppgnss::RTCM3::parse_observation(frame);
+                if (result) {
+                    rtcm = std::move(result).value();
+                    rtcm_header = *rtcm;
+                } else {
+                    if (frame.id >= 1071 && frame.id <= 1137) {
+                        auto header = cppgnss::RTCM3::parse_msm_header(frame);
+                        if (!header)
+                            throw std::runtime_error(header.error().detail);
+                        rtcm_header = std::move(header).value();
+                    }
+                    if (result.error().code !=
+                        cppgnss::ParseErrorCode::UNSUPPORTED_LAYOUT)
+                        throw std::runtime_error(result.error().detail);
+                }
+                return;
+            }
             measurements = neognss_obs::decode_measurements(frame);
             bits = neognss_obs::decode_raw_bits(frame);
             extras = neognss_obs::decode_measurement_extras(frame);

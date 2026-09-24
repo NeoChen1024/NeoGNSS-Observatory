@@ -51,6 +51,8 @@ archives such as Era A. Nonoverlapping Era B/C inputs need no reconstruction.
 `ngo-cnex-import run -p ubx|sbf` imports observations and multi-GNSS RawBits
 into an initialized single-station ParquetNEX directory. `init` accepts a
 vendor-config companion and optional ANTEX catalogs for the station's antenna.
+`-p rtcm3` imports MSM4-7 observations with an explicit GPST time reference;
+see [RTCM3 coverage and usage](docs/commonnex/rtcm3.md).
 `ngo-sbas-grid-parquet` reads its RawBits and Events to calculate daily GPST
 grid validity intervals; `ngo-sbas-grid-plot` reads those
 daily files to produce experimental hourly VTEC maps without reopening raw recordings.
@@ -100,7 +102,7 @@ optional RINEX converter is built separately.
 
 ### CommonNEX import pilot
 
-`ngo-cnex-import init|run|list` imports UBX RAWX or SBF MeasEpoch into daily
+`ngo-cnex-import init|run|list` imports UBX RAWX, SBF MeasEpoch or RTCM3 MSM4-7 into daily
 Observation, multi-GNSS RawBits and independent measurement/navigation completion
 Events Parquet, using native Arrow batches. Undefined future RawBits representations and the
 remaining Events/quality mappings are not implemented

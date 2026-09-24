@@ -82,16 +82,77 @@ std::optional<int64_t> sbf_navigation_time(const cppgnss::FrameView &f) {
         return {};
     return int64_t(week) * 604800000 + tow;
 }
+cppgnss::Protocol protocol_of(const std::string &protocol) {
+    if (protocol == "ubx")
+        return cppgnss::Protocol::ubx;
+    if (protocol == "sbf")
+        return cppgnss::Protocol::sbf;
+    if (protocol == "rtcm3")
+        return cppgnss::Protocol::rtcm3;
+    throw std::invalid_argument("Expected ubx, sbf or rtcm3");
+}
+struct RtcmContext {
+    static constexpr int64_t week_ms = 604800000;
+    std::optional<int64_t> reference_s, time_ms;
+    std::optional<uint16_t> station_id, active_station;
+    RtcmContext(const std::string &protocol, std::optional<int64_t> reference,
+                std::optional<uint16_t> station)
+        : reference_s(reference), station_id(station) {
+        if (protocol != "rtcm3") {
+            if (reference || station)
+                throw std::invalid_argument(
+                    "RTCM options require rtcm3 protocol");
+            return;
+        }
+        if (!reference || *reference < 0 || *reference >= 65535LL * 604800)
+            throw std::invalid_argument(
+                "RTCM3 requires rtcm_reference_gpst_s in [0, 39635568000)");
+        if (station && *station > 4095)
+            throw std::invalid_argument("RTCM station ID must be in 0..4095");
+    }
+    bool select(uint16_t station) {
+        if (station_id && *station_id != station)
+            return false;
+        if (active_station && *active_station != station)
+            throw std::runtime_error("Multiple RTCM station IDs; select one "
+                                     "rtcm_station_id per Setup");
+        active_station = station;
+        return true;
+    }
+    int64_t resolve(const cppgnss::RTCM3::MsmHeader &message) const {
+        if (message.epoch_ms >= week_ms)
+            throw std::runtime_error("Invalid RTCM millisecond-of-week epoch");
+        // The explicit epoch reference is used only initially. Subsequent
+        // messages use stream context, never the host clock or file name.
+        const int64_t reference = time_ms.value_or(*reference_s * 1000);
+        int64_t tow = message.epoch_ms;
+        if (message.system == 'C')
+            tow += 14000; // GPST = BDT + 14 seconds.
+        tow %= week_ms;
+        int64_t candidate = reference - reference % week_ms + tow;
+        const int64_t difference = candidate - reference;
+        if (difference == week_ms / 2 || difference == -week_ms / 2)
+            throw std::runtime_error(
+                "Ambiguous RTCM week at half-week reference distance");
+        if (difference > week_ms / 2)
+            candidate -= week_ms;
+        else if (difference < -week_ms / 2)
+            candidate += week_ms;
+        if (candidate < 0 || candidate / week_ms >= 65535)
+            throw std::runtime_error(
+                "RTCM observation GPST outside supported range");
+        return candidate;
+    }
+};
 struct Probe {
     cppgnss::StreamDecoder decoder;
+    RtcmContext rtcm;
     std::mutex mutex;
     std::optional<Tick> observation, navigation;
-    explicit Probe(const std::string &protocol)
-        : decoder(protocol == "ubx" ? cppgnss::Protocol::ubx
-                                    : cppgnss::Protocol::sbf) {
-        if (protocol != "ubx" && protocol != "sbf")
-            throw std::invalid_argument("Expected ubx or sbf");
-    }
+    explicit Probe(const std::string &protocol,
+                   std::optional<int64_t> reference,
+                   std::optional<uint16_t> station)
+        : decoder(protocol_of(protocol)), rtcm(protocol, reference, station) {}
     void feed(std::span<const uint8_t> bytes) {
         std::unique_lock lock(mutex, std::try_to_lock);
         if (!lock.owns_lock())
@@ -100,6 +161,15 @@ struct Probe {
             if (observation)
                 return;
             try {
+                if (f.protocol == cppgnss::Protocol::rtcm3) {
+                    if (!cppgnss::RTCM3::is_observation_message(f.id))
+                        return;
+                    auto parsed = cppgnss::RTCM3::parse_observation(f);
+                    if (parsed && rtcm.select(parsed.value().station_id))
+                        observation =
+                            Tick(rtcm.resolve(parsed.value())) * 1000000000;
+                    return;
+                }
                 if (auto e = neognss_obs::decode_measurements(f))
                     observation = time_of(*e);
                 if (!navigation) {
@@ -317,9 +387,13 @@ void append_details(Batch &b,
         auto l = q->children[4];
         if (m.lock_ms) {
             decimal(l->children[0], Tick(*m.lock_ms) * 1000000000);
-            check(ArrowArrayAppendNull(l->children[1], 1));
-            str(l->children[2],
-                m.lock_lower_bound ? "lower_bound" : "reported_value");
+            if (m.lock_upper_ms)
+                decimal(l->children[1], Tick(*m.lock_upper_ms) * 1000000000);
+            else
+                check(ArrowArrayAppendNull(l->children[1], 1));
+            str(l->children[2], m.lock_upper_ms      ? "interval"
+                                : m.lock_lower_bound ? "lower_bound"
+                                                     : "reported_value");
             check(ArrowArrayFinishElement(l));
         } else
             check(ArrowArrayAppendNull(l, 1));
@@ -576,6 +650,7 @@ struct RawOutput {
 };
 struct Reader {
     cppgnss::StreamDecoder decoder;
+    RtcmContext rtcm;
     neognss_obs::CnexDecodePool decode_pool;
     neognss_obs::CnexBuildLane build_lane;
     unsigned decode_workers;
@@ -584,6 +659,11 @@ struct Reader {
     std::optional<neognss_obs::Measurements> pending;
     uint64_t pending_start = 0, epochs = 0, unsupported = 0, untimed = 0,
              incomplete = 0, other_antenna = 0, meas3 = 0;
+    uint64_t rtcm_ignored = 0, rtcm_unsupported = 0, rtcm_excluded = 0,
+             rtcm_other_station = 0, rtcm_seen_invalid = 0;
+    bool rtcm_damaged = false, rtcm_resync = false;
+    size_t rtcm_pending_frames = 0, rtcm_pending_bytes = 0;
+    uint8_t rtcm_pending_issue = 0;
     std::mutex mutex;
     std::map<std::string, Tick> last_times;
     std::string reversal_axis;
@@ -1099,9 +1179,9 @@ struct Reader {
         extras.clear();
     }
     Reader(const std::string &protocol, const std::string &id, unsigned ant,
-           int64_t period_seconds, int64_t period_ps, unsigned workers)
-        : decoder(protocol == "ubx" ? cppgnss::Protocol::ubx
-                                    : cppgnss::Protocol::sbf),
+           int64_t period_seconds, int64_t period_ps, unsigned workers,
+           std::optional<int64_t> reference, std::optional<uint16_t> station)
+        : decoder(protocol_of(protocol)), rtcm(protocol, reference, station),
           decode_pool(workers), build_lane(workers > 1),
           decode_workers(workers), setup_id(id), antenna(ant),
           timeline(Tick(period_seconds) * ps + period_ps) {
@@ -1109,11 +1189,9 @@ struct Reader {
             timeline.period <= 0)
             throw std::invalid_argument("Expected a positive epoch period in "
                                         "exact seconds/picoseconds");
-        if (protocol != "ubx" && protocol != "sbf")
-            throw std::invalid_argument("Expected ubx or sbf");
-        if (protocol == "ubx" && ant != 0)
+        if (protocol != "sbf" && ant != 0)
             throw std::invalid_argument(
-                "RAWX importer supports antenna 0 only");
+                "UBX/RTCM3 importers support antenna 0 only");
     }
     std::array<std::shared_ptr<Batch>, 4>
     feed(std::span<const uint8_t> data, bool finalize_telemetry = false) {
@@ -1173,9 +1251,127 @@ struct Reader {
             completed_observations.push_back({t, std::move(e.rows)});
         };
         auto consume = [&](neognss_obs::CnexDecodedFrame &item) {
+            const auto &f = item.frame;
+            if (f.protocol == cppgnss::Protocol::rtcm3) {
+                if (item.invalid_frames_before != rtcm_seen_invalid)
+                    rtcm_resync = true;
+                rtcm_seen_invalid = item.invalid_frames_before;
+                // A validated common header is sufficient to apply an
+                // explicit station selector before payload-specific errors.
+                // CRC loss remains global because its source is untrusted.
+                if (item.rtcm_header && rtcm.station_id &&
+                    item.rtcm_header->station_id != *rtcm.station_id) {
+                    ++rtcm_other_station;
+                    return;
+                }
+                if (item.error)
+                    std::rethrow_exception(item.error);
+                if (!item.rtcm) {
+                    if ((f.id >= 1081 && f.id <= 1087) ||
+                        (f.id >= 1131 && f.id <= 1137) ||
+                        (f.id >= 1009 && f.id <= 1012))
+                        ++rtcm_excluded;
+                    else if (cppgnss::RTCM3::is_observation_message(f.id))
+                        ++rtcm_unsupported;
+                    else
+                        ++rtcm_ignored;
+                    // Legacy RTK and MSM are independent complete services.
+                    // An omitted legacy record is not a missing MSM fragment.
+                    if (!item.rtcm_header)
+                        return;
+                }
+                const auto &message = *item.rtcm_header;
+                if (!rtcm.select(message.station_id)) {
+                    ++rtcm_other_station;
+                    return;
+                }
+                const auto bound_sequence = [&] {
+                    if (++rtcm_pending_frames > 1024 ||
+                        (rtcm_pending_bytes += f.wire.size()) > 1024 * 1024)
+                        throw std::runtime_error(
+                            "RTCM pending epoch capacity exceeded");
+                };
+                if (message.system == 'R' || message.system == 'I') {
+                    if (pending) {
+                        if (rtcm_pending_issue != message.issue_of_data_station)
+                            throw std::runtime_error(
+                                "Conflicting RTCM station issue within one MSM "
+                                "sequence");
+                        bound_sequence();
+                        // DF393 terminates the same physical measurement
+                        // sequence across GNSS systems. Retain the already
+                        // anchored epoch; no excluded-system time or
+                        // observable is normalized here.
+                        if (!message.multiple_message) {
+                            if (has_measurements &&
+                                (rtcm_damaged || rtcm_resync))
+                                ++incomplete;
+                            else if (has_measurements)
+                                emit(*pending);
+                            pending.reset();
+                            has_measurements = false;
+                        }
+                    }
+                    if (!message.multiple_message)
+                        rtcm_resync = false;
+                    return;
+                }
+                const auto ms = rtcm.resolve(message);
+                const Tick t = Tick(ms) * 1000000000;
+                monotonic(t, "observation", f.offset);
+                rtcm.time_ms = ms;
+                timeline.advance(t);
+                if (!pending || time_of(*pending) != t) {
+                    if (has_measurements)
+                        ++incomplete;
+                    pending = neognss_obs::Measurements{};
+                    pending->week =
+                        static_cast<uint16_t>(ms / RtcmContext::week_ms);
+                    pending->tow_ms =
+                        static_cast<uint32_t>(ms % RtcmContext::week_ms);
+                    pending->tow_seconds = *pending->tow_ms * .001;
+                    pending_start = f.offset;
+                    rtcm_damaged = false;
+                    has_measurements = false;
+                    rtcm_pending_frames = 0;
+                    rtcm_pending_bytes = 0;
+                    rtcm_pending_issue = message.issue_of_data_station;
+                }
+                if (rtcm_pending_issue != message.issue_of_data_station)
+                    throw std::runtime_error("Conflicting RTCM station issue "
+                                             "within one MSM sequence");
+                bound_sequence();
+                if (item.rtcm) {
+                    auto measurements =
+                        neognss_obs::normalize_rtcm_observations(*item.rtcm,
+                                                                 ms);
+                    unsupported += measurements.unsupported;
+                    if (pending->rows.size() + measurements.rows.size() > 16384)
+                        throw std::runtime_error(
+                            "RTCM pending epoch capacity exceeded");
+                    pending->rows.insert(pending->rows.end(),
+                                         measurements.rows.begin(),
+                                         measurements.rows.end());
+                    has_measurements = true;
+                } else {
+                    // MSM1-3 would contribute in-scope observables. Preserve
+                    // their sequence context for replay, but do not announce
+                    // a complete epoch after omitting those quantities.
+                    rtcm_damaged = true;
+                }
+                if (!message.multiple_message) {
+                    if (has_measurements && (rtcm_damaged || rtcm_resync))
+                        ++incomplete;
+                    else if (has_measurements)
+                        emit(*pending);
+                    pending.reset();
+                    has_measurements = false;
+                    rtcm_resync = false;
+                }
+                return;
+            }
             if (item.error)
                 std::rethrow_exception(item.error);
-            const auto &f = item.frame;
             if (f.protocol == cppgnss::Protocol::sbf && f.id >= 4109 &&
                 f.id <= 4113)
                 ++meas3;
@@ -1288,8 +1484,12 @@ struct Reader {
                 const auto length = f.wire.size();
                 f.wire =
                     std::span<const uint8_t>(wire).subspan(offsets[i], length);
-                f.payload = f.wire.subspan(
-                    f.protocol == cppgnss::Protocol::ubx ? 6 : 8, length - 8);
+                if (f.protocol == cppgnss::Protocol::rtcm3)
+                    f.payload = f.wire.subspan(3, length - 6);
+                else
+                    f.payload = f.wire.subspan(
+                        f.protocol == cppgnss::Protocol::ubx ? 6 : 8,
+                        length - 8);
             }
             decode_pool.run(frames);
             for (auto &item : frames)
@@ -1303,6 +1503,7 @@ struct Reader {
         decoder.feed(data, [&](const cppgnss::FrameView &f) {
             if (decode_workers == 1) {
                 neognss_obs::CnexDecodedFrame item{f};
+                item.invalid_frames_before = decoder.invalid;
                 item.decode();
                 consume(item);
                 if (++serial_frames == 2048) {
@@ -1314,10 +1515,17 @@ struct Reader {
             offsets.push_back(wire.size());
             wire.insert(wire.end(), f.wire.begin(), f.wire.end());
             frames.push_back({f});
+            frames.back().invalid_frames_before = decoder.invalid;
             if (frames.size() >= 2048 || wire.size() >= 1024 * 1024)
                 flush();
         });
         flush();
+        if (rtcm.reference_s && decoder.invalid != rtcm_seen_invalid) {
+            // Corruption can end a feed without another frame callback.
+            // Keep recovery state even without a pending timed observation.
+            rtcm_resync = true;
+            rtcm_seen_invalid = decoder.invalid;
+        }
         for (auto &job : builds)
             job.get();
         out->finish();
@@ -1358,6 +1566,17 @@ struct Reader {
         for (const auto &[axis, time] : last_times)
             times[axis.c_str()] = time_parts(time);
         state["last_times"] = times;
+        if (rtcm.reference_s) {
+            state["rtcm_reference_gpst_s"] = *rtcm.reference_s;
+            state["rtcm_station_id"] =
+                rtcm.station_id ? Json(*rtcm.station_id) : Json(nullptr);
+            state["rtcm_active_station_id"] = rtcm.active_station
+                                                  ? Json(*rtcm.active_station)
+                                                  : Json(nullptr);
+            state["rtcm_time_ms"] =
+                rtcm.time_ms ? Json(*rtcm.time_ms) : Json(nullptr);
+            state["rtcm_resync"] = rtcm_resync;
+        }
         auto offset = pending ? pending_start : decoder.pending_offset();
         state["skip_bytes"] = decoder.pending_offset() - offset;
         return state;
@@ -1403,6 +1622,32 @@ struct Reader {
             if (seconds < 0 || fraction < 0 || fraction >= ps)
                 throw std::runtime_error("Invalid checkpoint GPST");
             last_times[axis] = Tick(seconds) * ps + fraction;
+        }
+        if (rtcm.reference_s) {
+            rtcm_resync = state.at("rtcm_resync").get<bool>();
+            const auto selected = state.at("rtcm_station_id");
+            if (state.at("rtcm_reference_gpst_s").get<int64_t>() !=
+                    *rtcm.reference_s ||
+                selected !=
+                    (rtcm.station_id ? Json(*rtcm.station_id) : Json(nullptr)))
+                throw std::runtime_error(
+                    "RTCM checkpoint configuration mismatch");
+            const auto active = state.at("rtcm_active_station_id");
+            if (!active.is_null()) {
+                const auto station = active.get<int64_t>();
+                if (station < 0 || station > 4095 ||
+                    (rtcm.station_id && *rtcm.station_id != station))
+                    throw std::runtime_error("Invalid RTCM checkpoint station");
+                rtcm.active_station = static_cast<uint16_t>(station);
+            }
+            const auto time = state.at("rtcm_time_ms");
+            if (!time.is_null()) {
+                const auto ms = time.get<int64_t>();
+                if (ms < 0 || ms / RtcmContext::week_ms >= 65535 ||
+                    !rtcm.active_station)
+                    throw std::runtime_error("Invalid RTCM checkpoint time");
+                rtcm.time_ms = ms;
+            }
         }
     }
     Json summary() {
@@ -1456,6 +1701,19 @@ struct Reader {
         d["raw_bits_untimed"] = raw_untimed;
         d["raw_bits_unsupported"] = raw_unsupported;
         d["receiver_restarts"] = restarts;
+        d["ignored_rtcm_messages"] = rtcm_ignored;
+        d["unsupported_rtcm_observation_messages"] = rtcm_unsupported;
+        d["excluded_rtcm_observation_messages"] = rtcm_excluded;
+        d["other_rtcm_station_messages"] = rtcm_other_station;
+        if (rtcm.reference_s) {
+            d["rtcm_reference_gpst_s"] = *rtcm.reference_s;
+            d["rtcm_active_station_id"] = rtcm.active_station
+                                              ? Json(*rtcm.active_station)
+                                              : Json(nullptr);
+            d["rtcm_time_ms"] =
+                rtcm.time_ms ? Json(*rtcm.time_ms) : Json(nullptr);
+            d["rtcm_resync"] = rtcm_resync;
+        }
         return d;
     }
 };
@@ -1472,8 +1730,10 @@ struct CnexEngine::Impl : cnex_detail::Reader {
     using Reader::Reader;
 };
 CnexEngine::CnexEngine(const std::string &p, const std::string &id, unsigned a,
-                       int64_t s, int64_t ps, unsigned w)
-    : impl_(std::make_unique<Impl>(p, id, a, s, ps, w)) {}
+                       int64_t s, int64_t ps, unsigned w,
+                       std::optional<int64_t> reference,
+                       std::optional<uint16_t> station)
+    : impl_(std::make_unique<Impl>(p, id, a, s, ps, w, reference, station)) {}
 CnexEngine::~CnexEngine() = default;
 CnexBatches CnexEngine::feed(std::span<const uint8_t> bytes) {
     auto source = impl_->feed(bytes);
@@ -1494,8 +1754,10 @@ void CnexEngine::restore(const nlohmann::json &s) { impl_->restore(s); }
 struct CnexTimeProbe::Impl : cnex_detail::Probe {
     using Probe::Probe;
 };
-CnexTimeProbe::CnexTimeProbe(const std::string &p)
-    : impl_(std::make_unique<Impl>(p)) {}
+CnexTimeProbe::CnexTimeProbe(const std::string &p,
+                             std::optional<int64_t> reference,
+                             std::optional<uint16_t> station)
+    : impl_(std::make_unique<Impl>(p, reference, station)) {}
 CnexTimeProbe::~CnexTimeProbe() = default;
 void CnexTimeProbe::feed(std::span<const uint8_t> b) { impl_->feed(b); }
 nlohmann::json CnexTimeProbe::result() { return impl_->result(); }

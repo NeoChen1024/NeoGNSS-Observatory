@@ -31,8 +31,9 @@ only when they affect present interpretation or processing.
 
 - [Mosaic push](mosaic-push.md): resumable receiver FTP mirroring, verified xz/SHA-512
   archives, optional storage limits and multiple FTPS targets.
-- [CommonNEX importer pilot](commonnex/importer.md): native UBX/SBF observations,
+- [CommonNEX importer pilot](commonnex/importer.md): native UBX/SBF/RTCM3 observations,
   RawBits, receiver telemetry and Events to daily Parquet, tail parts and revisions.
+- [RTCM3 observation adapter](commonnex/rtcm3.md): MSM4-7, explicit GPST week resolution and station selection.
 - [Multi-GNSS STEC and receiver DCB](stec.md): CommonNEX input, incremental phase leveling,
   GIM-constrained absolute estimates and hourly plots.
 - [Receiver antenna calibration](antenna.md): shared PCO/PCV, same-frequency use, bounded interpolation and nearby-frequency substitution.

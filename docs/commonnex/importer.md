@@ -7,10 +7,14 @@ as a lossless replacement for raw archives.
 
 ## Implemented path
 
-- `libcppgnss` decodes RAWX version 1 and MeasEpoch revisions 0/1 without RTKLIB
+- Native decoding and normalization handle RAWX version 1 and MeasEpoch revisions 0/1 without RTKLIB
   filtering, retaining supported GPS, Galileo, BeiDou, QZSS and SBAS signals.
   Unknown mappings are counted rather than assigned a guessed signal; GLONASS
   and NavIC are excluded. See `measurements.cpp` for the explicit current table.
+- [RTCM3 MSM4/5/6/7](rtcm3.md) supplies observations and completion Events for
+  the same five constellations, with explicit GPST reference and station context.
+  Parsed ephemerides and other non-observation messages are skipped. No RTCM3
+  RawBits or telemetry catalog is synthesized.
 - Native processing exchanges owned columnar batches with Python; see the
   [interop contract](../native-architecture.md#selected-commonnex-interop-design).
 - Timestamp normalization produces `DECIMAL(38,12)` timestamps. RAWX's
@@ -73,7 +77,7 @@ UBX uses null for unavailable smoothing state.
 
 Not yet implemented: undefined future RawBits representations, DecodedNav,
 cadence events,
-Meas3 decoding, RINEX/RTCM3 input, and automatic overlap reconciliation.
+Meas3 decoding, RINEX input, legacy RTCM3 observations/MSM1-3, and automatic overlap reconciliation.
 
 STEC maps timed receiver-restart Events to independent phase arcs and receiver
 bias segments; see [STEC restart handling](../stec.md#receiver-restart-events).
@@ -129,6 +133,10 @@ ngo-cnex-import run -p sbf --station data/my-setup first.25_ second.25_
 ngo-cnex-import list data/my-setup
 ```
 
+RTCM3 requires chronological input arguments and `--rtcm-reference-gpst`;
+see [time, station selection and coverage](rtcm3.md). Its weekless timestamps
+cannot support the independent head sorting used for UBX/SBF below.
+
 Use `-r/--recursive` to supply directories (files and directories may be mixed):
 
 ```sh
@@ -136,7 +144,7 @@ ngo-cnex-import run -p sbf -r --station data/my-setup /data/sbf-archive
 ngo-cnex-import run -p ubx -r --station data/another-setup /data/ubx-archive
 ```
 
-Recursive discovery selects `*.ubx` for UBX. SBF basenames must match
+Recursive discovery selects `*.ubx` for UBX and `*.rtcm3` for RTCM3. SBF basenames must match
 `[A-Za-z0-9_]{4}[0-9]{3}[A-Za-z0-9]\.[0-9]{2}_`: four marker characters,
 three DOY digits, one session character, a literal dot, two year digits and
 a final underscore. Examples: `bx4a1600.25_`, `bee_2560.26_`. The session
@@ -166,7 +174,7 @@ be slower than for an expanded file. Corrupt/truncated archives fail rather
 than being treated as a clean end of input. As with other input failures,
 already published daily parts are retained.
 
-The importer orders files from bounded head
+For UBX/SBF, the importer orders files from bounded head
 samples, not filenames. Use one continuous recording path per invocation; do
 not mix overlapping logger copies.
 The importer does not acquire FTP data or require a QA stamp.

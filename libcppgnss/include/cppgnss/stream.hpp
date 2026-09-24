@@ -6,11 +6,11 @@
 #include <vector>
 
 namespace cppgnss {
-enum class Protocol { ubx, sbf };
+enum class Protocol { ubx, sbf, rtcm3 };
 struct FrameView {
     Protocol protocol;
     uint64_t offset;
-    uint16_t id;
+    uint16_t id; // RTCM3 zero-payload link fillers have ID 0.
     uint8_t revision;
     std::span<const uint8_t> wire, payload;
 };
@@ -28,7 +28,7 @@ class StreamDecoder {
     uint64_t pending_offset() const { return offset_; }
     size_t pending_bytes() const { return pending_.size(); }
     uint64_t bytes = 0, frames = 0, invalid = 0, noise = 0;
-    // Valid frames of the other protocol are skipped atomically, not scanned
+    // Valid frames of other protocols are skipped atomically, not scanned
     // as noise. Applications decide how to present these diagnostics.
     uint64_t skipped_protocol_frames = 0, skipped_protocol_bytes = 0;
 
@@ -39,4 +39,6 @@ class StreamDecoder {
     bool failed_ = false;
 };
 uint16_t sbf_crc(std::span<const uint8_t>);
+// CRC-24Q, covering the three-byte RTCM3 header and its payload.
+uint32_t rtcm3_crc(std::span<const uint8_t>);
 } // namespace cppgnss

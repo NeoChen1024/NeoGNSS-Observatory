@@ -4,7 +4,9 @@
 namespace cppgnss {
 std::string dump_raw(const FrameView &frame, const ParseError *error) {
     auto text = std::format("({} id=0x{:04x}, revision={}, length={}",
-                            frame.protocol == Protocol::ubx ? "UBX" : "SBF",
+                            frame.protocol == Protocol::rtcm3 ? "RTCM3"
+                            : frame.protocol == Protocol::ubx ? "UBX"
+                                                              : "SBF",
                             frame.id, frame.revision, frame.wire.size());
     if (error) {
         text += ", decode_error=" + error->detail;
@@ -21,6 +23,8 @@ std::string dump_raw(const FrameView &frame, const ParseError *error) {
     return text + ")\n";
 }
 std::string dump(const FrameView &frame) {
+    if (frame.protocol == Protocol::rtcm3)
+        return dump_raw(frame);
     return frame.protocol == Protocol::ubx ? detail::dump_ubx(frame)
                                            : detail::dump_sbf(frame);
 }

@@ -59,7 +59,7 @@ add_custom_command(
     COMMENT "Generating UBX parsers from the pinned pyubx2 schema"
     VERBATIM)
 add_custom_target(cppgnss_codegen DEPENDS ${generated_sources} ${generated_headers} ${sbf_generated} ${sbf_generated_headers})
-add_library(cppgnss src/parse.cpp src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/stream.cpp
+add_library(cppgnss src/parse.cpp src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/stream.cpp src/rtcm3.cpp
     src/ubx_subframe.cpp ${sbf_generated}
     ${generated_sources} ${generated_headers})
 add_library(cppgnss::cppgnss ALIAS cppgnss)

@@ -1,6 +1,7 @@
 # libcppgnss
 
-C++20 UBX/SBF framing, generated message decoders, message names, and NAV semantic
+C++20 UBX/SBF/RTCM3 framing, generated receiver decoders, RTCM3 observation
+decoding, message names, and NAV semantic
 helpers, maintained in NeoGNSS Observatory. The POSIX logger is an application
 of this library, not its entry point. CommonNEX normalization and satellite
 navigation-bit content decoding belong to `libneognss-obs`, not this library.
@@ -40,8 +41,8 @@ supported. No install/export package or stable ABI is promised in this version.
 
 ## Using the library
 
-`StreamDecoder` selects UBX or SBF explicitly. It validates and skips complete
-frames of the other protocol atomically, exposing skipped frame/byte counters
+`StreamDecoder` selects UBX, SBF or RTCM3 explicitly. It validates and skips complete
+frames of the other protocols atomically, exposing skipped frame/byte counters
 without printing diagnostics. Callers decide how to report these counters.
 Embedded synchronization bytes inside a valid foreign frame are not decoded.
 
@@ -87,7 +88,7 @@ constellation, satellite, signal and frequency-slot identity. It does not decode
 the satellite navigation content. See the [subframe guide](../docs/subframes.md)
 for the Observatory RawBits and SBAS processing layer.
 
-`stream.hpp` provides chunked UBX/SBF framing with checksum validation and
+`stream.hpp` provides chunked UBX/SBF/RTCM3 framing with checksum validation and
 borrowed frame views. `feed()` keeps incomplete frames across calls; call
 `finish()` only at a real end of stream. Reader statistics include invalid
 frames and noise. No implicit transport or terminal output is performed.
@@ -160,6 +161,50 @@ do not maintain a second receiver-payload byte-offset parser. Their remaining
 work is signal identity, units, missing-value interpretation, observation
 reconstruction and navigation-body normalization/integrity checks. RawBits
 navigation checks are distinct from the receiver-frame checksum.
+
+## RTCM3 observations
+
+`<cppgnss/rtcm3.hpp>` exposes `cppgnss::RTCM3::parse_observation(frame)` for
+GPS, Galileo, SBAS, QZSS and BeiDou MSM4, MSM5, MSM6 and MSM7. Select
+`Protocol::rtcm3` in `StreamDecoder` for the three-byte header, 10-bit payload
+length and CRC-24Q validation. Its framing also safely skips validated RTCM3
+messages while reading UBX or SBF.
+Reserved RTCM3 header bits are ignored on reception. A valid zero-payload link
+filler is emitted with message ID 0 and an empty payload; a one-byte payload
+cannot contain a message ID and is counted as invalid, then skipped atomically.
+
+The result retains reference station ID, native integer epoch milliseconds,
+multiple-message and issue-of-data indicators, and every active cell. Cell
+satellite/signal IDs retain their MSM mask numbering; the separate
+`observation_code` contains the RINEX two-character signal identity. Unknown
+or tentative signal assignments have an empty code, without dropping their
+decoded cell. Supported identities match the standard tables also implemented
+by [pyrtcm](https://github.com/semuconsulting/pyrtcm/blob/master/src/pyrtcm/rtcmtables.py),
+excluding tentative receiver extensions in the pinned RTKLIB tables.
+
+Pseudorange and phase range are metres; phase range rate is metres per second;
+C/N0 is dB-Hz. Invalid field sentinels and unavailable C/N0 remain null. MSM4/6
+do not supply a rate. Lock indicators retain their wire value and bit width;
+half-cycle ambiguity is separate. Converting phase to cycles or range rate to
+Doppler, interpreting lock continuity, normalizing satellite IDs, assigning
+the full week and converting BeiDou time to GPST belong to the caller.
+
+The parser validates all mask-defined field bounds and the standard
+`Nsat * Nsig <= 64` matrix limit. It ignores unexpected trailing data as required
+for MSM forward compatibility; `ParseResult::consumed()` reports the rounded
+byte length of the decoded layout, and the frame CRC still covers all bytes.
+See the common MSM rules in sections 6.5.15.4.4–6.5.15.4.5 of
+[BD 410003A-2022](https://m.beidou.gov.cn/zt/bdbz/202407/W020240718511922437593.pdf).
+
+Legacy observations, MSM1–3, GLONASS and NavIC observations return an explicit
+unsupported-layout error. `is_observation_message(id)` distinguishes those
+messages from non-observation RTCM data. `parse_msm_header(frame)` validates
+only the common MSM header/masks for all MSM1–7 constellation families, so a
+caller can track sequence boundaries while skipping unsupported contributions;
+it does not validate their observation payload. No RTCM ephemeris, SSR, station
+position, RawBits or receiver telemetry decoder is included.
+
+## Receiver protocol supplements
 
 Local codegen supplements preserve protocol details needed by these adapters:
 

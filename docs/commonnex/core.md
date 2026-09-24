@@ -1,6 +1,6 @@
 # CommonNEX Core
 
-Status: selected v0 design with an implemented UBX/SBF subset; see [importer](importer.md).
+Status: selected v0 design with implemented UBX/SBF and RTCM3 observation subsets; see [importer](importer.md).
 
 [Overview](overview.md)
 

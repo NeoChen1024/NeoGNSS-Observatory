@@ -16,7 +16,8 @@ infer the source time scale from the constellation of each observation:
 | SBF MeasEpoch | GPS-aligned WNc plus integer millisecond TOW, converted exactly |
 | UBX RawBits anchor | Valid NAV-TIMEGPS week/iTOW/fTOW, preserving the full reported precision; no requirement that SFRBX precede EOE |
 | SBF RawBits anchor | Valid synchronous navigation block WNc/TOW; never RawNavBits SIS timestamp |
-| Future RINEX/RTCM3 adapters | Resolve declared scale, full date/week and any required leap-second context explicitly; not implemented by CommonNEX import yet |
+| RTCM3 MSM4/5/6/7 | Explicit GPST reference resolves weekless integer-millisecond epochs; BeiDou BDT adds 14 seconds; see [RTCM3](commonnex/rtcm3.md) |
+| Future RINEX adapter | Resolve declared scale, full date/week and any required leap-second context explicitly; not implemented by CommonNEX import yet |
 
 The GPS-only RINEX processing restriction below describes the existing solver
 input paths, not a finished general CommonNEX RINEX time-conversion adapter.

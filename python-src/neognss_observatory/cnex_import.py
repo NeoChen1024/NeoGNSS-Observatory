@@ -78,7 +78,11 @@ def discover_inputs(inputs, protocol, recursive):
                 names = set(files)
                 for name in sorted(files):
                     plain = name.removesuffix(".xz")
-                    matches = plain.endswith(".ubx") if protocol == "ubx" else SBF_FILENAME.fullmatch(plain)
+                    matches = (
+                        plain.endswith(".rtcm3")
+                        if protocol == "rtcm3"
+                        else plain.endswith(".ubx") if protocol == "ubx" else SBF_FILENAME.fullmatch(plain)
+                    )
                     if matches and name.endswith(".xz") and plain in names:
                         click.echo(f"Skipping XZ copy beside expanded input: {Path(directory) / name}", err=True)
                         continue
@@ -105,6 +109,15 @@ def gpst_text(parts):
 
 def ordered_inputs(paths, protocol):
     """Stable sort by a bounded head probe, without sharing decoder state."""
+    if protocol == "rtcm3":
+        # Independent head probes cannot distinguish recordings from different
+        # weeks. Only the caller's declared continuous order resolves rollover.
+        click.echo("RTCM3 input order (caller-supplied chronology; no absolute week in messages):", err=True)
+        result = []
+        for path in paths:
+            click.echo(f"  {path}", err=True)
+            result.append((path, 0, input_size(path)))
+        return result
     found = []
     for path in tqdm(paths, desc="Probe input heads", unit="file", file=sys.stderr):
         stored_size = path.stat().st_size
@@ -233,7 +246,7 @@ def write_json(path, value):
 
 @click.group()
 def cli():
-    """Import local UBX/SBF observations and canonical RawBits into ParquetNEX."""
+    """Import UBX/SBF observations and RawBits, or RTCM3 observations, into ParquetNEX."""
 
 
 @cli.command("init")
@@ -321,10 +334,20 @@ def list_parts(station):
     "--recursive",
     "-r",
     is_flag=True,
-    help="Recursively discover *.ubx or SBF marker+DOY+session.YY_ files, including .xz; prefer expanded sibling copies.",
+    help="Discover *.ubx, *.rtcm3 or SBF marker+DOY+session.YY_ files, including .xz; prefer expanded sibling copies.",
 )
 @click.option("--station", required=True, type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.option("--protocol", "-p", type=click.Choice(["ubx", "sbf"]), default="ubx", show_default=True)
+@click.option("--protocol", "-p", type=click.Choice(["ubx", "sbf", "rtcm3"]), default="ubx", show_default=True)
+@click.option(
+    "--rtcm-reference-gpst",
+    type=click.IntRange(0, 39635567999),
+    help="Required for RTCM3: GPST seconds since 1980-01-06, within half a week of the first epoch; never Unix/UTC.",
+)
+@click.option(
+    "--rtcm-station-id",
+    type=click.IntRange(0, 4095),
+    help="RTCM reference-station selector; otherwise bind the first station and reject a change.",
+)
 @click.option("--rebuild", is_flag=True, help="Replace affected daily catalogs with a new complete revision.")
 @click.option(
     "--resume-from",
@@ -351,8 +374,22 @@ def list_parts(station):
     is_flag=True,
     help="Declare a true stream end and emit incomplete telemetry tails; otherwise retain them for continuation.",
 )
-def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_workers, source_antenna, recursive, finalize_telemetry):
-    """Head-probe and time-sort INPUTS, then import one continuous recording path.
+def run(
+    inputs,
+    station,
+    protocol,
+    rebuild,
+    resume_from,
+    chunk_mib,
+    decode_workers,
+    source_antenna,
+    recursive,
+    finalize_telemetry,
+    rtcm_reference_gpst,
+    rtcm_station_id,
+):
+    """Import one continuous recording path. RTCM3 requires chronological INPUTS;
+    other protocols are head-probed and time-sorted.
 
     Catalogs: observations (including MeasExtra/smoothing state), raw-bits,
     completion/restart events and unified receiver telemetry,
@@ -367,6 +404,13 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
     tail_limits = {}
     stage = None
     try:
+        if protocol == "rtcm3":
+            if rtcm_reference_gpst is None:
+                raise ValueError("RTCM3 requires --rtcm-reference-gpst; messages do not supply an absolute week")
+            if source_antenna:
+                raise ValueError("RTCM3 requires --source-antenna 0; use --rtcm-station-id to select the source station")
+        elif rtcm_reference_gpst is not None or rtcm_station_id is not None:
+            raise ValueError("RTCM time/station options require --protocol rtcm3")
         station = station.resolve()
         setup = validate_setup(json.loads((station / "setup.json").read_text(encoding="utf-8")))
         if any(p.is_dir() for p in station.glob("[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]")):
@@ -396,6 +440,8 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                 or state["source_antenna"] != source_antenna
                 or state["setup_id"] != setup["setup_id"]
                 or state.get("epoch_period_s") != setup["epoch_period_s"]
+                or state.get("rtcm_reference_gpst_s") != rtcm_reference_gpst
+                or state.get("rtcm_station_id") != rtcm_station_id
                 or state.get("continued")
             ):
                 raise ValueError("Incompatible or already consumed continuation state")
@@ -433,7 +479,14 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
             raise ValueError("epoch_period_s exceeds native importer range")
         period_ps = int(fraction_text)
         reader = _native.CnexObservationReader(
-            protocol, setup["setup_id"], source_antenna, period_seconds, period_ps, decode_workers
+            protocol,
+            setup["setup_id"],
+            source_antenna,
+            period_seconds,
+            period_ps,
+            decode_workers,
+            rtcm_reference_gpst,
+            rtcm_station_id,
         )
         if state:
             reader.restore(state["navigation_context"])
@@ -543,6 +596,8 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                 "setup_id": setup["setup_id"],
                 "source_antenna": source_antenna,
                 "epoch_period_s": setup["epoch_period_s"],
+                "rtcm_reference_gpst_s": rtcm_reference_gpst,
+                "rtcm_station_id": rtcm_station_id,
                 "published_files": published.copy(),
                 "tail_inputs": snapshot["tail"],
                 "inputs": snapshot["inputs"],
@@ -607,7 +662,11 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
         warned_foreign = False
         total = sum(size - start for _, start, size in segments)
         click.echo(
-            "Importing observations, RawBits, events and receiver clock/status/pulse telemetry.",
+            (
+                "Importing RTCM3 MSM4-7 observations and completion events; other message families are skipped."
+                if protocol == "rtcm3"
+                else "Importing observations, RawBits, events and receiver clock/status/pulse telemetry."
+            ),
             err=True,
         )
         # Bound outstanding work, including the active write, to two input
@@ -702,6 +761,8 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
             click.echo("Warning: incomplete frames/groups withheld; inspect summary and continuation state", err=True)
         if summary["unsupported_signals"] or summary["untimed_epochs"] or summary["invalid_frames"]:
             click.echo("Warning: unsupported/untimed/invalid input was encountered; inspect summary", err=True)
+        if summary.get("unsupported_rtcm_observation_messages"):
+            click.echo("Warning: unsupported RTCM3 observation messages were omitted; inspect counts", err=True)
         if summary["measextra_unmatched"] or summary["measextra_ambiguous"] or summary["measextra_unsupported"]:
             click.echo("Warning: some MeasExtra records could not be associated; inspect summary", err=True)
         if summary["raw_bits_untimed"] or summary["raw_bits_unsupported"]:
