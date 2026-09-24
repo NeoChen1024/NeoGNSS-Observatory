@@ -67,9 +67,9 @@ template <class T> class ParseResult {
     }
 };
 template <class T> ParseResult<T> parse(const FrameView &frame) {
-    if (frame.protocol != T::protocol)
+    if (frame.protocol() != T::protocol)
         return ParseError{ParseErrorCode::WRONG_PROTOCOL, {}, "Wrong protocol"};
-    if (frame.id != static_cast<uint16_t>(T::message_id))
+    if (!T::matches(frame))
         return ParseError{
             ParseErrorCode::WRONG_MESSAGE, {}, "Wrong message ID"};
     return T::decode_payload(frame);
@@ -82,11 +82,11 @@ std::string dump_parsed(const FrameView &frame, const ParseResult<T> &result) {
     if (!result)
         return dump_raw(frame, &result.error());
     auto text = result.value().dump();
-    if (frame.protocol == Protocol::sbf ||
+    if (frame.protocol() == Protocol::sbf ||
         result.consumed() < frame.payload.size()) {
         text.resize(text.size() - 2);
-        if (frame.protocol == Protocol::sbf)
-            text += ", revision=" + std::to_string(frame.revision);
+        if (frame.protocol() == Protocol::sbf)
+            text += ", revision=" + std::to_string(frame.revision());
         if (result.consumed() < frame.payload.size()) {
             text += ", trailing=hex:";
             constexpr char digits[] = "0123456789abcdef";
@@ -101,5 +101,7 @@ std::string dump_parsed(const FrameView &frame, const ParseResult<T> &result) {
 }
 std::string dump_ubx(const FrameView &);
 std::string dump_sbf(const FrameView &);
+std::string dump_rtcm3(const FrameView &);
+std::string dump_nmea(const FrameView &);
 } // namespace detail
 } // namespace cppgnss

@@ -164,11 +164,11 @@ hash chains are not generated.
 
 ## Native libraries
 
-[`libcppgnss/`](libcppgnss/README.md) contains the maintained C++20 UBX
-and SBF protocol library and the maintained logger as `examples/gnsslogger.cpp`.
-CMake exposes `cppgnss::cppgnss`; codegen covers UBX and all available pinned
-`contrib/pysbf2` block definitions. The generic library has no Python runtime
-dependency. SBAS L1 decoding accepts receiver-independent air-frame bits.
+[`libcppgnss/`](libcppgnss/README.md) contains the C++20 UBX/SBF/RTCM3/NMEA
+protocol library and `examples/gnsslogger.cpp`. CMake exposes
+`cppgnss::cppgnss`; pinned upstream schemas generate typed message APIs.
+The library supports mixed-protocol framing without a Python runtime dependency.
+See its README for coverage and native field interpretation.
 
 [`libneognss-obs/`](libneognss-obs/README.md) contains Observatory-specific
 archive segmentation, clock reconstruction and SBAS grid state. Its pybind11
@@ -191,6 +191,8 @@ input traversal is recursive by default.
 
 The maintained `neognsslogger` supports UBX/SBF (`-p ubx|sbf`), file/stdin input
 and TCP with reconnection.
+RTCM3, NMEA and mixed-protocol inspection are available with `-n -d`; they do
+not yet have a recording/rotation policy.
 Both logger and reconstruction outputs use
 `GPST-%Y-%m-%d--%H-%M-%S-mmm.ubx`, with exactly three millisecond digits;
 SBF logger recordings use `.sbf` instead.

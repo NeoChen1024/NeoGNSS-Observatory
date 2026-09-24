@@ -192,7 +192,7 @@ navigation_page(const cppgnss::FrameView &frame) {
 }
 std::optional<cppgnss::ParseResult<NavigationPage>>
 navigation_page(const cppgnss::FrameView &frame) {
-    switch (frame.id) {
+    switch (frame.id()) {
     case uint16_t(cppgnss::SBF::GPSRawCA::message_id):
         return navigation_page<cppgnss::SBF::GPSRawCA>(frame);
     case uint16_t(cppgnss::SBF::GPSRawL2C::message_id):
@@ -242,16 +242,19 @@ navigation_page(const cppgnss::FrameView &frame) {
     }
 }
 RawBitsResult decode(const cppgnss::FrameView &f) {
+    if (f.protocol() != cppgnss::Protocol::ubx &&
+        f.protocol() != cppgnss::Protocol::sbf)
+        return {};
     RawBits r;
     Bits b;
     size_t length = 0;
     unsigned width = 32;
-    bool sbf = f.protocol == cppgnss::Protocol::sbf;
+    bool sbf = f.protocol() == cppgnss::Protocol::sbf;
     std::vector<uint8_t> navigation_bytes;
     std::vector<uint32_t> navigation_words;
     uint8_t source = 0, crc1 = 0, crc2 = 0;
     if (sbf) {
-        if (f.id == 4026 || f.id == 4093)
+        if (f.id() == 4026 || f.id() == 4093)
             return {RawBitsStatus::excluded, {}};
         auto parsed = navigation_page(f);
         if (!parsed)
@@ -267,7 +270,7 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         crc1 = page.crc1;
         crc2 = page.crc2;
         r.receiver_channel = page.channel;
-        switch (f.id) {
+        switch (f.id()) {
         case 4018:
         case 4019:
         case 4020:
@@ -289,8 +292,9 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         }
         // Source is a full byte in modern blocks, a five-bit signal plus
         // flags in legacy blocks, and a block-specific enum for L6.
-        unsigned sig =
-            f.id <= 4024 || f.id == 4067 || f.id == 4068 ? source & 31 : source;
+        unsigned sig = f.id() <= 4024 || f.id() == 4067 || f.id() == 4068
+                           ? source & 31
+                           : source;
         static const std::map<uint16_t, std::vector<unsigned>> allowed{
             {4017, {0}},      {4018, {3}},  {4019, {4}},
             {4020, {24}},     {4021, {25}}, {4022, {20}},
@@ -300,7 +304,7 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
             {4221, {5}},      {4227, {32}}, {4228, {33}},
             {4246, {39}},     {4270, {1}},  {4271, {2}},
             {4069, {0, 1, 2}}};
-        if (auto it = allowed.find(f.id);
+        if (auto it = allowed.find(f.id());
             it != allowed.end() &&
             std::find(it->second.begin(), it->second.end(), sig) ==
                 it->second.end())
@@ -330,7 +334,7 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
             r.satellite = sv + 12;
         } else
             return {RawBitsStatus::unsupported, {}};
-        switch (f.id) {
+        switch (f.id()) {
         case 4017:
             r.family = "GPS_LNAV";
             r.signals = {"GPS_L1_CA"};
@@ -424,8 +428,8 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         case 4270:
         case 4271:
             r.family = "QZS_L6_UNCLASSIFIED";
-            if (f.id != 4069)
-                r.signals = {f.id == 4270 ? "QZS_L6D" : "QZS_L6E"};
+            if (f.id() != 4069)
+                r.signals = {f.id() == 4270 ? "QZS_L6D" : "QZS_L6E"};
             else if (source != 0)
                 r.signals = {source == 1 ? "QZS_L6D" : "QZS_L6E"};
             break;
@@ -433,7 +437,7 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         navigation_bytes = std::move(page.bits);
         b = unpack(navigation_bytes, width);
     } else {
-        if (f.id != 0x0213)
+        if (f.id() != 0x0213)
             return {};
         auto parsed = UBX::parse_subframe(f);
         if (!parsed.subframe)

@@ -116,7 +116,7 @@ int main() {
     using namespace UBX;
     static_assert(sizeof(_ubx_schema_test) == 23);
     std::vector<uint8_t> payload(23);
-    cppgnss::FrameView frame{cppgnss::Protocol::ubx, 0, 0x05fe, 0, {}, payload};
+    cppgnss::FrameView frame{cppgnss::UbxHeader{0x05fe}, 0, {}, payload};
     // Second record, third point: offset 1 + 10 + 1 + 2*3 = 18.
     payload[18] = 0xfe;
     payload[19] = 0xff;

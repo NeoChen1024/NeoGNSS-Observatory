@@ -24,12 +24,11 @@ static ubx_frame make_frame(uint8_t class_id, uint8_t msg_id,
 
 template <class T>
 static cppgnss::ParseResult<T> parse_frame(const ubx_frame &frame) {
-    return cppgnss::parse<T>({cppgnss::Protocol::ubx,
-                              0,
-                              uint16_t((frame.class_id << 8) | frame.msg_id),
-                              0,
-                              {},
-                              frame.payload});
+    return cppgnss::parse<T>(
+        {cppgnss::UbxHeader{uint16_t((frame.class_id << 8) | frame.msg_id)},
+         0,
+         {},
+         frame.payload});
 }
 
 template <UbxScalar T>

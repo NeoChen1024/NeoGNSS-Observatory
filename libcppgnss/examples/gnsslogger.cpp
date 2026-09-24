@@ -95,11 +95,13 @@ static std::optional<int64_t> sbf_time(std::span<const uint8_t> p) {
 static void usage(const char *name) {
     fprintf(
         stderr,
-        "Usage: %s [-p ubx|sbf] [-f FILE | -t HOST:PORT] [-n] [-d | -q] "
+        "Usage: %s [-p PROTOCOL] [-f FILE | -t HOST:PORT] [-n] [-d | -q] "
         "[--expected-period-ms 1000] [--epoch-tolerance-percent 20] "
         "[--expected-measurement-period-ms N] [--expect-nav-clock] "
         "[--disk-buffer-mib N] [OUTPUT_DIR]\n\n"
-        "  -p, --protocol ubx|sbf  Input protocol (default: ubx)\n"
+        "  -p, --protocol ubx|sbf|rtcm3|nmea|mixed (default: ubx)\n"
+        "                        rtcm3/nmea/mixed require -n (inspection "
+        "only)\n"
         "  -f FILE                Read file (default input: stdin)\n"
         "  -t HOST:PORT           Read TCP (default: disabled; timeout 5 s, "
         "reconnect 2 s)\n"
@@ -123,6 +125,7 @@ static void usage(const char *name) {
 int main(int argc, char **argv) try {
     bool debug = false, no_write = false, quiet = false;
     Protocol protocol = Protocol::ubx;
+    bool mixed = false;
     const char *input = nullptr;
     std::string host;
     int port = 0;
@@ -145,12 +148,17 @@ int main(int argc, char **argv) try {
            -1) {
         switch (option) {
         case 'p':
+            mixed = std::string_view(optarg) == "mixed";
             if (std::string_view(optarg) == "ubx")
                 protocol = Protocol::ubx;
             else if (std::string_view(optarg) == "sbf")
                 protocol = Protocol::sbf;
+            else if (std::string_view(optarg) == "rtcm3")
+                protocol = Protocol::rtcm3;
+            else if (std::string_view(optarg) == "nmea" || mixed)
+                protocol = Protocol::nmea;
             else
-                fail("Expected protocol ubx or sbf");
+                fail("Expected protocol ubx, sbf, rtcm3, nmea or mixed");
             break;
         case 'f':
             input = optarg;
@@ -211,6 +219,10 @@ int main(int argc, char **argv) try {
         fail("Only one OUTPUT_DIR is allowed");
     if (argc > optind)
         root = argv[optind];
+    if (!no_write &&
+        (mixed || protocol == Protocol::rtcm3 || protocol == Protocol::nmea))
+        fail("RTCM3/NMEA/mixed recording has no rotation policy; use -n to "
+             "inspect");
     if (protocol == Protocol::sbf && navigation.expect_clock)
         fail("--expect-nav-clock is UBX-only");
     if (protocol == Protocol::ubx && measurement_period)
@@ -263,13 +275,19 @@ int main(int argc, char **argv) try {
     auto consume = [&](const FrameView &f) {
         ++stats.frames;
         stats.bytes += f.wire.size();
+        if (mixed || protocol == Protocol::rtcm3 ||
+            protocol == Protocol::nmea) {
+            if (debug)
+                fputs(cppgnss::dump(f).c_str(), stderr);
+            return;
+        }
         if (!no_write) {
             if (pending.size() + f.wire.size() > 64 * 1024 * 1024)
                 fail("Missing epoch boundary: buffer exceeds 64 MiB");
             pending.insert(pending.end(), f.wire.begin(), f.wire.end());
         }
         if (protocol == Protocol::sbf) {
-            const auto id = static_cast<cppgnss::SbfMessageId>(f.id);
+            const auto id = static_cast<cppgnss::SbfMessageId>(f.id());
             using enum cppgnss::SbfMessageId;
             if (debug)
                 fputs(cppgnss::dump(f).c_str(), stderr);
@@ -309,7 +327,7 @@ int main(int argc, char **argv) try {
             }
             return;
         }
-        const auto id = static_cast<cppgnss::UbxMessageId>(f.id);
+        const auto id = static_cast<cppgnss::UbxMessageId>(f.id());
         using enum cppgnss::UbxMessageId;
         if (debug)
             fputs(cppgnss::dump(f).c_str(), stderr);
@@ -357,13 +375,18 @@ int main(int argc, char **argv) try {
             record(*timegps);
         }
     };
-    cppgnss::StreamDecoder decoder(protocol);
+    auto make_decoder = [&] {
+        return mixed ? cppgnss::StreamDecoder({Protocol::ubx, Protocol::sbf,
+                                               Protocol::rtcm3, Protocol::nmea})
+                     : cppgnss::StreamDecoder(protocol);
+    };
+    auto decoder = make_decoder();
     auto discard = [&] {
         fprintf(stderr,
                 "\n[logger qc] transport_break discarded_frame_bytes=%zu "
                 "discarded_epoch_bytes=%zu\n",
                 decoder.pending_bytes(), pending.size());
-        decoder = cppgnss::StreamDecoder(protocol);
+        decoder = make_decoder();
         pending.clear();
         timegps.reset();
         meas_epoch.reset();

@@ -6,8 +6,8 @@ Schema order is significant. Nested groups, bitfields, conditional groups and
 sub-block length padding remain structural rather than flattened byte offsets.
 """
 
-import json
 import copy
+import json
 import re
 import sys
 import types
@@ -133,7 +133,7 @@ class Parser:
 
     def ref(self, name, env):
         if name == "__revision":
-            return "frame.revision"
+            return "frame.revision()"
         parts = name.split("+")
         depth = int(parts[1]) if len(parts) > 1 else 0
         expression = env[(parts[0], depth)]
@@ -177,7 +177,7 @@ class Parser:
                     if repeat == "RLMLength":
                         count = f"({count} == 160 ? 5 : 3)"
                     if self.message == "MeasExtra" and name == "group":
-                        count = "detail::measextra_count(frame.payload.size(), message.N, message.SBLength, frame.revision)"
+                        count = "detail::measextra_count(frame.payload.size(), message.N, message.SBLength, frame.revision())"
                     self.add(f"auto count{unique} = cursor.count({count});")
                     if self.message in ("MeasEpoch", "MeasExtra"):
                         # MeasEpoch counters are uint8; MeasExtra is bounded
@@ -263,7 +263,7 @@ def generate_group(group, blocks, ids):
     descriptors = []
     for name, definition in blocks.items():
         header += [
-            f"struct {name} {{\nstatic constexpr auto protocol = Protocol::sbf;\nstatic constexpr auto message_id = SbfMessageId::{enum_name(name)};\nstatic constexpr std::string_view message_name = {json.dumps(name)};\n{members(definition)}\nstd::string dump() const;\nstatic ParseResult<{name}> decode_payload(const FrameView &frame);\n}};",
+            f"struct {name} {{\nstatic constexpr auto protocol = Protocol::sbf;\nstatic constexpr auto message_id = SbfMessageId::{enum_name(name)};\nstatic constexpr std::string_view message_name = {json.dumps(name)};\nstatic bool matches(const FrameView &frame) {{ return frame.id() == static_cast<uint16_t>(message_id); }}\n{members(definition)}\nstd::string dump() const;\nstatic ParseResult<{name}> decode_payload(const FrameView &frame);\n}};",
         ]
         parser = Parser(name)
         parser.sequence(definition, "message", {})
@@ -273,7 +273,7 @@ def generate_group(group, blocks, ids):
             []
             if maximum_revision is None
             else [
-                f'if (frame.revision > {maximum_revision}) return ParseError{{ParseErrorCode::UNSUPPORTED_REVISION, {{}}, "Unsupported {name} revision"}};'
+                f'if (frame.revision() > {maximum_revision}) return ParseError{{ParseErrorCode::UNSUPPORTED_REVISION, {{}}, "Unsupported {name} revision"}};'
             ]
         )
         source += [
@@ -369,12 +369,12 @@ def cli(output_dir):
     ]
     for name in seen:
         dispatch.append(
-            f"case {ids[name]}: return detail::info(id,revision,{json.dumps(name)},parse<{name}>(FrameView{{Protocol::sbf,0,id,revision,{{}},payload}}));"
+            f"case {ids[name]}: return detail::info(id,revision,{json.dumps(name)},parse<{name}>(FrameView{{SbfHeader{{id,revision}},0,{{}},payload}}));"
         )
     dispatch += [
         'default: return {id,revision,"",Status::unknown_block,0,{},std::nullopt,std::nullopt}; } }',
         "}",
-        "namespace cppgnss::detail { std::string dump_sbf(const FrameView &frame) { switch(frame.id) {",
+        "namespace cppgnss::detail { std::string dump_sbf(const FrameView &frame) { switch(frame.id()) {",
     ]
     for name in seen:
         dispatch.append(f"case {ids[name]}: {{ auto result = parse<SBF::{name}>(frame); return dump_parsed(frame, result); }}")

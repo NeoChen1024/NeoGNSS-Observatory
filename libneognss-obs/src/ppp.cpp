@@ -24,8 +24,8 @@ ObservationReader::ObservationReader(const std::string &p)
 ObservationBatch ObservationReader::feed(std::span<const uint8_t> bytes) {
     ObservationBatch batch;
     reader_.feed(bytes, [&](const cppgnss::FrameView &f) {
-        if (f.protocol == cppgnss::Protocol::sbf && f.id >= 4109 &&
-            f.id <= 4113)
+        if (f.protocol() == cppgnss::Protocol::sbf && f.id() >= 4109 &&
+            f.id() <= 4113)
             ++meas3_;
         auto e = neognss_obs::decode_gps_observations(f);
         if (e) {

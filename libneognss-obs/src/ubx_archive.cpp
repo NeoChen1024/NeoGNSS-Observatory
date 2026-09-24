@@ -95,7 +95,7 @@ void EpochAssembler::accept(
     const std::function<void(const ArchiveEpoch &)> &emit,
     const std::function<void()> &on_frame) {
     const auto p = frame.payload;
-    const uint8_t cls = frame.id >> 8, id = frame.id & 255;
+    const uint8_t cls = frame.id() >> 8, id = frame.id() & 255;
     const auto pos = frame.offset;
     const auto length = frame.wire.size();
     const int64_t raw_nav_tow = cls == 1 ? nav_tow(id, p) : -1;
@@ -222,11 +222,10 @@ void scan_archive(std::span<const uint8_t> b,
             lost.flags = archive_noise;
             emit(lost);
         }
-        assembler.accept({cppgnss::Protocol::ubx, pos,
-                          uint16_t((b[pos + 2] << 8) | b[pos + 3]), 0,
-                          b.subspan(pos, length),
-                          b.subspan(pos + 6, length - 8)},
-                         emit);
+        assembler.accept(
+            {cppgnss::UbxHeader{uint16_t((b[pos + 2] << 8) | b[pos + 3])}, pos,
+             b.subspan(pos, length), b.subspan(pos + 6, length - 8)},
+            emit);
         pos += length;
         noise = pos;
     }

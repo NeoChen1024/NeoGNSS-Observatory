@@ -112,11 +112,11 @@ struct RxMessageRatio {
     std::map<uint16_t, Counts> counts;
     void feed(std::span<const uint8_t> data) {
         reader.feed(data, [&](const cppgnss::FrameView &f) {
-            auto &c = counts[f.id];
+            auto &c = counts[f.id()];
             ++c.frames;
             c.bytes += f.wire.size();
             if (sbf)
-                ++c.revisions[f.revision];
+                ++c.revisions[f.revision()];
         });
     }
     Json summary() const {

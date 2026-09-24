@@ -61,7 +61,7 @@ Json time_parts(Tick time) {
     return Json::array({int64_t(time / ps), int64_t(time % ps)});
 }
 std::optional<int64_t> timegps(const cppgnss::FrameView &f) {
-    if (f.protocol != cppgnss::Protocol::ubx || f.id != 0x0120 ||
+    if (f.protocol() != cppgnss::Protocol::ubx || f.id() != 0x0120 ||
         f.payload.size() != 16)
         return {};
     auto tow = UBX::read_le<uint32_t>(f.payload, 0);
@@ -72,8 +72,9 @@ std::optional<int64_t> timegps(const cppgnss::FrameView &f) {
 }
 // Synchronous navigation blocks only: RawNavBits headers carry SIS time.
 std::optional<int64_t> sbf_navigation_time(const cppgnss::FrameView &f) {
-    if (f.protocol != cppgnss::Protocol::sbf ||
-        (f.id != 4006 && f.id != 4007 && f.id != 5914 && f.id != 5921) ||
+    if (f.protocol() != cppgnss::Protocol::sbf ||
+        (f.id() != 4006 && f.id() != 4007 && f.id() != 5914 &&
+         f.id() != 5921) ||
         f.payload.size() < 6)
         return {};
     auto tow = UBX::read_le<uint32_t>(f.payload, 0);
@@ -107,7 +108,7 @@ struct Probe {
                         navigation =
                             Tick(*ms) * 1000000000 +
                             Tick(UBX::read_le<int32_t>(f.payload, 4)) * 1000;
-                    else if (f.protocol == cppgnss::Protocol::sbf) {
+                    else if (f.protocol() == cppgnss::Protocol::sbf) {
                         if (auto ms = sbf_navigation_time(f))
                             navigation = Tick(*ms) * 1000000000;
                     }
@@ -637,10 +638,10 @@ struct Reader {
     void estimates_frame(const cppgnss::FrameView &f) {
         if (f.offset < nav_skip_before)
             return;
-        const bool ubx = f.protocol == cppgnss::Protocol::ubx;
-        const bool pulse = ubx ? f.id == 0x0d01 : f.id == 5911;
+        const bool ubx = f.protocol() == cppgnss::Protocol::ubx;
+        const bool pulse = ubx ? f.id() == 0x0d01 : f.id() == 5911;
         const bool clock =
-            ubx ? f.id == 0x0122 : (f.id == 4006 || f.id == 4007);
+            ubx ? f.id() == 0x0122 : (f.id() == 4006 || f.id() == 4007);
         if (!pulse && !clock)
             return;
         const auto p = f.payload;
@@ -666,7 +667,7 @@ struct Reader {
                     sbf_error = parsed.value().Error;
                     return true;
                 };
-                if (f.id == 4006) {
+                if (f.id() == 4006) {
                     if (!accept(cppgnss::parse<cppgnss::SBF::PVTCartesian>(f)))
                         return;
                 } else if (!accept(
@@ -760,10 +761,10 @@ struct Reader {
             str(c[4], "ASSOCIATED");
         else
             *c[4] = nullptr;
-        str(c[5], ubx            ? (pulse ? "UBX-TIM-TP" : "UBX-NAV-CLOCK")
-                  : pulse        ? "SBF-xPPSOffset"
-                  : f.id == 4006 ? "SBF-PVTCartesian"
-                                 : "SBF-PVTGeodetic");
+        str(c[5], ubx              ? (pulse ? "UBX-TIM-TP" : "UBX-NAV-CLOCK")
+                  : pulse          ? "SBF-xPPSOffset"
+                  : f.id() == 4006 ? "SBF-PVTCartesian"
+                                   : "SBF-PVTGeodetic");
         str(c[6], reference);
         if (pulse) {
             bool valid =
@@ -851,8 +852,8 @@ struct Reader {
     void status(const cppgnss::FrameView &f, Batch &ev) {
         if (f.offset < nav_skip_before)
             return;
-        const bool ubx = f.protocol == cppgnss::Protocol::ubx;
-        if ((ubx && f.id != 0x0a39) || (!ubx && f.id != 4014))
+        const bool ubx = f.protocol() == cppgnss::Protocol::ubx;
+        if ((ubx && f.id() != 0x0a39) || (!ubx && f.id() != 4014))
             return;
         Tick uptime;
         double temperature;
@@ -989,11 +990,11 @@ struct Reader {
             out.push_back({t, timeline.associated_uptime(),
                            timeline.archive_day, std::move(bits)});
         };
-        const bool sbf_anchor =
-            f.protocol == cppgnss::Protocol::sbf &&
-            (f.id == 4006 || f.id == 4007 || f.id == 5914 || f.id == 5921);
+        const bool sbf_anchor = f.protocol() == cppgnss::Protocol::sbf &&
+                                (f.id() == 4006 || f.id() == 4007 ||
+                                 f.id() == 5914 || f.id() == 5921);
         const bool ubx_anchor =
-            f.protocol == cppgnss::Protocol::ubx && f.id == 0x0120;
+            f.protocol() == cppgnss::Protocol::ubx && f.id() == 0x0120;
         if (sbf_anchor || ubx_anchor) {
             auto time = sbf_anchor ? sbf_navigation_time(f) : timegps(f);
             nav_ms =
@@ -1018,15 +1019,15 @@ struct Reader {
         if (decoded.status == neognss_obs::RawBitsStatus::unsupported ||
             decoded.status == neognss_obs::RawBitsStatus::malformed) {
             ++raw_unsupported;
-            ++raw_skipped[std::to_string(f.id) + "/" +
-                          std::to_string(f.revision)];
+            ++raw_skipped[std::to_string(f.id()) + "/" +
+                          std::to_string(f.revision())];
         }
         if (decoded.status == neognss_obs::RawBitsStatus::excluded)
             ++raw_skipped["excluded"];
         if (decoded.record)
             emit(timeline.anchor(), *decoded.record);
         const auto p = f.payload;
-        if (f.protocol == cppgnss::Protocol::ubx && f.id == 0x0161 &&
+        if (f.protocol() == cppgnss::Protocol::ubx && f.id() == 0x0161 &&
             p.size() == 4) {
             if (closure_ms && closure_time && !nav_conflict &&
                 *closure_ms % 604800000 == UBX::read_le<uint32_t>(p, 0)) {
@@ -1176,15 +1177,15 @@ struct Reader {
             if (item.error)
                 std::rethrow_exception(item.error);
             const auto &f = item.frame;
-            if (f.protocol == cppgnss::Protocol::sbf && f.id >= 4109 &&
-                f.id <= 4113)
+            if (f.protocol() == cppgnss::Protocol::sbf && f.id() >= 4109 &&
+                f.id() <= 4113)
                 ++meas3;
             auto &e = item.measurements;
             navigation(f, completed_bits, *ev, e, item.bits);
             if (f.offset >= nav_skip_before)
                 telemetry.frame(f, timeline.navigation, timeline.archive_day);
             if (f.offset >= nav_skip_before &&
-                f.protocol == cppgnss::Protocol::ubx && f.id == 0x0120 &&
+                f.protocol() == cppgnss::Protocol::ubx && f.id() == 0x0120 &&
                 telemetry.current.contains("ubx_status") &&
                 !telemetry.current.value("gpst", Json(nullptr)).is_null()) {
                 const auto u =
@@ -1242,7 +1243,7 @@ struct Reader {
                     monotonic(*time, "observation", f.offset);
                 unsupported += e->unsupported;
                 excluded += e->excluded;
-                if (f.protocol == cppgnss::Protocol::ubx) {
+                if (f.protocol() == cppgnss::Protocol::ubx) {
                     emit(*e);
                     return;
                 }
@@ -1258,7 +1259,7 @@ struct Reader {
                 pending->rows.insert(pending->rows.end(), e->rows.begin(),
                                      e->rows.end());
             }
-            if (f.protocol == cppgnss::Protocol::sbf && f.id == 5922 &&
+            if (f.protocol() == cppgnss::Protocol::sbf && f.id() == 5922 &&
                 f.payload.size() >= 6 && pending) {
                 uint32_t tow = 0;
                 for (int i = 0; i < 4; ++i)
@@ -1289,7 +1290,7 @@ struct Reader {
                 f.wire =
                     std::span<const uint8_t>(wire).subspan(offsets[i], length);
                 f.payload = f.wire.subspan(
-                    f.protocol == cppgnss::Protocol::ubx ? 6 : 8, length - 8);
+                    f.protocol() == cppgnss::Protocol::ubx ? 6 : 8, length - 8);
             }
             decode_pool.run(frames);
             for (auto &item : frames)

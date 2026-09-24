@@ -84,8 +84,8 @@ void domain(Measurement &m) {
 } // namespace
 std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
     Measurements e;
-    if (f.protocol == cppgnss::Protocol::ubx) {
-        if (f.id != uint16_t(cppgnss::UbxMessageId::RXM_RAWX))
+    if (f.protocol() == cppgnss::Protocol::ubx) {
+        if (f.id() != uint16_t(cppgnss::UbxMessageId::RXM_RAWX))
             return {};
         auto parsed = cppgnss::parse<UBX::ubx_rxm_rawx>(f);
         if (!parsed)
@@ -126,7 +126,8 @@ std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
         }
         return e;
     }
-    if (f.id != uint16_t(cppgnss::SbfMessageId::MEAS_EPOCH))
+    if (f.protocol() != cppgnss::Protocol::sbf ||
+        f.id() != uint16_t(cppgnss::SbfMessageId::MEAS_EPOCH))
         return {};
     auto parsed = cppgnss::parse<cppgnss::SBF::MeasEpoch>(f);
     if (!parsed)
@@ -137,7 +138,7 @@ std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
     e.week = raw.WNc;
     e.tow_ms = raw.TOW;
     e.tow_seconds = *e.tow_ms * .001;
-    if (f.revision >= 1)
+    if (f.revision() >= 1)
         e.cumulative_adjustment_ms_mod256 = raw.CumClkJumps;
     auto make = [&](const auto &v, int sv, bool type1) {
         Measurement m;
@@ -209,8 +210,8 @@ std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
 }
 std::optional<Measurements>
 decode_measurement_extras(const cppgnss::FrameView &f) {
-    if (f.protocol != cppgnss::Protocol::sbf ||
-        f.id != uint16_t(cppgnss::SbfMessageId::MEAS_EXTRA))
+    if (f.protocol() != cppgnss::Protocol::sbf ||
+        f.id() != uint16_t(cppgnss::SbfMessageId::MEAS_EXTRA))
         return {};
     auto parsed = cppgnss::parse<cppgnss::SBF::MeasExtra>(f);
     if (!parsed)

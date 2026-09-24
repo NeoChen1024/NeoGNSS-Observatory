@@ -27,6 +27,21 @@ endif()
 
 set(generated_include "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(generated_dir "${generated_include}/cppgnss")
+foreach(protocol_repo pyrtcm pynmeagps)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/${protocol_repo}/src/${protocol_repo}")
+        message(FATAL_ERROR "Initialize contrib/${protocol_repo}: git submodule update --init contrib/${protocol_repo}")
+    endif()
+endforeach()
+set(text_bit_generated "${generated_dir}/rtcm3_gen.cpp" "${generated_dir}/nmea_gen.cpp"
+    "${generated_dir}/rtcm3_gen.hpp" "${generated_dir}/nmea_gen.hpp")
+file(GLOB text_bit_schemas CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/pyrtcm/src/pyrtcm/*.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/pynmeagps/src/pynmeagps/*.py")
+add_custom_command(OUTPUT ${text_bit_generated}
+    COMMAND "${CMAKE_COMMAND}" -E env PYTHONDONTWRITEBYTECODE=1
+        "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_text_bit_parsers.py" --output-dir "${generated_dir}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_text_bit_parsers.py" ${text_bit_schemas}
+    COMMENT "Generating pinned RTCM3 and NMEA typed parsers" VERBATIM)
 set(generated_sources "${generated_dir}/ubx_dump_gen.cpp" "${generated_dir}/ubx_names_gen.cpp")
 set(sbf_generated "${generated_dir}/sbf_dispatch_gen.cpp")
 set(sbf_generated_headers "${generated_dir}/sbf_ids_gen.hpp")
@@ -58,9 +73,9 @@ add_custom_command(
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_ubx_parsers.py" ${schema_sources}
     COMMENT "Generating UBX parsers from the pinned pyubx2 schema"
     VERBATIM)
-add_custom_target(cppgnss_codegen DEPENDS ${generated_sources} ${generated_headers} ${sbf_generated} ${sbf_generated_headers})
+add_custom_target(cppgnss_codegen DEPENDS ${generated_sources} ${generated_headers} ${sbf_generated} ${sbf_generated_headers} ${text_bit_generated})
 add_library(cppgnss src/parse.cpp src/ubx.cpp src/ubx_names.cpp src/ubx_nav.cpp src/ubx_reader.cpp src/stream.cpp
-    src/ubx_subframe.cpp ${sbf_generated}
+    src/ubx_subframe.cpp ${sbf_generated} ${text_bit_generated}
     ${generated_sources} ${generated_headers})
 add_library(cppgnss::cppgnss ALIAS cppgnss)
 add_dependencies(cppgnss cppgnss_codegen)

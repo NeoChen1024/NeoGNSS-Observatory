@@ -354,6 +354,9 @@ def generate_parser_header(msg_name, fields, ubx_class):
     lines.append(f"\tstatic constexpr auto protocol = cppgnss::Protocol::ubx;")
     lines.append(f"\tstatic constexpr auto message_id = cppgnss::UbxMessageId::{msg_name.replace('-', '_')};")
     lines.append(f'\tstatic constexpr std::string_view message_name = "{msg_name}";')
+    lines.append(
+        "\tstatic bool matches(const cppgnss::FrameView &frame) { return frame.id() == static_cast<uint16_t>(message_id); }"
+    )
     if fixed:
         lines.append(f"\tstruct {struct} data{{}};")
     else:
@@ -702,7 +705,7 @@ def write_dump_gen_impl(class_msgs, target_classes, ubx_payloads):
     for group in target_classes:
         if group in class_msgs:
             lines.append(f"#include <cppgnss/ubx_{group.lower()}_gen.hpp>")
-    lines += ["namespace cppgnss::detail {", "std::string dump_ubx(const FrameView& frame) {", "switch(frame.id) {"]
+    lines += ["namespace cppgnss::detail {", "std::string dump_ubx(const FrameView& frame) {", "switch(frame.id()) {"]
     by_id = {}
     for group in target_classes:
         for name, cls_id, msg_id in class_msgs.get(group, []):

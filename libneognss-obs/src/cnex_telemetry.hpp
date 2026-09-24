@@ -166,8 +166,9 @@ struct TelemetryAssembler {
     }
     void frame(const cppgnss::FrameView &f, std::optional<Tick> navigation,
                int64_t day) {
-        ubx = f.protocol == cppgnss::Protocol::ubx;
-        bool trigger = ubx ? f.id == 0x0107 : (f.id == 4006 || f.id == 4007);
+        ubx = f.protocol() == cppgnss::Protocol::ubx;
+        bool trigger =
+            ubx ? f.id() == 0x0107 : (f.id() == 4006 || f.id() == 4007);
         if (trigger && f.payload.size() >= (ubx ? 4u : 6u)) {
             int64_t next = UBX::read_le<uint32_t>(f.payload, 0);
             if (!ubx)
@@ -193,7 +194,7 @@ struct TelemetryAssembler {
                 current["gpst"] = nullptr;
             }
         }
-        if (key && navigation && (ubx ? f.id == 0x0120 : trigger)) {
+        if (key && navigation && (ubx ? f.id() == 0x0120 : trigger)) {
             const auto millis = int64_t(*navigation / 1000000000);
             if ((ubx ? int64_t(UBX::read_le<uint32_t>(f.payload, 0))
                      : millis) == *key) {

@@ -1,6 +1,6 @@
 # libcppgnss
 
-C++20 UBX/SBF framing, generated message decoders, message names, and NAV semantic
+C++20 UBX/SBF/RTCM3/NMEA framing, generated message decoders, message names, and NAV semantic
 helpers, maintained in NeoGNSS Observatory. The POSIX logger is an application
 of this library, not its entry point. CommonNEX normalization and satellite
 navigation-bit content decoding belong to `libneognss-obs`, not this library.
@@ -10,12 +10,12 @@ navigation-bit content decoding belong to `libneognss-obs`, not this library.
 Requirements: a C++20 compiler and standard library with `std::format`,
 CMake 3.24+, Python 3.11+, the packages listed in
 [`requirements-codegen.txt`](requirements-codegen.txt), and the pinned
-pyubx2 and pysbf2 schemas.
+pyubx2, pysbf2, pyrtcm and pynmeagps schemas.
 
 From the repository root:
 
 ```sh
-git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/json
+git submodule update --init contrib/pyubx2 contrib/pysbf2 contrib/pyrtcm contrib/pynmeagps contrib/json
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
@@ -40,8 +40,10 @@ supported. No install/export package or stable ABI is promised in this version.
 
 ## Using the library
 
-`StreamDecoder` selects UBX or SBF explicitly. It validates and skips complete
-frames of the other protocol atomically, exposing skipped frame/byte counters
+`StreamDecoder` selects one protocol or a set, for example
+`StreamDecoder({Protocol::ubx, Protocol::nmea})`. It delivers selected frames in
+wire order and validates and skips complete frames of unselected protocols
+atomically, exposing skipped frame/byte counters
 without printing diagnostics. Callers decide how to report these counters.
 Embedded synchronization bytes inside a valid foreign frame are not decoded.
 
@@ -63,7 +65,7 @@ as `<cppgnss/ubx_rxm_gen.hpp>`. SBF descriptors/decoders are under `cppgnss::SBF
   and a corrupt length can consume a following frame.
   It is not yet an archive-salvage or byte-offset-indexing API.
 - The logger uses `StreamDecoder` instead: bounded input chunks, validated
-  complete UBX/SBF wire frames and atomic skipping of foreign-protocol frames.
+  complete wire frames and atomic skipping of foreign-protocol frames.
 - Successful `ParseResult<T>` means structural decoding succeeded. NAV semantic validity
   is separate. UBX scaled wire fields remain raw values; do not assume they are
   already expressed in physical units or that timestamps are valid UTC.
@@ -87,7 +89,7 @@ constellation, satellite, signal and frequency-slot identity. It does not decode
 the satellite navigation content. See the [subframe guide](../docs/subframes.md)
 for the Observatory RawBits and SBAS processing layer.
 
-`stream.hpp` provides chunked UBX/SBF framing with checksum validation and
+`stream.hpp` provides chunked UBX/SBF/RTCM3/NMEA framing with checksum validation and
 borrowed frame views. `feed()` keeps incomplete frames across calls; call
 `finish()` only at a real end of stream. Reader statistics include invalid
 frames and noise. No implicit transport or terminal output is performed.
@@ -100,7 +102,7 @@ SBF codegen covers all 125 pinned blocks plus the retained legacy QZSRawL6
 layout in 17 functional groups: 118 have payload definitions and eight explicitly
 remain unsupported. Generated headers
 such as `sbf_measurement_gen.hpp`, `sbf_pvt_gen.hpp` and `sbf_status_gen.hpp`
-expose a concrete type per message. Both protocols use the same API:
+expose a concrete type per message. All protocols use the same API:
 
 ```cpp
 #include <cppgnss/parse.hpp>
@@ -134,6 +136,14 @@ including names without typed decoders. Message types declare `protocol`,
 variant; unknown numeric IDs remain representable in `FrameView`. SBF revision
 stays in the source frame and is not a claim of layout support for every version.
 
+`FrameView::header` is a variant of `UbxHeader`, `SbfHeader`, `Rtcm3Header` and
+`NmeaHeader`. `protocol()` identifies the active alternative; `id()` is only for
+binary messages and `revision()` only for SBF. NMEA retains its original address
+and `$`/`!` delimiter, with `talker()`/`sentence()` views and no synthetic wire ID. Header text and byte spans share
+the callback's borrowed lifetime. Typed messages own their decoded data.
+Generated `matches(frame)` traits handle message/subtype identity; callers use
+`parse<T>()`, which checks the protocol before invoking the trait.
+
 Repeated groups are nested `std::vector<SubBlock>`, conditional groups are
 `std::optional<SubBlock>`, and bit fields remain nested under their source field.
 For example, `result.value().MeasEpochChannelType1[i].MeasEpochChannelType2[j]`
@@ -147,7 +157,7 @@ and optional native TOW/WNc for generic QA. That time is not necessarily a
 receiver-navigation anchor. Each message owns a `std::string dump() const`
 method that formats its stored fields, preserving nested groups and allowing
 message-specific formatting. `cppgnss::dump(frame)` dispatches to these methods
-for either protocol, includes raw bytes and errors for failures, and preserves
+for all protocols, includes raw bytes and errors for failures, and preserves
 unconsumed trailing bytes. Output is one line per message, with repeated groups
 expanded as nested lists rather than counts. It is human-readable text, not a
 stable serialization format. `schemas()` remains descriptor
@@ -181,13 +191,45 @@ Generated navigation-page messages expose native receiver fields and body words.
 Canonical repacking, independent navigation-body checks, service classification,
 and SBAS correction contents are handled in `libneognss-obs`.
 
-## UBX/SBF logger
+## RTCM3 and NMEA decoding
+
+Include `cppgnss/rtcm3_gen.hpp` or `cppgnss/nmea_gen.hpp`. For example,
+`parse<RTCM3::GPS_MSM7>(frame)`, `parse<RTCM3::MT1005>(frame)` and
+`parse<NMEA::GGA>(frame)` return the same `ParseResult<T>` as UBX/SBF. Generated
+`Rtcm3MessageId` values are wire message numbers; IGS subtypes have distinct
+message classes. `NmeaMessageId` identifies known layouts, not a numeric value
+on the wire. Proprietary NMEA discriminators remain part of typed matching.
+
+RTCM3 fields retain encoded integer values, including invalid sentinels; each
+field exposes `_scale` and `_encoding` metadata from pyrtcm. Sign-magnitude
+fields retain their encoded unsigned bits. Satellite/signal/cell masks and
+repeated wire groups are preserved, not replaced with normalized observations
+or RINEX identities. Python-derived PRN/signal labels are not wire fields.
+Range reconstruction, missing-value interpretation, full-week resolution and
+CommonNEX normalization belong to the processing adapter. RTCM parser support
+alone does not add an RTCM CommonNEX importer.
+
+NMEA numeric fields use optional integers/doubles; hexadecimal integers use
+`HexInteger::digits` to preserve arbitrary widths and leading zeroes. Empty or
+absent fields remain null. Text, dates and time-of-day retain their source spelling, and coordinates
+retain the source degrees/minutes representation and separate hemisphere.
+Nonempty malformed numbers fail parsing. GET/output schemas are generated;
+SET/POLL encoding is not provided. Unknown layouts retain raw-frame fallback;
+the upstream synthetic `FOO` layout explicitly reports unsupported.
+
+NMEA framing requires a valid checksum and CRLF terminator, with a 4096-byte
+sentence bound. It does not accept checksum-free lines or arbitrary ASCII.
+RTCM3 framing uses CRC-24Q and its 10-bit payload length. Valid empty RTCM link
+fillers have ID zero; one-byte payloads cannot contain an ID and are invalid.
+GSV cycles and MSM epoch completion are not assembled by the protocol parser.
+
+## Logger
 
 `examples/gnsslogger.cpp` builds `neognsslogger`.
 
 | Flag | Behavior |
 | --- | --- |
-| `-p ubx\|sbf`, `--protocol` | Input protocol; default UBX |
+| `-p ubx\|sbf\|rtcm3\|nmea\|mixed`, `--protocol` | Input protocol; default UBX; new protocols and mixed inspection require `-n` |
 | `-f FILE` | File input; stdin is the default |
 | `-t HOST:PORT` | TCP input with reconnection |
 | `-n` | Disable recording |
@@ -213,7 +255,9 @@ Its FIX numerator requires Error=0 and Mode Type 1–8 or 10, including fixed
 location (3); no-solution and reserved types are excluded. Each received PVT
 block contributes to the denominator, including both variants if both are enabled.
 
-`-d` prints the strings returned by UBX/SBF message dumps. SBF displays block name,
+`-d` prints the strings returned by message dumps. Use `-p mixed -n -d` to
+inspect all four protocols in wire order. Recording/rotation remains UBX/SBF-only.
+SBF displays block name,
 revision, schema status and decoded fields (including bit fields and
 indexed repeated fields). Binary and wide-integer values use hex. Unknown blocks,
 private schemas and schema decoding failures include the raw payload as hex;

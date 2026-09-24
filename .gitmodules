@@ -17,3 +17,9 @@
 [submodule "contrib/int128"]
 	path = contrib/int128
 	url = https://github.com/boostorg/int128.git
+[submodule "contrib/pynmeagps"]
+	path = contrib/pynmeagps
+	url = https://github.com/semuconsulting/pynmeagps.git
+[submodule "contrib/pyrtcm"]
+	path = contrib/pyrtcm
+	url = https://github.com/semuconsulting/pyrtcm.git

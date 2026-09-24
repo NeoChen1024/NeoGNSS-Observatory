@@ -22,9 +22,9 @@ std::optional<uint16_t> SignalKey::prn() const {
     }
 }
 SubframeResult parse_subframe(const cppgnss::FrameView &frame) {
-    if (frame.protocol != cppgnss::Protocol::ubx)
+    if (frame.protocol() != cppgnss::Protocol::ubx)
         return {SubframeStatus::invalid_frame, std::nullopt};
-    if (frame.id != static_cast<uint16_t>(cppgnss::UbxMessageId::RXM_SFRBX))
+    if (frame.id() != static_cast<uint16_t>(cppgnss::UbxMessageId::RXM_SFRBX))
         return {SubframeStatus::not_sfrbx, std::nullopt};
     if (frame.payload.size() < 8)
         return {SubframeStatus::invalid_length, std::nullopt};

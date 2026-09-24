@@ -59,7 +59,7 @@ struct DatasetScan::State {
         } else {
             // SBF schemas define whether a block actually carries TOW/WNc.
             const auto block =
-                cppgnss::SBF::inspect(f.id, f.revision, f.payload);
+                cppgnss::SBF::inspect(f.id(), f.revision(), f.payload);
             if (block.status == cppgnss::SBF::Status::invalid_payload) {
                 count("invalid_payloads");
                 return;
@@ -74,12 +74,12 @@ struct DatasetScan::State {
             }
             const int64_t now = int64_t(week) * 604800000 + tow;
             count("timestamped_blocks");
-            if (sbf_times.contains(f.id) && now < sbf_times[f.id])
+            if (sbf_times.contains(f.id()) && now < sbf_times[f.id()])
                 count("time_reversals");
-            sbf_times[f.id] = now;
+            sbf_times[f.id()] = now;
             // Different block types can be emitted with different latency.
             // Only the navigation/measurement epoch blocks define cadence.
-            if (f.id != 4027 && f.id != 4007)
+            if (f.id() != 4027 && f.id() != 4007)
                 return;
             if (!previous || now != *previous) {
                 sbf_epoch_blocks.clear();
@@ -88,8 +88,8 @@ struct DatasetScan::State {
             // These are epoch-level blocks; repeated raw-navigation blocks at
             // one TOW can belong to different satellites and are not
             // duplicates.
-            if ((f.id == 4027 || f.id == 4007) &&
-                !sbf_epoch_blocks.insert(f.id).second)
+            if ((f.id() == 4027 || f.id() == 4007) &&
+                !sbf_epoch_blocks.insert(f.id()).second)
                 count("duplicate_epoch_blocks");
             if (previous && now - *previous > gap_ms)
                 count("gaps");

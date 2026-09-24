@@ -5,7 +5,7 @@ The standalone `neognsslogger` depends directly on `libcppgnss`.
 
 | Component | Responsibility |
 | --- | --- |
-| `libcppgnss` | UBX/SBF framing, integrity checks, receiver message fields and typed protocol APIs |
+| `libcppgnss` | UBX/SBF/RTCM3/NMEA mixed framing, integrity checks, native message fields and typed protocol APIs |
 | `libneognss-obs` | CommonNEX normalization, receiver-time association, canonical RawBits, satellite-content decoding and scientific processing |
 | Bindings | High-level processing APIs and owned batch exchange |
 | Python | File orchestration, product selection, Parquet storage, analysis and visualization |
