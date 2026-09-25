@@ -14,7 +14,7 @@ only when they affect present interpretation or processing.
 - [Processing overview](processing-overview.md): supported paths and research boundaries.
 - [GPST policy](time-policy.md): units, timestamps and partitions.
 - [Dataset notes](dataset-notes.md): overlap and acquisition caveats that affect analysis.
-- [Implementation TODO](TODO.md): agreed raw-observation STEC and offline PPP designs and unchecked implementation tasks, not current functionality.
+- [Implementation TODO](TODO.md): processing roadmap, deferred Unified SBAS design and unchecked implementation tasks, not current functionality.
 
 ## Design drafts
 

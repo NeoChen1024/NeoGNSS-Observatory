@@ -1,9 +1,104 @@
-# Raw-observation STEC and offline PPP implementation plan
+# Project implementation roadmap
 
 This is an implementation checklist. Unchecked items remain unimplemented or
 unverified; current behavior is documented in the linked tool guides.
 Update this document as work lands; move implemented behavior into the relevant
 usage/design guides and remove superseded plans rather than retaining history.
+
+## Composable processing and Unified SBAS (deferred design and implementation)
+
+These are agreed architecture targets, not a claim that the current pipelines
+already implement them. Detailed APIs and the implementation plan remain open.
+
+### Common processing boundary
+
+- [ ] Make CommonNEX the shared receiver-data input for all scientific
+  processors, replacing RINEX as the project's internal processing boundary.
+  Downstream processors must not parse UBX/SBF envelopes or repeat receiver
+  normalization. Satellite-content decoding from canonical RawBits remains
+  downstream work; external scientific products remain separate dependencies.
+  Acquisition, logging and raw-recording inspection are outside this boundary.
+- [ ] Use the same processor and scientific rules for offline replay and live
+  delivery. With equivalent ordered input, configuration, external products and
+  initial state, results must not depend on batch size, delivery speed or daily
+  file boundaries. Explicit future-data reprocessing is a distinct calculation,
+  not an implicit offline-mode change of algorithm.
+- [ ] Expose composable processing building blocks with owned state and batch
+  interfaces. Each processor defines its own result schemas, native output
+  pacing, finalization and discontinuity semantics; do not require one generic
+  output model or a universal processor superclass.
+- [ ] Keep scientific products independent of presentation requirements.
+  Storage, source selection/fusion, statistical consumers and rendering should
+  compose without forcing decoding or calculation to discard useful data.
+  Share exchange/ownership and bounded-delivery mechanisms where semantics
+  agree, rather than introducing a general scheduling framework in advance.
+
+### Optional periodic snapshots
+
+Snapshots are processing summaries as of a specified GPST, and may include both
+current state and necessary statistics. They supplement, rather than replace,
+each processor's native result stream. Snapshot support is optional.
+
+- [ ] Define a shared positive-integer `interval_s`. Snapshot targets are
+  `k * interval_s` seconds since the GPST origin, 1980-01-06 00:00:00 GPST.
+  Calculate the schedule with integer arithmetic, independent of GPS week,
+  calendar day and process start; do not truncate input timestamp precision.
+- [ ] Drive snapshots from trustworthy input-time progress, not host time or
+  exact timestamp equality. Emit crossed targets in order once the required
+  input through that target is complete. Define the completeness boundary for
+  each processor so later records cannot leak into an earlier snapshot.
+  Missing reliable progress must not manufacture GPST snapshots.
+- [ ] Include `snapshot_gpst` in each snapshot. The processor owns its payload
+  schema and statistics, not a common list of scientific fields. Define each
+  statistic's window or accumulation scope, such as trailing 60 seconds,
+  between snapshot targets, or since the current continuous segment began.
+  Preserve missingness and applicable counts/coverage explicitly.
+- [ ] Keep snapshot cadence distinct from statistical window length: a
+  five-second snapshot may summarize a trailing sixty-second window. Statistics
+  can be part of the snapshot; they need not be a separate output product.
+- [ ] Make snapshot emission non-destructive to scientific state. Only
+  explicitly interval-scoped accumulators advance their accumulation boundaries
+  with the snapshot grid. Define initial partial-window and discontinuity
+  behavior per processor without silently treating partial coverage as full.
+- [ ] Verify matching snapshot targets and contents for equivalent historical
+  and live delivery, including batches crossing multiple targets and time gaps.
+
+### Unified SBAS
+
+Agreed direction: replace the separate legacy SBAS pipeline with one stateful
+CommonNEX consumer shared by historical replay and live processing. This is a
+target, not the current API. Detailed implementation is deferred and must follow
+the processing and optional snapshot contracts above.
+
+- [ ] Define one high-level batch API for CommonNEX RawBits and Events, with
+  explicit time advancement, restart/discontinuity handling and finalization.
+  Keep file/day partitioning in storage, not in the scientific state lifecycle.
+- [ ] Produce per-source current grid snapshots and completed validity intervals
+  from the same decoding, mask, correction and aging state. Preserve every
+  usable source, not only the highest-priority provider. Retain source identity,
+  grid identity/coordinates, VTEC, GIVEI, report time and relevant MT0 status.
+- [ ] Support GPST-aligned periodic snapshots with per-source current grid
+  state and explicitly defined useful statistics. Select the actual SBAS
+  statistics and windows during detailed design; do not equate snapshot cadence
+  with correction arrival cadence or hourly averaging.
+- [ ] Specify how do-not-use, not-monitored, expiry and mask changes invalidate
+  prior values in both snapshots and intervals; never leave stale values active.
+- [ ] Keep provider selection/fusion outside the decoding and validity engine.
+  Share the selection policy between historical plots and live displays so
+  users can change priorities without decoding or importing the input again.
+- [ ] Investigate optional weighting separately, including spatial alignment,
+  uncertainty interpretation and correlated broadcasts. Do not treat GIVEI as
+  a linear weight or multiple satellites of one provider as independent data.
+- [ ] Define output adapters for Parquet and live Arrow/JSONL consumers. Hourly
+  aggregation must apply the selected policy over time before averaging, while
+  preserving independent source products for alternative rendering policies.
+- [ ] Replace the old SBAS processing path and obsolete APIs/CLI entry points
+  without compatibility aliases. Final command names and migration scope remain
+  part of the upcoming architecture discussion; do not rewrite existing data.
+- [ ] Verify equivalent results across historical/live batch delivery, batch
+  sizes, midnight, aging without new SBAS messages, MT0, restart and provider
+  changes. Retain old code only as a temporary comparison baseline, not a
+  permanent second implementation.
 
 ## Scope and architecture
 
