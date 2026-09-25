@@ -18,6 +18,8 @@ only when they affect present interpretation or processing.
 
 ## Design drafts
 
+- [Broadcast message decoder](broadcast-message-decoder.md): CommonNEX RawBits
+  decoding/assembly API, GPS/QZSS LNAV coverage and pending field contracts.
 - [Ginan shim](ginan-shim.md): single-context native backend design,
   GIM/bias calibration investigation and implementation checklist.
 - [CommonNEX and ParquetNEX](commonnex/overview.md): current pre-Alpha record
@@ -25,6 +27,9 @@ only when they affect present interpretation or processing.
   format work is tracked in the [CommonNEX TODO](commonnex/TODO.md).
 
 ## Tools
+
+- [Broadcast-message decoding](broadcast-decode-realtime.md): GPS/QZSS LNAV
+  messages, assemblies and periodic snapshots from live or recorded inputs.
 
 - [CommonNEX live streaming](commonnex/live.md): native engine, five-second batch
   delivery, bounded TCP acquisition and Arrow IPC transport adapters.

@@ -7,6 +7,12 @@ usage/design guides and remove superseded plans rather than retaining history.
 
 ## Composable processing and Unified SBAS (deferred design and implementation)
 
+The next prerequisite is the [broadcast decoder design](broadcast-message-decoder.md):
+decode and assemble complete satellite-message parameters without requiring
+calculation-backend support. Its checklist owns GPS/QZSS LNAV definition work.
+Decoded outputs are downstream products, not CommonNEX catalogs. Fixed receiver
+DCB reuse and SBAS-constrained calibration are not current implementation tasks.
+
 These are agreed architecture targets, not a claim that the current pipelines
 already implement them. Detailed APIs and the implementation plan remain open.
 
@@ -44,10 +50,12 @@ each processor's native result stream. Snapshot support is optional.
   Calculate the schedule with integer arithmetic, independent of GPS week,
   calendar day and process start; do not truncate input timestamp precision.
 - [ ] Drive snapshots from trustworthy input-time progress, not host time or
-  exact timestamp equality. Emit crossed targets in order once the required
-  input through that target is complete. Define the completeness boundary for
-  each processor so later records cannot leak into an earlier snapshot.
-  Missing reliable progress must not manufacture GPST snapshots.
+  exact timestamp equality. Each processor defines its input-order boundary;
+  do not require a universal completeness watermark. Broadcast snapshots emit
+  previously known state before consuming a newly advanced navigation context
+  that reaches/crosses a target. These are not precise RF-time reconstructions.
+  Missing reliable progress must not manufacture GPST snapshots or allow later
+  state to backfill earlier snapshots.
 - [ ] Include `snapshot_gpst` in each snapshot. The processor owns its payload
   schema and statistics, not a common list of scientific fields. Define each
   statistic's window or accumulation scope, such as trailing 60 seconds,

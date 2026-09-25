@@ -62,6 +62,7 @@ links for configuration, input requirements and scientific limitations.
 | [ngo-dataset-qa](docs/dataset-qa.md) | Inspect recording quality and reconstruct overlapping UBX archives. |
 | [ngo-cnex-import](docs/commonnex/importer.md) | Import UBX/SBF recordings into daily CommonNEX/ParquetNEX datasets. |
 | [ngo-cnex-live](docs/commonnex/live.md) | Produce CommonNEX batches from live receiver streams. |
+| [ngo-broadcast-decode-realtime](docs/broadcast-decode-realtime.md) | Decode GPS/QZSS LNAV messages and emit periodic state snapshots as JSONL. |
 | [ngo-stec](docs/stec.md) | Calculate phase-leveled STEC and GIM-constrained receiver bias estimates. |
 | [ngo-stec-plot](docs/stec.md) | Render STEC trajectories with optional SBAS VTEC backgrounds. |
 | [ngo-stec-realtime](docs/stec-realtime.md) | Emit realtime relative STEC and IPP coordinates as JSONL. |

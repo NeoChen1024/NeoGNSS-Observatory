@@ -13,6 +13,7 @@ void bind_ppp(py::module_ &);
 void bind_stec(py::module_ &);
 void bind_grid(py::module_ &);
 void bind_cnex(py::module_ &);
+void bind_broadcast(py::module_ &);
 using neognss_obs::Json;
 // pybind11/libc++ compares RTTI names: bound helpers need component-qualified
 // identities, not same-named anonymous-namespace types in separate TUs.
@@ -160,6 +161,7 @@ PYBIND11_MODULE(_native, m) {
     bind_stec(m);
     bind_grid(m);
     bind_cnex(m);
+    bind_broadcast(m);
     using Ratio = Guarded<RxMessageRatio>;
     py::class_<Ratio>(m, "RxMessageRatio")
         .def(py::init<const std::string &>(), py::arg("protocol") = "ubx")

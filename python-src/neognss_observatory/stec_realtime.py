@@ -12,8 +12,7 @@ import numpy as np
 import pyarrow as pa
 
 from . import _native
-from .cnex_import import open_input
-from .cnex_stream import CnexStream, tcp_groups
+from .cnex_stream import CnexStream, file_groups, tcp_groups
 from .setup_metadata import validate_setup
 from .stec import NATIVE_DEFAULTS, antenna_position
 from .stec_pairs import build_pairs
@@ -146,16 +145,6 @@ class RealtimeStec:
                 ipp_shell_radius_m=6821000,
                 samples=grouped.get(stamp, []),
             )
-
-
-def file_groups(path, stream):
-    with open_input(path) as source:
-        while chunk := source.read(65536):
-            stream.feed(chunk)
-            group = stream.drain()
-            if group is not None:
-                yield group
-    yield stream.finish()
 
 
 @click.command()

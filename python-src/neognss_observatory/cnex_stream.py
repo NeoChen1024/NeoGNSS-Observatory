@@ -23,6 +23,19 @@ CATALOGS = ("observations", "events", "raw-bits", "receiver-telemetry")
 MAX_MESSAGE = 16 * 1024**2
 
 
+def file_groups(path, stream):
+    """Replay plain/XZ receiver input through the shared CommonNEX normalizer."""
+    from .cnex_import import open_input
+
+    with open_input(path) as source:
+        while chunk := source.read(65536):
+            stream.feed(chunk)
+            group = stream.drain()
+            if group is not None:
+                yield group
+    yield stream.finish()
+
+
 @dataclass(frozen=True)
 class CnexBatchGroup:
     sequence: int
