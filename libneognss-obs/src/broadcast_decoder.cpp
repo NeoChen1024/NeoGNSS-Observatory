@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "arrow_batch.hpp"
+#include "broadcast_fields.hpp"
 #include <algorithm>
 #include <array>
 #include <boost/int128/int128.hpp>
@@ -14,54 +15,7 @@
 
 namespace neognss_obs {
 namespace broadcast_detail {
-using Tick = boost::int128::int128;
-constexpr int64_t ps = 1000000000000;
-using Bytes = std::vector<uint8_t>;
-using Value =
-    std::variant<std::monostate, int64_t, double, std::string, bool, Tick,
-                 Bytes, std::vector<int64_t>, std::vector<std::string>>;
-using Row = std::map<std::string, Value>;
-struct Column {
-    ArrowArrayView *v;
-    const ArrowSchema *s;
-    Column child(const char *name) const {
-        for (int64_t i = 0; i < s->n_children; ++i)
-            if (s->children[i]->name &&
-                std::string_view(s->children[i]->name) == name)
-                return {v->children[i], s->children[i]};
-        throw std::runtime_error(std::string("Missing RawBits field: ") + name);
-    }
-    bool null(int64_t i) const { return ArrowArrayViewIsNull(v, i); }
-    std::string str(int64_t i) const {
-        if (null(i) || v->storage_type != NANOARROW_TYPE_STRING)
-            throw std::runtime_error("Expected string");
-        auto x = ArrowArrayViewGetStringUnsafe(v, i);
-        return {x.data, size_t(x.size_bytes)};
-    }
-    int64_t integer(int64_t i) const {
-        if (null(i) || (v->storage_type != NANOARROW_TYPE_UINT16 &&
-                        v->storage_type != NANOARROW_TYPE_UINT32))
-            throw std::runtime_error("Invalid RawBits integer");
-        return int64_t(ArrowArrayViewGetUIntUnsafe(v, i));
-    }
-    std::optional<Tick> time(int64_t i) const {
-        if (std::string_view(s->format) != "d:38,12" &&
-            std::string_view(s->format) != "d:38,12,128")
-            throw std::runtime_error("Expected GPST decimal128(38,12)");
-        if (null(i))
-            return {};
-        ArrowDecimal d;
-        ArrowDecimalInit(&d, 128, 38, 12);
-        ArrowArrayViewGetDecimalUnsafe(v, i, &d);
-        if (d.words[d.high_word_index] >> 63)
-            throw std::runtime_error("Negative GPST");
-        Tick t = (Tick(d.words[d.high_word_index]) << 64) +
-                 d.words[d.low_word_index];
-        if (t / ps > INT64_MAX)
-            throw std::runtime_error("GPST out of range");
-        return t;
-    }
-};
+
 void ok(int e) {
     if (e)
         throw std::runtime_error("Broadcast Arrow allocation/append failed");
@@ -82,9 +36,44 @@ ArrowType type(const Value &v) {
         return NANOARROW_TYPE_BINARY;
     case 7:
     case 8:
+    case 9:
+    case 10:
         return NANOARROW_TYPE_LIST;
+    case 11:
+        return NANOARROW_TYPE_STRUCT;
     default:
         return NANOARROW_TYPE_DECIMAL128;
+    }
+}
+Value value(const Scalar &s) {
+    return std::visit([](const auto &x) -> Value { return x; }, s);
+}
+void field_schema(ArrowSchema *s, const Value &sample) {
+    auto t = type(sample);
+    if (t == NANOARROW_TYPE_DECIMAL128)
+        ok(ArrowSchemaSetTypeDecimal(s, t, 38, 12));
+    else
+        ok(ArrowSchemaSetType(s, t));
+    if (auto records = std::get_if<Records>(&sample)) {
+        auto child = s->children[0];
+        ok(ArrowSchemaSetTypeStruct(child, int64_t(records->prototype.size())));
+        int64_t i = 0;
+        for (const auto &[name, v] : records->prototype) {
+            field_schema(child->children[i], value(v));
+            ok(ArrowSchemaSetName(child->children[i++], name.c_str()));
+        }
+    } else if (auto record = std::get_if<Record>(&sample)) {
+        ok(ArrowSchemaSetTypeStruct(s, int64_t(record->prototype.size())));
+        int64_t i = 0;
+        for (const auto &[name, v] : record->prototype) {
+            field_schema(s->children[i], value(v));
+            ok(ArrowSchemaSetName(s->children[i++], name.c_str()));
+        }
+    } else if (t == NANOARROW_TYPE_LIST) {
+        ok(ArrowSchemaSetType(s->children[0],
+                              sample.index() == 8   ? NANOARROW_TYPE_STRING
+                              : sample.index() == 9 ? NANOARROW_TYPE_DOUBLE
+                                                    : NANOARROW_TYPE_INT64));
     }
 }
 void append(ArrowArray *a, const Value &v) {
@@ -111,6 +100,24 @@ void append(ArrowArray *a, const Value &v) {
                 b.data.as_uint8 = x.data();
                 b.size_bytes = int64_t(x.size());
                 ok(ArrowArrayAppendBytes(a, b));
+            } else if constexpr (std::is_same_v<T, Record>) {
+                if (!x.row) {
+                    ok(ArrowArrayAppendNull(a, 1));
+                } else {
+                    int64_t i = 0;
+                    for (const auto &[name, prototype] : x.prototype)
+                        append(a->children[i++], value(x.row->at(name)));
+                    ok(ArrowArrayFinishElement(a));
+                }
+            } else if constexpr (std::is_same_v<T, Records>) {
+                for (const auto &row : x.rows) {
+                    int64_t i = 0;
+                    for (const auto &[name, prototype] : x.prototype)
+                        append(a->children[0]->children[i++],
+                               value(row.at(name)));
+                    ok(ArrowArrayFinishElement(a->children[0]));
+                }
+                ok(ArrowArrayFinishElement(a));
             } else {
                 for (const auto &entry : x)
                     append(a->children[0], Value(entry));
@@ -135,19 +142,19 @@ std::shared_ptr<CnexBatch> batch(const std::vector<Row> &rows) {
         auto s = out->schema.children[index++];
         auto t = type(sample);
         if (std::holds_alternative<std::monostate>(sample) &&
-            (name == "eccentricity" || name == "i0_rad"))
+            (name == "eccentricity" || name == "i0_rad" || name == "delay_m" ||
+             name == "vtec_tecu" || name == "mean_vtec_tecu"))
             t = NANOARROW_TYPE_DOUBLE;
         if (std::holds_alternative<std::monostate>(sample) &&
             name == "ephemeris_status_flag")
             t = NANOARROW_TYPE_BOOL;
-        if (t == NANOARROW_TYPE_DECIMAL128)
-            ok(ArrowSchemaSetTypeDecimal(s, t, 38, 12));
-        else
-            ok(ArrowSchemaSetType(s, t));
-        if (t == NANOARROW_TYPE_LIST)
-            ok(ArrowSchemaSetType(s->children[0], sample.index() == 8
-                                                      ? NANOARROW_TYPE_STRING
-                                                      : NANOARROW_TYPE_INT64));
+        if (std::holds_alternative<std::monostate>(sample) &&
+            t == NANOARROW_TYPE_DOUBLE)
+            sample = 0.0;
+        if (std::holds_alternative<std::monostate>(sample) &&
+            t == NANOARROW_TYPE_BOOL)
+            sample = false;
+        field_schema(s, sample);
         ok(ArrowSchemaSetName(s, name.c_str()));
     }
     ok(ArrowArrayInitFromSchema(&out->array, &out->schema, nullptr));
@@ -742,19 +749,23 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
             if (t)
                 s.advance(*t);
             auto fam = family.str(row);
-            if (fam != "GPS_LNAV" && fam != "QZS_LNAV") {
+            if (fam != "GPS_LNAV" && fam != "QZS_LNAV" && fam != "SBAS_L1") {
                 ++s.counts["unsupported_families"];
                 continue;
             }
             auto sys = root.child("satellite_system").str(row);
             auto sat = root.child("satellite_number").integer(row);
-            if (sys != (fam == "GPS_LNAV" ? "G" : "J") || sat < 1 ||
-                sat > 255 ||
-                root.child("body_format").str(row) != "LNAV_300_V1" ||
+            const bool sbas = fam == "SBAS_L1";
+            if (sys != (sbas                ? "S"
+                        : fam == "GPS_LNAV" ? "G"
+                                            : "J") ||
+                sat < 1 || sat > 255 ||
+                root.child("body_format").str(row) !=
+                    (sbas ? "SBAS_L1_250_V1" : "LNAV_300_V1") ||
                 root.child("content_kind").str(row) != "navigation_bits" ||
-                root.child("bit_length").integer(row) != 300 ||
+                root.child("bit_length").integer(row) != (sbas ? 250 : 300) ||
                 root.child("completeness").str(row) != "complete")
-                throw std::runtime_error("Invalid LNAV identity/layout");
+                throw std::runtime_error("Invalid broadcast identity/layout");
             bool pass = false, fail = false;
             if (!checks.null(row))
                 for (auto j = ArrowArrayViewListChildOffset(
@@ -782,6 +793,28 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
             if (signals.empty())
                 throw std::runtime_error("Empty bitstream source");
             auto bytes = ArrowArrayViewGetBytesUnsafe(body.v, row);
+            if (sbas) {
+                if (bytes.size_bytes != 32 || (bytes.data.as_uint8[31] & 63))
+                    throw std::runtime_error("Invalid SBAS size/padding");
+                const auto profile = sat == 22 ? SBAS::L1Profile::southpan_open
+                                               : SBAS::L1Profile::standard;
+                auto decoded =
+                    SBAS::parse_l1({bytes.data.as_uint8, 32}, profile);
+                ++s.counts[std::string("sbas_") +
+                           SBAS::status_name(decoded.status)];
+                if (decoded.status != SBAS::Status::decoded)
+                    continue;
+                auto [kind, fields] = sbas_fields(*decoded.message);
+                Row base{
+                    {"setup_id", s.setup},           {"satellite_system", sys},
+                    {"broadcasting_satellite", sat}, {"message_family", fam},
+                    {"bitstream_source", signals},   {"nav_epoch_gpst", tv(t)}};
+                base.insert(fields.begin(), fields.end());
+                ++s.counts["accepted_frames"];
+                ++s.counts["decoded_messages"];
+                s.emit(kind, std::move(base));
+                continue;
+            }
             if (bytes.size_bytes != 38 || (bytes.data.as_uint8[37] & 15))
                 throw std::runtime_error("Invalid LNAV size/padding");
             Bits b;

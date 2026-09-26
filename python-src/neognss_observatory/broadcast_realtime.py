@@ -218,7 +218,7 @@ def json_records(outputs):
 )
 @click.option("--output", type=click.Path(path_type=Path), help="Exclusive-create JSONL file; default stdout.")
 def cli(host, port, input_path, protocol, setup_path, max_latency, duration, snapshot_interval, output):
-    """Decode GPS/QZSS LNAV CommonNEX messages and emit periodic snapshots."""
+    """Decode GPS/QZSS LNAV and SBAS L1 messages from CommonNEX."""
     if bool(host) == bool(input_path):
         raise click.UsageError("Specify exactly one of --host or --input")
     if input_path and duration is not None:
@@ -233,7 +233,7 @@ def cli(host, port, input_path, protocol, setup_path, max_latency, duration, sna
             if input_path
             else tcp_groups(host, port, stream, max_latency=max_latency, duration=duration)
         )
-        click.echo("Decoding GPS/QZSS LNAV; other broadcast families are counted as unsupported.", err=True)
+        click.echo("Decoding GPS/QZSS LNAV and SBAS L1; other families are counted as unsupported.", err=True)
         with output.open("x") if output else nullcontext(click.get_text_stream("stdout")) as target:
             for group in groups:
                 if group is None:

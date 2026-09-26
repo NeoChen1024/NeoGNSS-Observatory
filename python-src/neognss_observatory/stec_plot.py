@@ -18,8 +18,13 @@ from tqdm import tqdm
 
 from .gpst import calendar, label
 from .map_assets import coastline_sha512, with_coastline
-from .sbas_composite import PRIORITY, hourly_rows, parse_priority
-from .sbas_grid_parquet import SCHEMA as SBAS_SCHEMA
+from .sbas_composite import (
+    PRIORITY,
+    grid_files,
+    iter_snapshots,
+    parse_priority,
+    select_snapshot,
+)
 from .sbas_grid_render import coastline_parts, parse_hour
 from .stec_fusion import read_fused
 from .stec_incremental import publication, replace_json
@@ -113,44 +118,28 @@ def prepare_hours(root, scratch, start, end, center, selected_days=None):
 
 
 class Background:
-    """Read each matching SBAS day once; never open raw subframes."""
+    """Use current SBAS snapshots at exact STEC hour targets, without extrapolation."""
 
     def __init__(self, root, hours, priority, coverage):
         self.files, self.rows, self.day = {}, {}, None
         self.priority, self.coverage = priority, coverage
-        self.state = {}
+        self.hours = set(hours)
         if root is None:
             return
-        daily = root / "daily" if (root / "daily").is_dir() else root
-        needed = {h // 86400 * 86400000 for h in hours}
-        for path in daily.glob("GPST-*.parquet"):
-            schema = pq.ParquetFile(path).schema_arrow
-            meta = schema.metadata or {}
-            if (
-                not schema.equals(SBAS_SCHEMA)
-                or any(meta.get(k) != v for k, v in SBAS_SCHEMA.metadata.items())
-                or b"day_gpst_ms" not in meta
-            ):
-                raise ValueError(f"Expected current SBAS grid Parquet: {path}; regenerate using ngo-sbas-grid-parquet")
-            day = int(meta[b"day_gpst_ms"])
-            if day in needed or day + 86400000 in needed:
-                if day in self.files:
-                    raise ValueError("Duplicate SBAS day")
+        for path in grid_files(root):
+            with pq.ParquetFile(path) as source:
+                day = int(source.schema_arrow.metadata[b"day_gpst"])
+            if any(day <= hour < day + 86400 for hour in self.hours):
                 self.files[day] = path
 
     def get(self, hour):
-        day = hour // 86400 * 86400000
+        day = hour // 86400 * 86400
         if self.day != day:
-            self.rows = defaultdict(list)
-            if self.day != day - 86400000:
-                self.state.clear()
-                if day - 86400000 in self.files:
-                    hourly_rows(self.files[day - 86400000], day - 86400000, priority=self.priority, state=self.state)
-            self.day = day
+            self.day, self.rows = day, {}
             if day in self.files:
-                for row in hourly_rows(self.files[day], day, priority=self.priority, state=self.state):
-                    if row["coverage"] >= self.coverage:
-                        self.rows[row["hour_gpst"]].append(row)
+                for stamp, rows in iter_snapshots(self.files[day]):
+                    if stamp in self.hours:
+                        self.rows[int(stamp)] = select_snapshot(rows, self.priority, "current", self.coverage)
         return self.rows.get(hour, [])
 
 

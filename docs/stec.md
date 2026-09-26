@@ -228,7 +228,10 @@ segments, and preserves provisional/negative/out-of-range values. Natural Earth
 identify the coastline ZIP by SHA-512, not its path or modification time.
 Older plot states using path-based identity require `--rebuild` once.
 The optional SBAS grid remains a separate input; SBAS background VTEC is not
-the STEC estimate. Use `--rebuild` to regenerate old GPS-only plot outputs.
+the STEC estimate. It reads [grid snapshots](subframes.md) at exact STEC hour
+targets, with the shared current-value provider selection and no extrapolation
+of missing snapshots. Use `--rebuild` to regenerate previously rendered plots
+when changing the background product or interpretation.
 
 References: [Bias-SINEX](https://files.igs.org/pub/data/format/sinex_bias_100.pdf),
 [IONEX](https://files.igs.org/pub/data/format/ionex1.pdf).

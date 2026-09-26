@@ -1,220 +1,162 @@
-# Navigation subframes and SBAS
+# SBAS grid snapshots and maps
 
-The processing boundary is the SBAS message, not its UBX/SBF transport.
+The shared `SbasGridProcessor` consumes CommonNEX and uses the same typed SBAS
+L1 decoder as [broadcast-message decoding](broadcast-sbas.md). It maintains
+source-local MT18/26 grid state and MT0 research restrictions. It does not parse
+UBX/SBF envelopes or apply satellite orbit/clock corrections.
 
-## Daily Parquet pipeline
+## Commands
 
 ```sh
-# Optional read-only QA; extraction does not require evidence of this run.
-ngo-dataset-qa --input-dir /data/ubx
-# Initialize once with actual station metadata, then supply raw files.
-ngo-cnex-import init /data/cnex --setup /data/setup.json
-ngo-cnex-import run -p sbf --station /data/cnex /data/first.sbf /data/second.sbf
+ngo-sbas-grid --input-dir /data/cnex --output /data/sbas-grid \
+  --snapshot-interval 3600
+ngo-sbas-plot --input-dir /data/sbas-grid --output /data/sbas-maps
 
-ngo-sbas-grid-parquet --input-dir /data/cnex --output /data/sbas-grid
-
-ngo-sbas-grid-plot --input-dir /data/sbas-grid --output /data/sbas-maps
+ngo-sbas-realtime -p sbf --host RECEIVER_HOST --port 2006 \
+  --setup /data/setup.json --snapshot-interval 60 > snapshots.jsonl
 ```
 
-Import, grid calculation and plotting are separate commands. Grid reads the
-ParquetNEX station's latest RawBits and Events revisions and all their parts.
-It has no protocol selection, raw-data path or reconstruction dependency.
+`ngo-sbas-grid` reads the latest ParquetNEX revisions and their parts. RawBits,
+navigation completion Events and receiver-telemetry GPST provide ordered
+navigation context. Observation completion is not substituted for navigation
+time. Timed receiver restart Events clear the state; ordinary diagnostic notices
+do not. Raw recordings are normalized by `ngo-cnex-import` before offline use.
 
-The `SBAS input rows` progress bar counts all scanned RawBits and Events rows,
-including records excluded from grid calculation; it is not a count of usable
-SBAS frames. Output progress counts grid intervals, not elapsed GNSS time.
+`ngo-sbas-realtime` is an adapter over the shared CommonNEX normalizer. Choose
+`--host` or `--input recording.sbf.xz` (UBX and plain inputs also supported).
+The scientific processor and snapshot semantics are the same as offline replay.
+TCP delivery defaults to five seconds; `--duration` limits TCP capture only.
+JSONL goes to stdout unless `--output` exclusively creates a file. Diagnostics
+go to stderr. Each line includes the snapshot summary and a `grid` list, which
+may be empty. Decimal times are strings and missing values are null.
 
-### Explicit wire protocol
+Both processing commands default to a 3,600-second snapshot interval,
+600-second correction age and 1,200-second mask age. These are explicit
+reception-context research policies, not an aviation integrity guarantee.
+`--correction-age` and `--mask-age` can select another positive-integer policy.
+There is no separate fixed-gap reset or mandatory interval-file intermediate.
 
-Only `ngo-cnex-import run` uses `--protocol/-p ubx|sbf` (default UBX).
-Complete checksum-valid foreign frames are skipped atomically
-with throttled stderr warnings and skipped frame/byte counts. Invalid wire
-frames follow the decoder's corruption/resynchronization policy; incomplete
-tails remain unpublished and can be continued with the import sidecar.
+## Time, masks and state
 
-Inputs are expanded files, supplied explicitly or discovered with importer
-`-r/--recursive`; head probes determine their import order.
-Observation and receiver navigation reversals abort import without overlap removal.
-RawBits uses current receiver navigation context; source SIS timestamps are not
-retained or used as fallback. Canonical bits remain unchanged.
-Use reconstructed Era A
-segments, excluding unassigned data, or nonoverlapping raw UBX/SBF recordings.
-No reconstruction index, QA stamp or XZ decompression is
-required. UBX navigation association uses fresh NAV-TIMEGPS; EOE is only a
-navigation completion boundary and does not gate RawBits association,
-independently of RAWX measurement time. SBF GEORawL1 uses synchronous receiver navigation time,
-without claiming that an individual raw block completes a navigation epoch.
-Unusable RawBits time is retained as null by import and skipped by grid,
-never invented. See the
-[importer guide](commonnex/importer.md) for continuation and coverage limits.
+Snapshot targets are integer multiples of `interval_s` since the GPST origin.
+The first target is strictly after the first reliable processing time. A target
+emits state known before the first input at that newly reached context; it is
+not precise RF-time reconstruction. Input timestamps retain picosecond precision.
+Other reliable navigation progress can age grids even without new SBAS messages.
 
-Continuous file/day boundaries preserve framing and signal state. Grid's
-`--gap-timeout` (default 50 seconds) closes state after a navigation-context or
-per-satellite SBAS reception gap. This is a downstream conservative coverage
-policy, not receiver restart evidence or a CommonNEX format requirement.
-At the selected input end, integration stops at the last available navigation
-context (or final SBAS time if no context events exist), without extrapolation.
-This is not a permanent end-of-stream marker in the input dataset.
+Mask/issue association is local to setup, broadcasting satellite and signal set.
+MT26 is usable only with a fresh matching band/IODI mask. An acquired band can
+produce research values before the whole advertised mask set is complete;
+`mask_set_complete` distinguishes that case. Corrections received without the
+matching mask are counted and not retrospectively applied. Original decoded
+messages remain independently available through BroadcastMessageDecoder.
 
-### RawBits product
+Issue changes, mask removal, same-issue mask changes and stale-mask reacquisition
+invalidate dependent values. Fresh masks do not resurrect old corrections.
+Do-not-use and not-monitored replace previous usable values immediately.
+Correction and mask expiry are independent. Unknown-time grid messages cannot
+update or refresh timed values. No host clock is used to invent GPST.
 
-`YYYY/MM/DD/r00-raw-bits-part00.parquet` follows the
-[CommonNEX RawBits fields](commonnex/raw-bits.md). SBAS L1 uses
-`SBAS_L1_250_V1`, with DECIMAL(38,12) `nav_epoch_gpst`, normalized broadcaster
-identity, `SBAS_L1` bitstream source and separately scoped independent/receiver
-CRC checks. Failed checks remain records. The grid adapter projects these exact
-timestamps to integer milliseconds for its existing aging engine; source
-Parquet timestamps are unchanged. Navigation completion Events provide context
-separately; observation completion never anchors SBAS reception time.
+MT0 does not discard independently received grid values. Snapshots retain its
+last known context and distinguish `ACTIVE` (within 60 seconds), `ELAPSED`,
+`NOT_OBSERVED` and `UNKNOWN` (untimed MT0). These are research annotations:
+elapsed/not-observed is not certification of safety or service recovery.
+GIVEI remains an index, not a linear weight or measured standard deviation.
 
-The SBAS body includes its own preamble, message type and CRC. UBX/SBF headers,
-checksums, native field dictionaries, ninth UBX words, byte offsets and filenames
-are not copied into the product. Raw archives preserve the transport. Invalid
-and unsupported complete SBAS bodies remain available for inspection/re-decoding.
+Midnight and file/batch boundaries do not reset scientific state. Explicit
+discontinuity and receiver restart do. At a timed restart, an already-reached
+snapshot boundary is emitted before the reset. A reset inside a window discards
+that segment's unfinished statistics; the next window is marked partial.
+Untimed restart Events are rejected because they cannot be ordered safely.
+EOF emits no future or off-grid snapshot; the last unfinished window is not
+published. There is no persisted processor checkpoint or append/resume workflow
+in this command yet. Replay preceding CommonNEX context when rebuilding outputs.
 
-### Grid and map products
+## Snapshot products
 
-Grid verifies CRC evidence against the SBAS bodies. Receiver-rejected frames
-do not update masks or corrections.
-Independent stream state spans Parquet files and GPST midnight. Grid consumes
-navigation completion Events and rejects unsupported navigation event kinds;
-receiver-scope restart Events are currently filtered out, not applied as grid
-boundaries. The importer already emits these Events. Until grid gains an
-explicit mapping, short receiver restarts can incorrectly retain previous
-mask/aging state; a navigation/reception gap is not a substitute for restart
-handling.
+Daily files are partitioned by **snapshot target GPST date**, not window start:
 
-- [ ] Consume receiver restart Events in grid, defining timed and untimed
-  boundaries without carrying masks across an established restart.
+```text
+YYYY/MM/DD/grid.parquet
+YYYY/MM/DD/snapshots.parquet
+```
 
-Grid schema version 4 contains RINEX `satellite_system`/`satellite_number`
-identity (`S`/`37`, displayed as `S37`), signal, `stream_id`,
-`frame_id`, IGP band/mask position, coordinates, IODI, GIVEI, delay in meters,
-equivalent VTEC in TECU, and `[start_gpst_ms,end_gpst_ms)`. The derived grid's
-integer `stream_id` is a run-local continuity-segment counter, not a CommonNEX
-station identity or a reference to a Stream metadata file. `frame_id` points
-to a run-local occurrence counter for the originating MT26, not a Parquet
-foreign key or byte offset. SBAS
-bodies are not duplicated for every grid cell. Midnight splits intervals, not
-state. No raw source references or transport identifiers are persisted.
+Both use Zstandard level 3 and dictionary encoding. The summary file preserves
+empty snapshots; grid files need not exist on days without any grid rows.
+`--overwrite` replaces a completed output while retaining its backup. No raw
+archive or existing CommonNEX dataset is modified.
 
-Correction/mask ages remain 600/1200 seconds. Missing masks and expired state
-produce no interval. Reported do-not-use and not-monitored states are retained
-with null delay/VTEC, alongside `reported_gpst_ms` and `status`, so selection
-cannot mistake them for missing data. This is SBAS-broadcast equivalent VTEC,
-not receiver-observed STEC. Empty days have no grid Parquet.
+All time/duration fields below are decimal128(38,12) seconds, indices/counters
+are int64, booleans are bool and physical quantities/fractions are float64.
 
-MT0 is a research warning, not a grid reset: retain independently decoded
-MT18/26 state and set `mt0_seen` on subsequent intervals until state resets.
-The flag is historical within that state, not a timed integrity guarantee;
-false does not establish safety. MT0 payload is not reinterpreted as MT2.
-Existing grid products must be regenerated for schema 4; CommonNEX does not
-need rebuilding.
-
-Grid publishes daily Parquet after successful processing; `--overwrite`
-retains the previous output as a backup.
-RawBits publication uses ParquetNEX revision/part rules. Grid does not require
-the import-state sidecar, completion summaries or raw sources.
-
-`ngo-sbas-grid-plot` uses grid Parquet and the bundled Natural Earth 10m coastline.
-Use `--coastline PATH` to supply another coastline ZIP. It computes
-one composite map per hour, not separate satellite/provider maps.
-Select sources per IGP and time interval before computing valid-duration-weighted
-hourly means; `--min-coverage` defaults to 0.25. Default provider priority is
-MSAS, BDSBAS, KASS, GAGAN, SouthPAN; `--priority` can reorder these providers.
-Unavailable, expired, do-not-use or not-monitored candidates fall through to
-the next provider. Within a provider, use its newest report; a newer rejection
-blocks older usable reports from its other satellites. Equal-time reports with
-any rejection are rejected conservatively; equal-time usable reports use the lowest
-RINEX satellite number. Concurrent estimates are not averaged or counted twice.
-
-The current provider registry covers S29/S37 (MSAS), S30/S43/S44 (BDSBAS),
-S34/S42 (KASS), S27/S28/S32 (GAGAN), and S22 (SouthPAN). Unmapped satellites
-require an explicit registry update rather than a guessed provider.
-Selected intervals, provider/PRN and MT0 flag are written to `selected/`;
-hourly records retain contributing sources and their durations. Source switches
-can introduce steps: the composite is a research visualization, not an integrity
-solution or a blended ionosphere model. MT0 contributions are marked on maps.
-STEC's optional SBAS background uses the same selection, configured through
-`ngo-stec-plot --sbas-priority`.
-Hourly grid records are stored in `hourly/GPST-YYYY-MM-DD.parquet`, using
-Zstandard level 3 and explicit GPST, coordinate and VTEC units. Each file
-contains that day's hourly means, valid durations and coverage fractions;
-these are the reusable hourly products for rendering.
-`--start/--end YYYY-MM-DDTHH` select GPST hours with an exclusive end.
-Missing cells stay absent. See `--help` for rendering controls. Color limits
-default to 0–200 TECU. The 5-degree cell
-overlay and map coastlines are illustrative, not precision coverage polygons.
-
-## Library API and routing
-
-See [native architecture](native-architecture.md) for library ownership and
-the [processing API](../libneognss-obs/README.md) for direct callers. Grid uses
-CommonNEX records, not receiver transport fields.
-
-## SBAS L1 content support
-
-Scope is SBAS L1 C/A, not SBAS L5 or QZSS L1S. Canonical body layout and
-receiver mappings are defined in [RawBits layouts](commonnex/raw-bits-formats.md);
-transport words and framing remain in the raw archive.
-
-| Message type | Typed content |
+| Grid fields | Interpretation |
 | --- | --- |
-| 0 | Test-mode marker; optional corrections are not applied |
-| 1 | PRN mask and IODP |
-| 2–5 | Fast corrections, UDREI, IODF, IODP |
-| 6 | Integrity indicators |
-| 7 | Fast-correction degradation indices |
-| 9 | GEO navigation raw signed fields and time-of-day field |
-| 18 | Ionospheric band mask and IODI |
-| 26 | Ionospheric delays, GIVEI, band/block and IODI |
-| 63 | Null-message marker |
+| `setup_id`, `satellite_system`, `satellite_number`, `bitstream_source` | Station and original source identity; `S`/37 denotes S37; signals are a string list |
+| `snapshot_gpst`, `window_start_gpst` | Evaluation target and nominal statistics window `[start,target)` |
+| `band`, `mask_bit`, `latitude`, `longitude` | Fixed IGP identity and coordinates in degrees |
+| `iodi`, `givei`, `reported_gpst`, `expiry_gpst` | Latest report's issue, index, reception context and dependent expiry |
+| `status`, `mask_set_complete` | `USABLE`, `DO_NOT_USE`, `NOT_MONITORED`, `EXPIRED`, `MASK_CHANGED` or `MASK_REMOVED`; current complete-mask flag |
+| `delay_m`, `vtec_tecu` | Current usable vertical delay and equivalent VTEC; null when not usable |
+| `valid_duration_s`, `coverage`, `mean_vtec_tecu` | Usable duration, duration divided by the full nominal interval, and valid-time-weighted mean; mean is null if no valid duration |
+| `last_mt0_gpst`, `mt0_restriction`, `mt0_duration_s` | Last timed MT0, current restriction annotation and restricted/unknown duration within usable statistics time |
+| `output_sequence` | Run-local delivery order, not a foreign key |
 
-Other types, including 10, 12, 17, 24, 25, 27, 28 and 62, return
-`unsupported_message` with the original frame retained. Invalid frames never
-yield typed content. This is content extraction, not a complete SBAS correction
-engine or safety/integrity assessment.
+VTEC is `delay_m * (1575.42e6)^2 / (40.3 * 1e16)` TECU. It is SBAS broadcast
+equivalent VTEC, not receiver-observed STEC. Invalid current values can still
+have a meaningful previous-window mean. The report's IODI/GIVEI describe current
+state, not every contributing value in that window. Expired/removed cells can
+appear once to deliver their final statistics/status, then disappear. All usable
+sources are preserved, independent of presentation priority.
 
-Raw numeric fields remain available. Only explicitly suffixed `_m` helpers and
-JSON fields are scaled; MT9 position, velocity, acceleration and clock fields
-remain raw wire integers. MT26 delay 511 is `do_not_use` with no numeric delay;
-GIVEI 15 is `not_monitored`, even if a numeric delay is present. Numeric values
-alone do not establish that a correction is safe to apply.
+Summary fields are `setup_id`, `snapshot_gpst`, `window_start_gpst`,
+`segment_start_gpst`, `partial_window`, `grid_rows`, `usable_cells`, `sources`
+and `output_sequence`. `sources` counts known source identities in the current
+segment, not necessarily currently usable providers. Initial/reset partial
+coverage is not normalized to pretend a full interval was observed.
 
-MT18 mask positions are one-based static mask bits. MT26
-`active_mask_ordinal` is instead an ordinal into the **active** MT18 mask,
-starting at `15 * block + 1`. The stateless C++ parser validates field
-extraction, CRC, and band/block bounds, not every reserved bit or cross-message
-semantic constraint. The Observatory native grid processor adds conservative
-matching and aging independently per SBAS signal.
+## Python API
 
-### HEVC/MP4 preview
+```python
+from neognss_observatory.sbas_grid import SbasGridProcessor
 
-Encode the PNG manifest in its recorded order with a Vulkan Video HEVC encoder:
-
-```sh
-ngo-sbas-map-video \
-  --images-manifest work/era-a-vtec-hourly/images.json \
-  --output work/era-a-vtec-hourly/era-a-S37-hourly-vtec-5fps-hevc.mp4 \
-  --title "Era A SBAS composite hourly mean VTEC"
+processor = SbasGridProcessor(setup_id, interval_s=60)
+output = processor.feed(common_nex_batch_group)
+# output maps "grid" / "snapshots" to lists of owned Arrow RecordBatch objects.
+processor.finish()  # no extrapolated tail snapshot
 ```
 
-The defaults are 5 fps, Vulkan physical device 0, CQP 24, an `hvc1` MP4 stream,
-and `faststart` metadata placement. Native dimensions are preserved when both
-dimensions are even; an odd dimension is padded by one pixel because the NV12
-hardware path requires even dimensions. The command never rescales.
+RawBits-only callers can use `process(batch)`; input progress is then limited
+to those rows. Explicit ordered `(gpst, is_restart)` delivery controls can be
+passed as `progress_controls`. Native decoding/state/Arrow work releases the
+GIL. Source identities are bounded to 64; one call can cross at most 4,096
+snapshot targets and emit at most one million rows. Exceeding bounds fails
+explicitly; a failed native processor must be reconstructed.
 
-Frame order comes only from `images.json`, not a filesystem glob. The command
-checks PNG headers/dimensions and the encoded codec, dimensions, frame rate,
-frame count and duration with `ffprobe`. Full decoding is opt-in with
-`--verify-output`. An adjacent `.frames.jsonl` retains the frame-to-hour mapping;
-there is no environment/hash provenance bundle. Use `--overwrite` to replace an
-existing video after the new video passes the requested checks.
+## Selection and rendering
 
-## References
+`ngo-sbas-plot` makes one composite map per available snapshot, not separate
+provider maps. `--quantity current` selects current usable values; `--quantity
+mean` selects already-computed per-source window means. It does **not** rebuild
+a time-varying source composite before averaging. Exact retrospective interval
+selection is outside this tool's scope.
 
-- [u-blox integration manual](https://www.u-blox.com/sites/default/files/ZED-F9P_IntegrationManual_UBX-18010802.pdf): RXM-SFRBX navigation-word arrangement.
-- [ESA Navipedia SBAS message format](https://gssc.esa.int/navipedia/index.php/The_EGNOS_SBAS_Message_Format_Explained): message contents and correction semantics.
-- [ESA Navipedia ionospheric delay](https://gssc.esa.int/navipedia/index.php/Ionospheric_Delay): first-order delay/TEC relationship.
-- [Natural Earth 1:10m coastline](https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-coastline/): public-domain coastline source.
-- [Pinned RTKLIB SBAS implementation](../contrib/RTKLIB/src/sbas.c): field-layout cross-reference; dependency revision is the repository gitlink.
+Default priority is MSAS, BDSBAS, KASS, GAGAN, SouthPAN; `--priority` reorders it.
+Current selection uses the newest report within a provider; a tied/newer
+do-not-use or not-monitored report prevents fallback to an older usable GEO of
+that provider. Another provider may still supply the cell. Ties use satellite
+number then grid identity. Unknown providers are labeled by Sxx and follow
+configured providers. No weighting or cross-provider averaging is performed.
+
+`--min-coverage` defaults to zero; color limits default to 0–200 TECU. The
+bundled Natural Earth 10m coastline is reused per worker. `--start/--end` accept
+GPST `YYYY-MM-DDTHH`, with exclusive end. Missing cells remain absent and MT0
+contributions are marked. The five-degree tile overlay is illustrative, not a
+precision service-coverage polygon. `images.json` records snapshot timestamps.
+
+STEC's optional background uses the same current-snapshot selection at exact
+STEC hour targets. It does not extrapolate missing snapshots or reinterpret a
+window mean as an instantaneous value.
+
+`ngo-sbas-map-video --images-manifest /data/sbas-maps/images.json --output /data/sbas.mp4`
+encodes manifest-ordered PNGs without synthesizing gaps. Its frame sidecar retains
+`snapshot_gpst`. Encoding defaults and validation options are in `--help`.

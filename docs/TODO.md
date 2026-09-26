@@ -5,7 +5,7 @@ unverified; current behavior is documented in the linked tool guides.
 Update this document as work lands; move implemented behavior into the relevant
 usage/design guides and remove superseded plans rather than retaining history.
 
-## Composable processing and Unified SBAS (deferred design and implementation)
+## Composable processing and Unified SBAS
 
 The next prerequisite is the [broadcast decoder design](broadcast-message-decoder.md):
 decode and assemble complete satellite-message parameters without requiring
@@ -73,37 +73,35 @@ each processor's native result stream. Snapshot support is optional.
 
 ### Unified SBAS
 
-Agreed direction: replace the separate legacy SBAS pipeline with one stateful
-CommonNEX consumer shared by historical replay and live processing. This is a
-target, not the current API. Detailed implementation is deferred and must follow
-the processing and optional snapshot contracts above.
+The [snapshot-first grid processor](subframes.md) is shared by historical
+replay and live processing. The [SBAS decoder contract](broadcast-sbas.md) owns
+MessageOutput fields. Snapshot export does not require an interval intermediate
+or promise exact retrospective time-varying source compositing.
 
-- [ ] Define one high-level batch API for CommonNEX RawBits and Events, with
+- [x] Define one high-level batch API for CommonNEX RawBits and Events, with
   explicit time advancement, restart/discontinuity handling and finalization.
   Keep file/day partitioning in storage, not in the scientific state lifecycle.
-- [ ] Produce per-source current grid snapshots and completed validity intervals
+- [x] Produce per-source current grid snapshots and window statistics
   from the same decoding, mask, correction and aging state. Preserve every
   usable source, not only the highest-priority provider. Retain source identity,
   grid identity/coordinates, VTEC, GIVEI, report time and relevant MT0 status.
-- [ ] Support GPST-aligned periodic snapshots with per-source current grid
-  state and explicitly defined useful statistics. Select the actual SBAS
-  statistics and windows during detailed design; do not equate snapshot cadence
-  with correction arrival cadence or hourly averaging.
-- [ ] Specify how do-not-use, not-monitored, expiry and mask changes invalidate
-  prior values in both snapshots and intervals; never leave stale values active.
-- [ ] Keep provider selection/fusion outside the decoding and validity engine.
+- [x] Support GPST-aligned snapshots with valid duration, coverage, mean VTEC
+  and MT0-affected duration over the preceding snapshot window. Snapshot cadence
+  does not alter correction arrival or aging.
+- [x] Specify how do-not-use, not-monitored, expiry and mask changes invalidate
+  prior values; never leave stale values active.
+- [x] Keep provider selection/fusion outside the decoding and validity engine.
   Share the selection policy between historical plots and live displays so
   users can change priorities without decoding or importing the input again.
 - [ ] Investigate optional weighting separately, including spatial alignment,
   uncertainty interpretation and correlated broadcasts. Do not treat GIVEI as
   a linear weight or multiple satellites of one provider as independent data.
-- [ ] Define output adapters for Parquet and live Arrow/JSONL consumers. Hourly
-  aggregation must apply the selected policy over time before averaging, while
-  preserving independent source products for alternative rendering policies.
-- [ ] Replace the old SBAS processing path and obsolete APIs/CLI entry points
-  without compatibility aliases. Final command names and migration scope remain
-  part of the upcoming architecture discussion; do not rewrite existing data.
-- [ ] Verify equivalent results across historical/live batch delivery, batch
+- [x] Provide Parquet and live Arrow/JSONL snapshot adapters. Preserve independent
+  source products; plot current values or existing per-source means. Precise
+  interval-level retrospective source recomposition is outside these scripts.
+- [x] Replace the old interval APIs and CLI entry points with `ngo-sbas-grid`,
+  `ngo-sbas-realtime` and `ngo-sbas-plot`, without aliases or dataset rewrites.
+- [x] Verify equivalent results across historical/live batch delivery, batch
   sizes, midnight, aging without new SBAS messages, MT0, restart and provider
   changes. Retain old code only as a temporary comparison baseline, not a
   permanent second implementation.

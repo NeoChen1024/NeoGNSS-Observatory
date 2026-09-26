@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "broadcast_fields.hpp"
+#include <iomanip>
 #include <neognss_obs/processing.hpp>
 #include <neognss_obs/ubx_archive.hpp>
 #include <openssl/evp.h>
+#include <sstream>
 
 namespace neognss_obs {
 std::vector<uint8_t> archive_index(std::span<const uint8_t> bytes) {
@@ -41,6 +44,44 @@ static std::string hex(std::span<const uint8_t> bytes) {
         s += digits[b & 15];
     }
     return s;
+}
+// The inspection API uses the same decoded fields as Arrow, not another parser.
+static Json broadcast_json(const broadcast_detail::Value &value) {
+    using namespace broadcast_detail;
+    return std::visit(
+        [&](const auto &x) -> Json {
+            using T = std::decay_t<decltype(x)>;
+            if constexpr (std::is_same_v<T, std::monostate>)
+                return nullptr;
+            else if constexpr (std::is_same_v<T, Tick>) {
+                const auto absolute = x < 0 ? -x : x;
+                std::ostringstream text;
+                if (x < 0)
+                    text << '-';
+                text << int64_t(absolute / ps) << '.' << std::setfill('0')
+                     << std::setw(12) << int64_t(absolute % ps);
+                return text.str();
+            } else if constexpr (std::is_same_v<T, Records> ||
+                                 std::is_same_v<T, Record>) {
+                auto fields = [](const Fields &f) {
+                    Json out = Json::object();
+                    for (const auto &[name, scalar] : f)
+                        out[name] = broadcast_json(std::visit(
+                            [](const auto &s) -> Value { return s; }, scalar));
+                    return out;
+                };
+                if constexpr (std::is_same_v<T, Record>)
+                    return x.row ? fields(*x.row) : Json(nullptr);
+                else {
+                    Json out = Json::array();
+                    for (const auto &r : x.rows)
+                        out.push_back(fields(r));
+                    return out;
+                }
+            } else
+                return Json(x);
+        },
+        value);
 }
 Json sbas_message(const neognss_obs::SBAS::Result &result) {
     namespace S = neognss_obs::SBAS;
@@ -125,6 +166,12 @@ Json sbas_message(const neognss_obs::SBAS::Result &result) {
                      {"acceleration_raw", v.acceleration_raw},
                      {"clock_offset_raw", v.clock_offset_raw},
                      {"clock_drift_raw", v.clock_drift_raw}};
+            else if constexpr (!std::is_same_v<T, std::monostate>) {
+                auto [kind, fields] = broadcast_detail::sbas_fields(m);
+                c = {{"kind", kind}};
+                for (const auto &[name, value] : fields)
+                    c[name] = broadcast_json(value);
+            }
         },
         m.content);
     out["content"] = std::move(c);

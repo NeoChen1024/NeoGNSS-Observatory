@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Rendering helpers for protocol-neutral hourly SBAS cells."""
+"""Rendering helpers for per-source SBAS snapshots."""
 
 import multiprocessing
 import os
@@ -78,7 +78,7 @@ def extent_for(rows):
 def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None, show_progress=True, png_compression=3):
     selected = [row for row in rows if row["coverage"] >= min_coverage]
     if not selected:
-        raise ValueError("No hourly grid cells meet the coverage threshold")
+        raise ValueError("No snapshot grid cells meet the coverage threshold")
     extent = extent if extent is not None else extent_for(selected)
     aspect = (extent[1] - extent[0]) / (extent[3] - extent[2])
     # Size the canvas around the equal-aspect map, not an arbitrary wide page.
@@ -88,16 +88,16 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
     coast = _coast
     grouped = defaultdict(list)
     for row in selected:
-        grouped[row["hour_gpst"]].append(row)
+        grouped[row["snapshot_gpst"]].append(row)
     image_dir = output / "png"
     image_dir.mkdir()
     manifest = []
     norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
     cmap = matplotlib.colormaps["turbo"]
-    for key, cells in tqdm(sorted(grouped.items()), desc="Render hourly PNG", unit="image", disable=not show_progress):
+    for key, cells in tqdm(sorted(grouped.items()), desc="Render snapshot PNG", unit="image", disable=not show_progress):
         hour = key
         sources = sorted({v["provider"] for cell in cells for v in cell["sources"]})
-        mt0 = any(v["mt0_seconds"] > 0 for cell in cells for v in cell["sources"])
+        mt0 = any(v["mt0_restricted"] for cell in cells for v in cell["sources"])
         directory = image_dir
         label = gpst_label(hour)
         path = directory / (label.replace(":", "-") + ".png")
@@ -117,7 +117,7 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
             ylim=extent[2:],
             xlabel="Longitude",
             ylabel="Latitude",
-            title=f"SBAS composite hourly mean VTEC — {label}\n"
+            title=f"SBAS {cells[0]['quantity']} VTEC snapshot - {label}\n"
             f"{' / '.join(sources)} | coverage ≥ {min_coverage:.0%}" + (" | includes MT0 research data" if mt0 else ""),
         )
         ax.set_aspect("equal", adjustable="box")
@@ -130,8 +130,8 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
             path,
             facecolor="white",
             metadata={
-                "Title": f"SBAS composite hourly mean VTEC {label}",
-                "Description": "Experimental time-weighted MT26 grid; Made with Natural Earth.",
+                "Title": f"SBAS VTEC snapshot {label}",
+                "Description": "Experimental MT26 grid snapshot; Made with Natural Earth.",
             },
             pil_kwargs={"compress_level": png_compression},
         )
@@ -139,7 +139,7 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
         manifest.append(
             dict(
                 path=str(path.relative_to(output)),
-                hour_gpst=hour,
+                snapshot_gpst=hour,
                 providers=sources,
                 includes_mt0=mt0,
                 cells=len(cells),
@@ -150,7 +150,7 @@ def render_serial(rows, coastline, output, vmin, vmax, min_coverage, extent=None
 
 def render_job(job):
     rows, coastline, output, vmin, vmax, min_coverage, extent, compression = job
-    # Each worker owns a temporary output tree and publishes its unique hour.
+    # Each worker owns a temporary output tree and publishes its unique snapshot.
     with tempfile.TemporaryDirectory(prefix=".render-", dir=output) as temporary:
         manifest, _ = render_serial(rows, coastline, Path(temporary), vmin, vmax, min_coverage, extent, False, compression)
         for record in manifest:
@@ -163,18 +163,18 @@ def render_job(job):
 def render(rows, coastline, output, vmin, vmax, min_coverage, workers=4, png_compression=3):
     selected = [r for r in rows if r["coverage"] >= min_coverage]
     if not selected:
-        raise ValueError("No hourly grid cells meet the coverage threshold")
+        raise ValueError("No snapshot grid cells meet the coverage threshold")
     extent = extent_for(selected)
     groups = defaultdict(list)
     for row in selected:
-        key = row["hour_gpst"]
+        key = row["snapshot_gpst"]
         groups[key].append(row)
     if workers == 1 or len(groups) == 1:
         return render_serial(selected, coastline, output, vmin, vmax, min_coverage, extent, True, png_compression)
     jobs = [(cells, coastline, output, vmin, vmax, min_coverage, extent, png_compression) for _, cells in sorted(groups.items())]
     manifest = []
     with ProcessPoolExecutor(max_workers=min(workers, len(jobs)), mp_context=multiprocessing.get_context("spawn")) as pool:
-        for result in tqdm(pool.map(render_job, jobs), total=len(jobs), desc="Render hourly PNG", unit="image"):
+        for result in tqdm(pool.map(render_job, jobs), total=len(jobs), desc="Render snapshot PNG", unit="image"):
             manifest.extend(result)
     return manifest, extent
 

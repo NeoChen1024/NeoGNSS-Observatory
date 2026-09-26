@@ -14,7 +14,7 @@ only when they affect present interpretation or processing.
 - [Processing overview](processing-overview.md): supported paths and research boundaries.
 - [GPST policy](time-policy.md): units, timestamps and partitions.
 - [Dataset notes](dataset-notes.md): overlap and acquisition caveats that affect analysis.
-- [Implementation TODO](TODO.md): processing roadmap, deferred Unified SBAS design and unchecked implementation tasks, not current functionality.
+- [Implementation TODO](TODO.md): processing roadmap, Unified SBAS roadmap and unchecked implementation tasks, not current functionality.
 
 ## Design drafts
 
@@ -28,8 +28,10 @@ only when they affect present interpretation or processing.
 
 ## Tools
 
-- [Broadcast-message decoding](broadcast-decode-realtime.md): GPS/QZSS LNAV
+- [Broadcast-message decoding](broadcast-decode-realtime.md): GPS/QZSS LNAV and SBAS L1
   messages, assemblies and periodic snapshots from live or recorded inputs.
+- [SBAS broadcast fields](broadcast-sbas.md): implemented L1 message schemas
+  and remaining downstream association/snapshot work.
 
 - [CommonNEX live streaming](commonnex/live.md): native engine, five-second batch
   delivery, bounded TCP acquisition and Arrow IPC transport adapters.
@@ -47,7 +49,7 @@ only when they affect present interpretation or processing.
 - [Receiver antenna calibration](antenna.md): shared PCO/PCV, same-frequency use, bounded interpolation and nearby-frequency substitution.
 - [Offline PPP Float](ppp.md): raw GPS observations, local precise products and numerical/plot outputs.
 - [Dataset QA and reconstruction](dataset-qa.md): optional scan and explicit restitch.
-- [SBAS frames, grids and maps](subframes.md): source-independent Parquet pipeline.
+- [SBAS grid snapshots and maps](subframes.md): shared live/replay processor, snapshot Parquet and rendering.
 - [Receiver clocks](receiver-clock.md): telemetry, unwrap and plots.
 - [RINEX conversion](rinex-conversion.md): RTKLIB-EX and RxTools usage and limits.
 - [CDDIS downloader](cddis-downloader.md): credentials, planning and transfer recovery.

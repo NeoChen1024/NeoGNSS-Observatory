@@ -103,7 +103,7 @@ def encode_command(ffmpeg, device, pattern, output, width, height, fps, quality,
         "-metadata",
         f"title={title}",
         "-metadata",
-        f"comment={frame_count} manifest-ordered hourly maps at {fps} fps; gaps are not synthesized",
+        f"comment={frame_count} manifest-ordered snapshot maps at {fps} fps; gaps are not synthesized",
         "-an",
         "-y",
         str(output),
@@ -194,11 +194,11 @@ def atomic_jsonlines(path, images, fps, overwrite):
             row = {
                 "frame_index": number,
                 "video_time_seconds": number / fps,
-                "hour_gpst": record.get("hour_gpst"),
+                "snapshot_gpst": record.get("snapshot_gpst"),
                 "png": record["path"],
             }
-            if row["hour_gpst"] is not None:
-                row["hour_label_gpst"] = gpst_label(row["hour_gpst"])
+            if row["snapshot_gpst"] is not None:
+                row["snapshot_label_gpst"] = gpst_label(row["snapshot_gpst"])
             stream.write(json.dumps(row, separators=(",", ":"), sort_keys=True) + "\n")
     os.replace(temporary, path)
 
@@ -214,7 +214,7 @@ def atomic_jsonlines(path, images, fps, overwrite):
 @click.option("--device", default="0", show_default=True, help="FFmpeg Vulkan physical-device selector.")
 @click.option("--fps", type=click.IntRange(min=1), default=5, show_default=True)
 @click.option("--quality", type=click.IntRange(min=0, max=51), default=24, show_default=True, help="Vulkan Video CQP value.")
-@click.option("--title", default="SBAS hourly mean VTEC", show_default=True)
+@click.option("--title", default="SBAS VTEC snapshots", show_default=True)
 @click.option(
     "--verify-output/--no-verify-output", default=False, show_default=True, help="Decode the complete video after encoding."
 )

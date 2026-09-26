@@ -21,37 +21,6 @@ class DatasetScan {
     struct State;
     std::unique_ptr<State> state_;
 };
-struct GridFrame {
-    int64_t gpst_ms, frame_id;
-    std::array<uint8_t, 32> bytes;
-    bool crc_valid, accepted;
-};
-struct GridInterval {
-    int64_t start_gpst_ms, end_gpst_ms, satellite_number = 0, band, mask_bit,
-                                        iodi, givei, frame_id, stream_id = 0;
-    double latitude, longitude, delay_m, vtec_tecu;
-    int64_t reported_gpst_ms = 0,
-            status = 0; // 0 usable, 1 do_not_use, 2 not_monitored.
-    bool mt0_seen = false;
-};
-class GridProcessor {
-  public:
-    GridProcessor(double correction_age = 600, double mask_age = 1200,
-                  double gap_timeout = 0);
-    ~GridProcessor();
-    // Rows contain gpst_ms, offset, and a decoded SBAS message. One signal
-    // per instance; caller explicitly chooses continuous-group boundaries.
-    Json process(const Json &rows);
-    Json process_frames(const Json &rows);
-    Json finish(int64_t gpst_ms);
-    std::vector<GridInterval> process_frames(std::span<const GridFrame>);
-    std::vector<GridInterval> finish_intervals(int64_t gpst_ms);
-    Json diagnostics() const;
-
-  private:
-    struct State;
-    std::unique_ptr<State> state_;
-};
 class SegmentPlanner {
   public:
     SegmentPlanner(const Json &joins, int64_t gap_timeout_ms);

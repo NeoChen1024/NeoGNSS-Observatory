@@ -1,7 +1,7 @@
 # Realtime broadcast-message decoding
 
 `ngo-broadcast-decode-realtime` consumes CommonNEX RawBits through a native
-GPS/QZSS LNAV decoder. Receiver input is normalized by the shared CommonNEX
+GPS/QZSS LNAV and SBAS L1 decoder. Receiver input is normalized by the shared CommonNEX
 engine, not parsed again by the scientific consumer. No precise products,
 orbit calculation or DCB calibration is required.
 
@@ -39,6 +39,7 @@ it is not a durable identity or a CommonNEX reference.
 | `special_message` | Full 22-byte payload, escaped display and ICD character-set check |
 | `nmct` | Availability indicator, 180-bit payload and unencrypted signed ERD codes |
 | `qznma_payload` | Extracted 182-bit data region; no authentication verification |
+| `sbas_*` | SBAS L1 fields, corrections, masks, GEO parameters, service regions and covariance factors; [complete field contract](broadcast-sbas.md) |
 
 QZSS has no full-almanac completion output. SV ID zero is test mode, not an empty
 member. GPS dummy pages count toward reception completeness but create no
@@ -66,6 +67,10 @@ are not guessed: `orbit_reference_known=false` and normalized eccentricity/
 inclination are null. Historical/expanded-PRN variants need further coverage.
 
 ## Snapshots
+
+SBAS currently provides MessageOutput only. Its messages contribute to lifetime
+statistics but are not inserted as usable correction candidates into snapshots.
+Mask/issue association, correction aging and MT0 use policies belong downstream.
 
 Snapshots describe state known in input order, not exact RF-time completeness.
 When a non-null RawBits navigation context reaches/crosses `k * interval_s`

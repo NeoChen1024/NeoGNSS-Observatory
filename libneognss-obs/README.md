@@ -40,7 +40,7 @@ python -m pip install .
 ngo-cnex-import init /data/cnex --setup /data/setup.json
 ngo-cnex-import run -p ubx --station /data/cnex /data/first.ubx
 ngo-receiver-clock --input-dir /data/cnex --output /data/clock
-ngo-sbas-grid-parquet --input-dir /data/cnex --output /data/sbas-grid
+ngo-sbas-grid --input-dir /data/cnex --output /data/sbas-grid
 ```
 
 The independent UBX/SBF `neognsslogger` application belongs to libcppgnss.
@@ -71,7 +71,7 @@ The experimental extension is `neognss_observatory._native`:
 | `DatasetScan(protocol="ubx", gap_timeout=50)` | Read-only streaming QA |
 | `archive_index(buffer)` | Read-only UBX buffer to a packed `UBXIDX04` index |
 | `SegmentPlanner(joins, timeout_ms)` | Source index buffers to GPST segments/quarantined spans |
-| `GridProcessor(correction_age=600, mask_age=1200, gap_timeout=0)` | Protocol-neutral timed SBAS batches to IGP state intervals |
+| `SbasGridProcessor(setup_id, interval_s=3600, correction_age_s=600, mask_age_s=1200)` | CommonNEX RawBits and ordered progress to typed grid snapshots |
 | `ObservationReader(protocol="ubx")` | UBX RAWX / SBF MeasEpoch chunks to opaque GPS observation batches |
 | `CnexObservationReader(protocol, setup_id, antenna, period_seconds, period_ps)` | UBX/SBF chunks to four CommonNEX Arrow batches: observations, events, RawBits and receiver-telemetry |
 | `CnexTimeProbe(protocol)` | Independent head-sample framing and first valid observation/navigation GPST anchors; no Arrow science output |
@@ -117,46 +117,12 @@ RTKLIB adapters share the same process-wide lock. See [STEC conventions and
 limits](../docs/stec.md); GIM-constrained estimates are not independent calibration.
 
 Receiver-clock consumes CommonNEX telemetry and Events, not raw receiver files.
-One `GridProcessor` represents one
-signal in one continuous group; `finish(end_gpst_ms)` stops at the last observed
-epoch, without inventing an extra second.
-
-`GridProcessor.process_frames()` accepts batches with `gpst_ms`, `frame_id`,
-`frame` (32 bytes carrying 250 MSB-first bits with six zero padding bits),
-`crc_valid`, and nullable `accepted`. It re-decodes SBAS content and verifies
-CRC in C++ without any knowledge of the source transport. This dictionary
-interface remains available for direct callers, alongside typed C++ frame and
-interval batches; it is not used by the Parquet hot path. Grid frame IDs
-are run-local occurrence counters, not raw byte offsets or Parquet foreign keys.
-
-`GridCnexProcessor(setup_id, gap_timeout_ms)` is the station-level Arrow adapter
-used by `ngo-sbas-grid-parquet`. `begin_day(day_gpst_ms)` opens a day;
-`events(batch)` gathers its navigation completion context before `feed(batch)`
-consumes RawBits. `end_day()` drains the day's pending frames without resetting
-signal state, and `finish()` closes streams at the final available context.
-Arrow types, Setup identity, canonical bodies, CRC evidence, day membership and
-time ordering are checked in native code. Millisecond time projection retains
-the existing truncation policy. Feed/drain methods return owned, read-only
-structured NumPy interval arrays; no per-frame Python callbacks or JSON
-conversion are involved. Native processing releases the GIL and rejects
-concurrent use of the same processor. Diagnostics remain a small dictionary.
-
-The decoded-content interface `GridProcessor.process()` accepts `gpst_ms`, `offset` and `sbas`
-keys. These times are continuous milliseconds since 1980-01-06 GPST. For UBX,
-the shared streaming epoch assembler establishes reception context. These times
-must not be confused with a measured SBAS transmission timestamp.
-
-The CommonNEX adapter uses navigation-context times and rejects receiver-failed
-CRC records for grid updates. A positive `gap_timeout` clears state after a per-signal message
-gap, closing intervals at the last observed time; zero disables this extra
-policy when explicit frame-stream end records already define continuity. Feed all SBAS
-message types for gap detection, not just mask/correction messages. Python
-attaches RINEX `satellite_system`, `satellite_number`, and `signal` identities to
-intervals, keeping SBAS Sxx numbering through plotting and selection.
-Intervals carry their originating correction time, usable/do-not-use/not-monitored
-status and an MT0-seen flag. Non-usable numeric values are NaN in native arrays
-and null in grid Parquet. MT0 retains grid state for research; it does not grant
-integrity assurance. See the [grid policy](../docs/subframes.md).
+`SbasGridProcessor` uses the shared typed SBAS decoder and exports owned Arrow
+`grid` and `snapshots` batches. The Python facade orders navigation progress and
+restart controls with RawBits for both ParquetNEX replay and live delivery.
+Time retains decimal128(38,12) precision; there is no daily lifecycle or fixed
+silence reset. See the [snapshot contract](../docs/subframes.md) for field types,
+aging, statistics, restrictions, resource bounds and EOF behavior.
 
 This is pre-Alpha research code, not a stable ABI or safety-critical SBAS
 implementation. See [architecture and limitations](../docs/native-architecture.md).

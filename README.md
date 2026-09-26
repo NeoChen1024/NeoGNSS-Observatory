@@ -62,13 +62,14 @@ links for configuration, input requirements and scientific limitations.
 | [ngo-dataset-qa](docs/dataset-qa.md) | Inspect recording quality and reconstruct overlapping UBX archives. |
 | [ngo-cnex-import](docs/commonnex/importer.md) | Import UBX/SBF recordings into daily CommonNEX/ParquetNEX datasets. |
 | [ngo-cnex-live](docs/commonnex/live.md) | Produce CommonNEX batches from live receiver streams. |
-| [ngo-broadcast-decode-realtime](docs/broadcast-decode-realtime.md) | Decode GPS/QZSS LNAV messages and emit periodic state snapshots as JSONL. |
+| [ngo-broadcast-decode-realtime](docs/broadcast-decode-realtime.md) | Decode GPS/QZSS LNAV and SBAS L1 messages, with LNAV state snapshots, as JSONL. |
 | [ngo-stec](docs/stec.md) | Calculate phase-leveled STEC and GIM-constrained receiver bias estimates. |
 | [ngo-stec-plot](docs/stec.md) | Render STEC trajectories with optional SBAS VTEC backgrounds. |
 | [ngo-stec-realtime](docs/stec-realtime.md) | Emit realtime relative STEC and IPP coordinates as JSONL. |
 | [ngo-stec-realtime-view](docs/stec-realtime-view.md) | Display the latest hour of relative STEC trajectories in a desktop GUI. |
-| [ngo-sbas-grid-parquet](docs/subframes.md) | Decode SBAS RawBits into daily grid validity intervals in Parquet. |
-| [ngo-sbas-grid-plot](docs/subframes.md) | Render composite VTEC maps from available SBAS providers. |
+| [ngo-sbas-grid](docs/subframes.md) | Export per-source SBAS grid snapshots and statistics to Parquet. |
+| [ngo-sbas-realtime](docs/subframes.md) | Emit the same SBAS snapshots from live CommonNEX as JSONL. |
+| [ngo-sbas-plot](docs/subframes.md) | Render composite VTEC maps from available SBAS providers. |
 | [ngo-sbas-map-video](docs/subframes.md#hevcmp4-preview) | Encode map sequences as HEVC/MP4 preview videos. |
 | [ngo-receiver-clock](docs/receiver-clock.md) | Analyze CommonNEX receiver telemetry and reconstruct clock trajectories. |
 | [ngo-receiver-clock-reunwrap](docs/receiver-clock.md) | Recalculate clock unwrapping from existing derived Parquet data. |

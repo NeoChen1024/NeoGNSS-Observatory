@@ -204,29 +204,6 @@ PYBIND11_MODULE(_native, m) {
         return py::bytes(reinterpret_cast<const char *>(result.data()),
                          result.size());
     });
-    using Grid = Guarded<neognss_obs::GridProcessor>;
-    py::class_<Grid>(m, "GridProcessor")
-        .def(py::init<double, double, double>(),
-             py::arg("correction_age") = 600, py::arg("mask_age") = 1200,
-             py::arg("gap_timeout") = 0)
-        .def("process",
-             [](Grid &s, py::object rows) {
-                 auto batch = from_python(rows);
-                 return run(s, [&](auto &p) { return p.process(batch); });
-             })
-        .def("process_frames",
-             [](Grid &s, py::object rows) {
-                 auto batch = from_python(rows);
-                 return run(s,
-                            [&](auto &p) { return p.process_frames(batch); });
-             })
-        .def("finish",
-             [](Grid &s, int64_t end) {
-                 return run(s, [&](auto &p) { return p.finish(end); });
-             })
-        .def_property_readonly("diagnostics", [](Grid &s) {
-            return run(s, [](auto &p) { return p.diagnostics(); });
-        });
     m.def("igp_coordinates", [] {
         py::dict out;
         for (unsigned b = 0; b <= 10; ++b)

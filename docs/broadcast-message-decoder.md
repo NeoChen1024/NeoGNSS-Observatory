@@ -5,6 +5,10 @@ available through [the realtime decoder and Python API](broadcast-decode-realtim
 That guide owns current coverage and concrete fields; proposals below are not
 claims of complete implementation for every family or validity model.
 
+The [SBAS L1 contract](broadcast-sbas.md) owns implemented SBAS message fields
+and the remaining downstream association/snapshot work. Its MessageOutput is
+available through the same realtime decoder; correction use is left to consumers.
+
 ## Boundary and outputs
 
 `BroadcastMessageDecoder` belongs to `libneognss-obs`. It consumes CommonNEX
