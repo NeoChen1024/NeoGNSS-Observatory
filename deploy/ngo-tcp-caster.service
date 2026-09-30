@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-3.0-only
+[Unit]
+Description=Receive-only serial or TCP byte-stream caster
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=tcp-caster
+Group=tcp-caster
+# Adjust to the installed repository-root uv environment.
+ExecStart=/opt/NeoGNSS-Observatory/.venv/bin/ngo-tcp-caster --config /etc/ngo-tcp-caster.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Serial use: grant the service user access to the configured device, e.g.
+# SupplementaryGroups=dialout
+# Use the device's actual group on your distribution. Do not enable PrivateDevices.
+
+[Install]
+WantedBy=multi-user.target

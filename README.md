@@ -58,6 +58,7 @@ links for configuration, input requirements and scientific limitations.
 | --- | --- |
 | [neognsslogger](libcppgnss/README.md) | Record UBX/SBF streams and inspect decoded GNSS messages. |
 | [ngo-mosaic-push](docs/mosaic-push.md) | Retrieve, compress and archive Septentrio receiver recordings. |
+| [ngo-tcp-caster](docs/tcp-caster.md) | Broadcast a serial or TCP source to independent receive-only TCP clients. |
 | [ngo-rx-msgratio](docs/dataset-qa.md) | Report receiver-message counts and their share of recording size. |
 | [ngo-dataset-qa](docs/dataset-qa.md) | Inspect recording quality and reconstruct overlapping UBX archives. |
 | [ngo-cnex-import](docs/commonnex/importer.md) | Import UBX/SBF recordings into daily CommonNEX/ParquetNEX datasets. |

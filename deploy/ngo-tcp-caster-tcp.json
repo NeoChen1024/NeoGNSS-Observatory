@@ -1,0 +1,20 @@
+{
+  "source": {
+    "type": "tcp",
+    "host": "127.0.0.1",
+    "port": 3001,
+    "connect_timeout_seconds": 10,
+    "idle_timeout_seconds": 10,
+    "reconnect": {
+      "initial_delay_seconds": 1,
+      "max_delay_seconds": 30,
+      "stable_connection_seconds": 60
+    }
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3002,
+    "max_clients": 32,
+    "client_buffer_bytes": 1048576
+  }
+}

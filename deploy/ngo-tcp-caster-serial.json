@@ -1,0 +1,27 @@
+{
+  "source": {
+    "type": "serial",
+    "device": "/dev/ttyACM0",
+    "baudrate": 115200,
+    "bytesize": 8,
+    "parity": "N",
+    "stopbits": 1,
+    "rtscts": false,
+    "xonxoff": false,
+    "dsrdtr": false,
+    "dtr": true,
+    "rts": true,
+    "idle_timeout_seconds": null,
+    "reconnect": {
+      "initial_delay_seconds": 1,
+      "max_delay_seconds": 30,
+      "stable_connection_seconds": 60
+    }
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3002,
+    "max_clients": 32,
+    "client_buffer_bytes": 1048576
+  }
+}
