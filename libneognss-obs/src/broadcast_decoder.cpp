@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "arrow_batch.hpp"
+#include "broadcast_cnav.hpp"
 #include "broadcast_fields.hpp"
 #include <algorithm>
 #include <array>
@@ -9,7 +10,6 @@
 #include <neognss_obs/broadcast_decoder.hpp>
 #include <numbers>
 #include <optional>
-#include <set>
 #include <variant>
 #include <vector>
 
@@ -220,17 +220,11 @@ struct BroadcastMessageDecoder::State {
         Row row;
         Tick received, first;
     };
-    struct AlmanacAssembly {
-        std::optional<Tick> start;
-        std::map<int, Row> slots;
-        std::map<int, Row> values;
-        std::optional<Tick> toa;
-    };
     std::string setup;
     Tick interval;
     std::optional<Tick> progress, next;
     std::map<std::string, Assembly> ephemeris;
-    std::map<std::string, AlmanacAssembly> almanacs;
+    QzsCnavDecoder cnav;
     std::vector<Candidate> cache;
     std::map<std::string, uint64_t> counts;
     std::map<std::string, std::vector<Row>> output;
@@ -248,93 +242,20 @@ struct BroadcastMessageDecoder::State {
         r["output_sequence"] = int64_t(counts["output_records"]++);
         output[kind].push_back(std::move(r));
     }
-    void collect_almanac(const Bits &b, const Row &base, const Row &fields,
-                         const std::string &key, std::optional<Tick> t) {
-        if (!t || std::get<bool>(base.at("alert")))
-            return;
-        const int sf = int(b.u(43, 3)), id = int(b.u(50, 6));
-        // GPS section-20 nominal page schedule, confirmed against HOW. Dummy
-        // pages have no subject ID, so only a valid HOW can locate their slot.
-        auto tow = b.u(24, 17) * 6;
-        if (tow >= 604800 || tow % 30 != uint64_t(sf * 6 % 30)) {
-            ++counts["almanac_schedule_mismatch"];
-            return;
-        }
-        int page = int(((tow + 604800 - 6) % 604800) / 30 % 25) + 1;
-        int slot = 0;
-        if (sf == 5 && page <= 24)
-            slot = page;
-        else if (sf == 4 && page >= 2 && page <= 5)
-            slot = page + 23;
-        else if (sf == 4 && page >= 7 && page <= 10)
-            slot = page + 22;
-        else if (sf == 5 && page == 25)
-            slot = 51;
-        else if (sf == 4 && page == 25)
-            slot = 63;
-        if (!slot)
-            return;
-        if (id != slot && !(id == 0 && slot <= 32)) {
-            ++counts["almanac_schedule_mismatch"];
-            return;
-        }
-        auto &a = almanacs[key];
-        if (a.start && *t - *a.start > seconds(2250)) {
-            a = {};
-            ++counts["almanac_timeout"];
-        }
-        std::optional<Tick> toa;
-        if (fields.contains("toa_s"))
-            toa = std::get<Tick>(fields.at("toa_s"));
-        Row content = fields;
-        content.erase("reference_gpst");
-        if ((toa && a.toa && *toa != *a.toa) ||
-            (a.slots.contains(slot) && a.slots.at(slot) != content)) {
-            a = {};
-            ++counts["almanac_changed"];
-        }
-        if (!a.start)
-            a.start = t;
-        if (toa)
-            a.toa = toa;
-        a.slots[slot] = content;
-        Row value = base;
-        value.insert(fields.begin(), fields.end());
-        a.values[slot] = value;
-        if (a.slots.size() != 34 || !a.slots.contains(51) ||
-            !a.slots.contains(63))
-            return;
-        const auto &epoch = a.values.at(51);
-        if (!a.toa || !epoch.contains("reference_gpst") ||
-            std::holds_alternative<std::monostate>(epoch.at("reference_gpst")))
-            return;
-        int64_t count = 0;
-        for (const auto &[n, v] : a.values)
-            if (n <= 32 && v.contains("subject_sv_id")) {
-                auto row = v;
-                row["completed_gpst"] = *t;
-                row["reference_gpst"] = epoch.at("reference_gpst");
-                row["first_received_gpst"] = *a.start;
-                emit("almanac_set_entries", std::move(row));
-                ++count;
-            }
-        Row summary = base;
-        summary["reference_gpst"] = epoch.at("reference_gpst");
-        summary["first_received_gpst"] = *a.start;
-        summary["received_satellite_count"] = count;
-        summary["completeness"] = std::string("COMPLETE");
-        emit("almanac_set", std::move(summary));
-        ++counts["almanac_sets"];
-        a = {};
-    }
     void remember(const std::string &kind, const std::string &key, const Row &r,
                   std::optional<Tick> t) {
         if (!t)
             return;
+        std::erase_if(cache, [&](const auto &c) {
+            return *t - c.received > seconds(7 * 86400) ||
+                   (c.kind.starts_with("cnav_") &&
+                    cnav_expired(c.row, c.kind, *t));
+        });
         // Keep distinct parameter candidates; receipt headers are not content.
         auto content = [](Row x) {
-            for (auto name : {"nav_epoch_gpst", "first_received_gpst",
-                              "tow_count", "subframe_id", "alert", "antispoof"})
+            for (auto name :
+                 {"nav_epoch_gpst", "first_received_gpst", "tow_count",
+                  "subframe_id", "alert", "antispoof", "message_type"})
                 x.erase(name);
             return x;
         };
@@ -345,9 +266,6 @@ struct BroadcastMessageDecoder::State {
                 c.received = *t;
                 return;
             }
-        std::erase_if(cache, [&](const auto &c) {
-            return *t - c.received > seconds(7 * 86400);
-        });
         if (cache.size() >= 8192)
             throw std::runtime_error("Broadcast candidate capacity exceeded");
         cache.push_back({kind, key, r, *t, *t});
@@ -373,6 +291,30 @@ struct BroadcastMessageDecoder::State {
                 r["snapshot_gpst"] = *next;
                 r["first_received_gpst"] = c.first;
                 r["applicability"] = std::string("UNKNOWN");
+                if (c.kind == "cnav_eop") {
+                    // QPNT 5.13.2: EOP week comes from UTC only when both
+                    // reference TOW and prediction TOW match, source-locally.
+                    for (const auto &utc : cache) {
+                        if (utc.kind != "cnav_utc" || utc.key != c.key ||
+                            utc.received >= *next ||
+                            utc.row.at("tot_s") != r.at("teop_s") ||
+                            utc.row.at("top_s") != r.at("top_s") ||
+                            std::holds_alternative<std::monostate>(
+                                utc.row.at("reference_gpst")))
+                            continue;
+                        if (!std::holds_alternative<std::monostate>(
+                                r.at("reference_gpst")) &&
+                            r.at("reference_gpst") !=
+                                utc.row.at("reference_gpst")) {
+                            r["reference_gpst"] = Value{};
+                            break;
+                        }
+                        r["reference_gpst"] = utc.row.at("reference_gpst");
+                    }
+                }
+                if (c.kind.starts_with("cnav_") &&
+                    !cnav_snapshot(r, c.kind, *next))
+                    continue;
                 if (c.kind == "almanac_entry") {
                     r["reference_gpst"] = Value{};
                     auto prefix = c.key.substr(0, c.key.rfind(':'));
@@ -569,8 +511,6 @@ struct BroadcastMessageDecoder::State {
         base["sv_id_raw"] = int64_t(id);
         if (id == 0) {
             ++counts[q ? "test_mode" : "dummy"];
-            if (!q)
-                collect_almanac(b, base, {}, key, t);
             return;
         }
         std::string kind;
@@ -693,9 +633,6 @@ struct BroadcastMessageDecoder::State {
         r.insert(fields.begin(), fields.end());
         emit(kind, r);
         ++counts["decoded_messages"];
-        if (!q && (kind == "almanac_entry" || kind == "almanac_epoch" ||
-                   kind == "configuration_health"))
-            collect_almanac(b, base, fields, key, t);
         if (kind != "special_message" && kind != "qznma_payload" &&
             kind != "nmct" && !std::get<bool>(base.at("alert")))
             remember(kind, key + ":" + std::to_string(id), r, t);
@@ -709,7 +646,7 @@ BroadcastMessageDecoder::~BroadcastMessageDecoder() = default;
 void BroadcastMessageDecoder::discontinuity() {
     std::lock_guard guard(state_->mutex);
     state_->ephemeris.clear();
-    state_->almanacs.clear();
+    state_->cnav.clear();
     state_->progress.reset();
     state_->next.reset();
     ++state_->counts["discontinuities"];
@@ -749,19 +686,23 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
             if (t)
                 s.advance(*t);
             auto fam = family.str(row);
-            if (fam != "GPS_LNAV" && fam != "QZS_LNAV" && fam != "SBAS_L1") {
+            if (fam != "GPS_LNAV" && fam != "QZS_LNAV" && fam != "QZS_CNAV" &&
+                fam != "SBAS_L1") {
                 ++s.counts["unsupported_families"];
                 continue;
             }
             auto sys = root.child("satellite_system").str(row);
             auto sat = root.child("satellite_number").integer(row);
             const bool sbas = fam == "SBAS_L1";
+            const bool cnav = fam == "QZS_CNAV";
             if (sys != (sbas                ? "S"
                         : fam == "GPS_LNAV" ? "G"
                                             : "J") ||
                 sat < 1 || sat > 255 ||
-                root.child("body_format").str(row) !=
-                    (sbas ? "SBAS_L1_250_V1" : "LNAV_300_V1") ||
+                root.child("body_format").str(row) != (sbas ? "SBAS_L1_250_V1"
+                                                       : cnav
+                                                           ? "CNAV_300_V1"
+                                                           : "LNAV_300_V1") ||
                 root.child("content_kind").str(row) != "navigation_bits" ||
                 root.child("bit_length").integer(row) != (sbas ? 250 : 300) ||
                 root.child("completeness").str(row) != "complete")
@@ -815,6 +756,36 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
                 s.emit(kind, std::move(base));
                 continue;
             }
+            auto ordered = signals;
+            std::sort(ordered.begin(), ordered.end());
+            std::string key = sys + std::to_string(sat);
+            for (const auto &v : ordered)
+                key += "/" + v;
+            if (s.ephemeris.size() > 1024)
+                throw std::runtime_error(
+                    "Broadcast source assembly capacity exceeded");
+            Row base{
+                {"setup_id", s.setup},           {"satellite_system", sys},
+                {"broadcasting_satellite", sat}, {"message_family", fam},
+                {"bitstream_source", signals},   {"nav_epoch_gpst", tv(t)}};
+            ++s.counts["accepted_frames"];
+            if (cnav) {
+                bool l2 = std::find(signals.begin(), signals.end(),
+                                    "QZS_L2C") != signals.end();
+                bool l5 = std::find(signals.begin(), signals.end(),
+                                    "QZS_L5_I") != signals.end();
+                for (auto &entry : s.cnav.decode(
+                         {bytes.data.as_uint8, size_t(bytes.size_bytes)}, key,
+                         sat, l2, l5, t, s.counts)) {
+                    auto r = base;
+                    r.insert(entry.fields.begin(), entry.fields.end());
+                    s.emit(entry.kind, r);
+                    if (entry.candidate)
+                        s.remember(entry.kind, key + ":" + entry.discriminator,
+                                   r, t);
+                }
+                continue;
+            }
             if (bytes.size_bytes != 38 || (bytes.data.as_uint8[37] & 15))
                 throw std::runtime_error("Invalid LNAV size/padding");
             Bits b;
@@ -825,19 +796,6 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
                         ((bytes.data.as_uint8[p / 8] >> (7 - p % 8)) & 1)
                         << (7 - k % 8);
                 }
-            auto ordered = signals;
-            std::sort(ordered.begin(), ordered.end());
-            std::string key = sys + std::to_string(sat);
-            for (const auto &v : ordered)
-                key += "/" + v;
-            if (s.ephemeris.size() + s.almanacs.size() > 1024)
-                throw std::runtime_error(
-                    "Broadcast source assembly capacity exceeded");
-            Row base{
-                {"setup_id", s.setup},           {"satellite_system", sys},
-                {"broadcasting_satellite", sat}, {"message_family", fam},
-                {"bitstream_source", signals},   {"nav_epoch_gpst", tv(t)}};
-            ++s.counts["accepted_frames"];
             s.decode(b, std::move(base), key, t);
         }
         Output out;

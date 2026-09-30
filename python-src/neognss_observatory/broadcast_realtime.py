@@ -18,7 +18,17 @@ from .setup_metadata import validate_setup
 
 def aggregate_almanacs(output):
     """Merge equal snapshot candidates only; MessageOutput stays source-local."""
-    batches = output.pop("snapshot_almanac_entry", [])
+    for source, entries, summary in (
+        ("snapshot_almanac_entry", "snapshot_almanac_entries", "snapshot_almanac_sets"),
+        ("snapshot_cnav_reduced_almanac", "snapshot_cnav_reduced_almanac_entries", "snapshot_cnav_reduced_almanac_sets"),
+        ("snapshot_cnav_midi_almanac", "snapshot_cnav_midi_almanac_entries", "snapshot_cnav_midi_almanac_sets"),
+    ):
+        _aggregate_almanacs(output, source, entries, summary)
+    return output
+
+
+def _aggregate_almanacs(output, source_kind, entries_kind, summary_kind):
+    batches = output.pop(source_kind, [])
     if not batches:
         return output
     excluded = {
@@ -31,6 +41,8 @@ def aggregate_almanacs(output):
         "tow_count",
         "alert",
         "antispoof",
+        "message_type",
+        "prn_id_raw",
     }
     columns = [field for field in batches[0].schema if field.name not in excluded]
     source_type = pa.struct(
@@ -69,7 +81,7 @@ def aggregate_almanacs(output):
         if key[3] is not None and len(rows) > 1:
             for row in rows:
                 row["conflict_present"] = True
-    output["snapshot_almanac_entries"] = [pa.RecordBatch.from_pylist(list(candidates.values()), schema=schema)]
+    output[entries_kind] = [pa.RecordBatch.from_pylist(list(candidates.values()), schema=schema)]
     sets = {}
     for row in candidates.values():
         key = tuple(row[k] for k in ("snapshot_gpst", "satellite_system", "message_family", "reference_gpst"))
@@ -88,7 +100,7 @@ def aggregate_almanacs(output):
             ("conflict_present", pa.bool_()),
         ]
     )
-    output["snapshot_almanac_sets"] = [
+    output[summary_kind] = [
         pa.RecordBatch.from_pylist(
             [
                 dict(
@@ -218,7 +230,7 @@ def json_records(outputs):
 )
 @click.option("--output", type=click.Path(path_type=Path), help="Exclusive-create JSONL file; default stdout.")
 def cli(host, port, input_path, protocol, setup_path, max_latency, duration, snapshot_interval, output):
-    """Decode GPS/QZSS LNAV and SBAS L1 messages from CommonNEX."""
+    """Decode GPS/QZSS LNAV, QZSS CNAV and SBAS L1 from CommonNEX."""
     if bool(host) == bool(input_path):
         raise click.UsageError("Specify exactly one of --host or --input")
     if input_path and duration is not None:
@@ -233,7 +245,7 @@ def cli(host, port, input_path, protocol, setup_path, max_latency, duration, sna
             if input_path
             else tcp_groups(host, port, stream, max_latency=max_latency, duration=duration)
         )
-        click.echo("Decoding GPS/QZSS LNAV and SBAS L1; other families are counted as unsupported.", err=True)
+        click.echo("Decoding GPS/QZSS LNAV, QZSS CNAV and SBAS L1; other families are counted as unsupported.", err=True)
         with output.open("x") if output else nullcontext(click.get_text_stream("stdout")) as target:
             for group in groups:
                 if group is None:

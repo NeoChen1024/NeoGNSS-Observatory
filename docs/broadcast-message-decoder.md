@@ -1,6 +1,6 @@
 # Broadcast message decoding and assembly
 
-Selected design and remaining roadmap. A first GPS/QZSS LNAV implementation is
+Selected design and remaining roadmap. GPS/QZSS LNAV, QZSS CNAV and SBAS L1 decoding is
 available through [the realtime decoder and Python API](broadcast-decode-realtime.md).
 That guide owns current coverage and concrete fields; proposals below are not
 claims of complete implementation for every family or validity model.
@@ -240,38 +240,23 @@ mapping remain pre-implementation work.
 
 ## Other message contracts
 
-Individual almanac entries can be emitted before a complete constellation set.
-A set needs coherent reference epoch, associated health/configuration evidence
-and an explicit membership/completion rule. Never require "32 healthy satellites"
-or infer QZSS membership from receiving ten arbitrary pages. Unknown membership
-means no complete-set claim. The exact system-specific membership rules remain
-open; single-entry output must not wait for that definition.
+GPS and QZSS almanac MessageOutput is per received entry. Emit every successfully
+decoded meaningful entry immediately, including repetitions; do not collect a
+full constellation or require epoch/health/configuration pages before emission.
+Those pages produce their own independent outputs. There is no almanac
+collection timeout, page checklist or complete-set MessageOutput.
 
-A source-local almanac MessageOutput requires every required page to have been
-received at least once within the assembly timeout, with consistent reference
-epoch/version evidence and no conflicting content. Emit once, clear that
-assembly, and collect the next occurrence from scratch, even if its eventual
-contents are identical. This does not clear snapshot candidates. An epoch change
-or content conflict prevents combining the fragments into one completed set.
-WNa/toa are reference identifiers, not a universally unique revision counter;
-G200 20.3.3.5.2.2 explicitly permits changed content at upload cutover with the
-same toa. Compare relevant payload fields, not changing HOW timestamps.
+Dummy/unconfigured slots are omitted, not counted toward a collection. Unhealthy
+configured satellites remain meaningful entries with their health retained.
+QZSS SV ID zero is test mode, not a missing satellite's dummy page.
 
-Dummy/unconfigured slots can establish that a required slot was received and
-is empty, but are omitted from decoded satellite entries. Missing reception
-does not prove an empty slot. Unhealthy configured satellites remain meaningful
-entries, with their health retained independently of collection completeness.
+Only snapshots aggregate compatible almanac candidates. Unknown membership does
+not justify a complete-set claim. WNa/toa are reference identifiers, not unique
+revision counters: differing candidates remain distinct rather than overwriting
+one another or combining conflicting parameters into an invented complete set.
 
-QZSS individual almanacs are complete single-message outputs; do not wait for a
-full source-local constellation collection. QPNT-006 gives a maximum almanac
-transmission interval of 600 seconds, but no usable full-set boundary/membership
-marker. Consequently no 1,800-second full-set assembly timer is needed. SV ID
-zero is test mode and cannot count as a missing satellite's dummy page.
-Cross-broadcaster QZSS almanac views belong only to snapshots.
-
-GPS/QZSS ephemeris uses a 90-second assembly timeout. GPS section-20 complete
-almanac collection uses 2,250 seconds (three 750-second cycles). These are
-reception policies, not parameter validity periods.
+GPS/QZSS ephemeris retains its 90-second assembly timeout. This reception policy
+is independent of parameter validity and is unaffected by per-entry almanac output.
 
 Special messages expose the full 22-byte payload as binary, with optional safe
 display text. For GPS, the payload is Word 3 bits 9-24, Words 4-9 data bits and
@@ -294,25 +279,31 @@ behavior, not silent loss of completed MessageOutput records.
 
 ## Definition and implementation checklist
 
+The [QZSS CNAV contract](broadcast-qzss-cnav.md) owns its implemented field,
+assembly and snapshot rules. CNAV-2 remains unsupported pending receiver-sample
+verification; it is not an alias of the 300-bit CNAV decoder.
+
 - [x] Establish decoder ownership, separate MessageOutput/Snapshot semantics,
   source preservation and backend-independent typed outputs.
 - [x] Inventory standard GPS section-20 and QZSS LNAV dispatch differences.
 - [x] Draft common occurrence fields and the assembled ephemeris parameter set.
-- [x] Define source-local fresh-set MessageOutput cycles, semantic-only outputs,
+- [x] Define source-local fresh ephemeris assemblies, per-entry almanacs and semantic-only outputs,
   snapshot-only cross-broadcaster aggregation and model-based normalization.
 - [x] Define snapshot bundle categories and almanac candidate/conflict semantics.
 - [x] Select standards-based health/applicability and the three-cycle assembly
   policy for periodic sets, distinct from parameter validity.
 - [ ] Finalize subframe field schemas, check acceptance, exact time-resolution
   rules, health/fit applicability, buffer bounds and assembly time limits.
-- [ ] Finalize almanac Arrow schemas, expected membership, rollover and numeric
-  collection deadlines for each supported schedule.
+- [ ] Finalize snapshot almanac reference resolution, expected membership and
+  rollover semantics; ordinary MessageOutput requires no set completion.
 - [ ] Define ionosphere/UTC, NMCT, health/configuration, special-message and
   QZNMA extraction schemas; review expanded-PRN and historical ICD variants.
 - [x] Replace the proposed completeness watermark with navigation-context,
   input-order snapshot boundaries; expose the first typed batch/JSONL API.
-- [x] Implement source-local SF1-3 assemblies, GPS almanac cycles, QZSS single
-  almanac entries and snapshot-only cross-broadcaster almanac aggregation.
+- [x] Implement source-local SF1-3 assemblies, GPS/QZSS per-entry almanac
+  MessageOutput and snapshot-only cross-broadcaster almanac aggregation.
+- [x] Decode all QPNT-006 QZSS CNAV types, assemble source-local ephemerides and
+  expose model-specific snapshots without discarding modern orbit parameters.
 - [ ] Complete scientific applicability and normalized signal-health mapping
   for all retained parameter categories; UNKNOWN is not valid coverage.
 - [ ] Implement against canonical RawBits, reusing existing decoding mechanisms

@@ -9,7 +9,8 @@ usage/design guides and remove superseded plans rather than retaining history.
 
 The next prerequisite is the [broadcast decoder design](broadcast-message-decoder.md):
 decode and assemble complete satellite-message parameters without requiring
-calculation-backend support. Its checklist owns GPS/QZSS LNAV definition work.
+calculation-backend support. Its checklist owns navigation-family coverage;
+the implemented QZSS CNAV contract is linked there.
 Decoded outputs are downstream products, not CommonNEX catalogs. Fixed receiver
 DCB reuse and SBAS-constrained calibration are not current implementation tasks.
 

@@ -1,7 +1,7 @@
 # Realtime broadcast-message decoding
 
 `ngo-broadcast-decode-realtime` consumes CommonNEX RawBits through a native
-GPS/QZSS LNAV and SBAS L1 decoder. Receiver input is normalized by the shared CommonNEX
+GPS/QZSS LNAV, QZSS CNAV and SBAS L1 decoder. Receiver input is normalized by the shared CommonNEX
 engine, not parsed again by the scientific consumer. No precise products,
 orbit calculation or DCB calibration is required.
 
@@ -34,23 +34,23 @@ it is not a durable identity or a CommonNEX reference.
 | `almanac_entry` | One GPS/QZSS subject slot's orbit, clock and health |
 | `almanac_epoch` | WNa/toa and ordered health slots |
 | `configuration_health` | GPS per-slot configuration and health for slots 25-32 |
-| `almanac_set`, `almanac_set_entries` | GPS source-local full collection summary and meaningful entries |
 | `ionosphere_utc` | Klobuchar and UTC/leap-second parameters, with region/reference identity |
 | `special_message` | Full 22-byte payload, escaped display and ICD character-set check |
 | `nmct` | Availability indicator, 180-bit payload and unencrypted signed ERD codes |
 | `qznma_payload` | Extracted 182-bit data region; no authentication verification |
 | `sbas_*` | SBAS L1 fields, corrections, masks, GEO parameters, service regions and covariance factors; [complete field contract](broadcast-sbas.md) |
+| `cnav_*` | QZSS L2C/L5 parameters, per-entry almanacs, text/authentication payloads and assembled ephemeris; [complete field contract](broadcast-qzss-cnav.md) |
 
-QZSS has no full-almanac completion output. SV ID zero is test mode, not an empty
-member. GPS dummy pages count toward reception completeness but create no
-satellite entry. Unsupported pages/families and failed integrity checks are
-counted in diagnostics, not emitted as fabricated decoded parameters.
+GPS and QZSS emit every decoded almanac entry immediately, including repeated
+entries. Epoch/health/configuration messages are independent outputs. There is
+no full-almanac collection, completion output or collection timer. GPS dummy
+pages and QZSS test-mode SV ID zero create no satellite entry. Snapshot-only
+candidate aggregation remains independent of MessageOutput.
 
-GPS almanac collection follows the section-20 nominal HOW/page schedule: the
-32 subject slots plus SF5/SV51 and SF4/SV63. A collection lasts at most 2,250
-seconds. Epoch/content conflicts reset it. Ephemeris assembly lasts at most 90
-seconds and cannot use alert-marked fragments. Both restart from fresh pieces
-after completion; duplicates do not extend the deadline. Complete unhealthy
+Unsupported pages/families and failed integrity checks are counted in diagnostics,
+not emitted as fabricated parameters. Ephemeris assembly still lasts at most
+90 seconds for LNAV, rejects alert-marked fragments and requires fresh SF1-3 pieces after
+each completion; duplicates do not extend the deadline. Complete unhealthy
 parameters can be reported: health is separate from decoding/assembly success.
 
 Angles/rates use radians and radians/second, lengths use meters, `sqrt_a` uses
@@ -84,12 +84,13 @@ A snapshot JSON line contains `snapshot_gpst`, lifetime statistics and typed
 coordinate. Almanac candidates alone are aggregated across broadcasters within
 a system when reference epoch and parameters match. Per-candidate `sources`
 retain contributing signals and receipt-context ranges. Conflicts remain
-separate; unresolved epochs are not merged across sources. Collection summaries
+separate; unresolved epochs are not merged across sources. Snapshot almanac summaries
 currently report UNKNOWN expected membership, not a guessed complete constellation.
 
 Ephemeris candidates are filtered by supported GPS fit/IODC rules and QZSS orbit/
 clock fit intervals; `ORBIT_CLOCK_FIT` does not mean every signal is healthy.
-Other retained parameter categories are explicitly `applicability=UNKNOWN` until
+QZSS CNAV has its own [assembly and applicability rules](broadcast-qzss-cnav.md#ephemeris-assembly-and-snapshots).
+Other retained LNAV parameter categories are explicitly `applicability=UNKNOWN` until
 their detailed validity contracts are implemented. Seven-day cache retention is
 only a resource bound, not a claim of validity. Special messages, NMCT and QZNMA
 payloads are MessageOutput only. No interpolation, source ranking or bias
@@ -119,7 +120,7 @@ Native decoding/assembly releases the GIL; low-rate snapshot aggregation and
 JSONL presentation are Python consumers of typed results.
 
 Use bounded batches. The decoder allows 8,192 retained candidates, approximately
-1,024 source assembly states and 100,000 emitted native rows per feed. Exceeding
+1,024 source assembly states each for LNAV and CNAV, and 100,000 emitted native rows per feed. Exceeding
 a bound fails explicitly rather than silently dropping valid output. A failed
 decoder must be reconstructed. Full health interpretation, other navigation
 families, persistent recovery and replacement of the older orbit adapter remain
