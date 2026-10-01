@@ -828,7 +828,7 @@ class Mirror:
                 self.warn("empty", "Receiver has no valid YYDDD directories")
                 self.receiver_present = set()
                 return found
-            excluded = {day for day, _ in directories[:2]}
+            excluded = {day for day, _ in directories[:2]} if len(directories) > 5 else set()
             available = {day for day, _ in directories}
             # Do not infer missing history before the receiver's oldest retained day.
             day = directories[0][0]

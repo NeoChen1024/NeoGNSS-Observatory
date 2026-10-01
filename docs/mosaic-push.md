@@ -153,9 +153,11 @@ station-directory name. `year_base` explicitly resolves two-digit years:
 new century. Only valid `YYDDD` directories and their expected daily SBF names
 are considered. Dates are checked for leap years and filename consistency.
 
-Every scan sorts the receiver's existing valid date directories and excludes
-its **oldest two existing dates** from downloading, reducing collisions with
-receiver `delete oldest` retention. A matching uppercase `.A` file marks active
+Every scan sorts the receiver's existing valid date directories. When **more than
+five valid date directories exist**, it excludes the **oldest two existing dates**
+from downloading, reducing collisions with receiver `delete oldest` retention.
+With five or fewer valid date directories, no dates are excluded by this rule.
+A matching uppercase `.A` file marks active
 logging and excludes that day's download, even if the final name also exists.
 The receiver's listing and metadata are checked again around each download.
 This cannot prevent source deletion during transfer; incomplete downloads never

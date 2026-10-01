@@ -24,8 +24,10 @@ also reports rejected subscriptions. No source bytes or discarded GUI commands
 are logged.
 
 The examples listen on loopback. Set `server.host` to the desired interface
-address for remote subscribers (`0.0.0.0` for all IPv4 interfaces, `::` for IPv6;
-dual-stack behavior depends on the OS). This is a raw TCP service without
+address for remote subscribers (`0.0.0.0` for all IPv4 interfaces, `::` or `::0`
+for all IPv4/IPv6 interfaces through one dual-stack socket). IPv6 wildcard
+listening requires platform dual-stack support; startup fails if unavailable.
+Other IPv6 addresses listen on IPv6 only. This is a raw TCP service without
 authentication, TLS or RFC 2217 control negotiation.
 
 ## Connection and buffer contract

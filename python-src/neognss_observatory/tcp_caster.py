@@ -3,6 +3,7 @@
 """Bounded, receive-only byte-stream casting from a POSIX serial port or TCP."""
 
 import asyncio
+import ipaddress
 import json
 import logging
 import math
@@ -334,6 +335,25 @@ class Caster:
             delay = min(delay * 2, retry["max_delay_seconds"])
 
 
+async def start_listener(config, accept):
+    """Explicitly request dual stack for an IPv6 wildcard address."""
+    host = config["host"]
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if isinstance(address, ipaddress.IPv6Address) and address.is_unspecified:
+        # asyncio's automatically created IPv6 sockets enable IPV6_V6ONLY.
+        listener = socket.create_server((host, config["port"]), family=socket.AF_INET6, dualstack_ipv6=True)
+        listener.setblocking(False)
+        try:
+            return await asyncio.start_server(accept, sock=listener, limit=CHUNK_BYTES)
+        except BaseException:
+            listener.close()
+            raise
+    return await asyncio.start_server(accept, host, config["port"], limit=CHUNK_BYTES)
+
+
 async def run(config):
     loop = asyncio.get_running_loop()
     stopping = asyncio.Event()
@@ -345,7 +365,7 @@ async def run(config):
         for signum in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(signum, stopping.set)
             installed.append(signum)
-        server = await asyncio.start_server(caster.accept, config["server"]["host"], config["server"]["port"], limit=CHUNK_BYTES)
+        server = await start_listener(config["server"], caster.accept)
         LOG.info("Listening on %s", ", ".join(str(sock.getsockname()) for sock in server.sockets))
         upstream = asyncio.create_task(caster.follow_source(config["source"]))
         stopped = asyncio.create_task(stopping.wait())
