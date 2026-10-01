@@ -34,6 +34,12 @@ using Value =
                  Bytes, std::vector<int64_t>, std::vector<std::string>,
                  std::vector<double>, Records, Record>;
 using Row = std::map<std::string, Value>;
+struct DecodedMessage {
+    std::string kind;
+    Row fields;
+    bool candidate = false;
+    std::string discriminator;
+};
 struct Column {
     ArrowArrayView *v;
     const ArrowSchema *s;

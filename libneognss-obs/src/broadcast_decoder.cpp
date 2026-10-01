@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "arrow_batch.hpp"
+#include "broadcast_beidou.hpp"
 #include "broadcast_cnav.hpp"
 #include "broadcast_fields.hpp"
+#include "broadcast_galileo.hpp"
 #include <algorithm>
 #include <array>
 #include <boost/int128/int128.hpp>
@@ -219,13 +221,53 @@ struct BroadcastMessageDecoder::State {
         std::string kind, key;
         Row row;
         Tick received, first;
+        uint64_t order;
     };
     std::string setup;
     Tick interval;
     std::optional<Tick> progress, next;
     std::map<std::string, Assembly> ephemeris;
     QzsCnavDecoder cnav;
-    std::vector<Candidate> cache;
+    GalileoDecoder galileo;
+    BeidouDecoder beidou;
+    std::map<std::pair<std::string, std::string>, std::vector<Candidate>> cache;
+    size_t candidate_count = 0;
+    uint64_t candidate_order = 0;
+    std::optional<Tick> pruned_at;
+    const std::vector<Candidate> &entries(const std::string &kind,
+                                          const std::string &key) const {
+        static const std::vector<Candidate> empty;
+        auto i = cache.find({kind, key});
+        return i == cache.end() ? empty : i->second;
+    }
+    void invalidate_has() {
+        std::erase_if(cache, [&](const auto &entry) {
+            if (!entry.first.first.starts_with("gal_has_"))
+                return false;
+            candidate_count -= entry.second.size();
+            return true;
+        });
+    }
+    void prune(Tick t) {
+        if (pruned_at && t >= *pruned_at && t - *pruned_at < seconds(60))
+            return;
+        pruned_at = t;
+        for (auto &[key, group] : cache) {
+            auto old = group.size();
+            std::erase_if(group, [&](const auto &c) {
+                return t - c.received > seconds(7 * 86400) ||
+                       (c.kind.starts_with("cnav_") &&
+                        cnav_expired(c.row, c.kind, t)) ||
+                       (c.kind.starts_with("gal_") &&
+                        galileo_expired(c.row, c.kind, t)) ||
+                       (c.kind.starts_with("bds_") &&
+                        beidou_expired(c.row, c.kind, t));
+            });
+            candidate_count -= old - group.size();
+        }
+        std::erase_if(cache,
+                      [](const auto &entry) { return entry.second.empty(); });
+    }
     std::map<std::string, uint64_t> counts;
     std::map<std::string, std::vector<Row>> output;
     mutable std::mutex mutex;
@@ -246,29 +288,31 @@ struct BroadcastMessageDecoder::State {
                   std::optional<Tick> t) {
         if (!t)
             return;
-        std::erase_if(cache, [&](const auto &c) {
-            return *t - c.received > seconds(7 * 86400) ||
-                   (c.kind.starts_with("cnav_") &&
-                    cnav_expired(c.row, c.kind, *t));
-        });
         // Keep distinct parameter candidates; receipt headers are not content.
-        auto content = [](Row x) {
-            for (auto name :
-                 {"nav_epoch_gpst", "first_received_gpst", "tow_count",
-                  "subframe_id", "alert", "antispoof", "message_type"})
+        auto content = [&](Row x) {
+            for (auto name : {"nav_epoch_gpst", "first_received_gpst",
+                              "tow_count", "subframe_id", "alert", "antispoof",
+                              "message_type", "transmission_gpst", "sow_bdt_s"})
                 x.erase(name);
+            if (kind.starts_with("bds_pppb2b_")) {
+                x.erase("epoch_gpst");
+                x.erase("epoch_bdt_sod_s");
+                x.erase("valid_until_gpst");
+            }
             return x;
         };
         auto value = content(r);
-        for (auto &c : cache)
-            if (c.kind == kind && c.key == key && content(c.row) == value) {
+        auto &group = cache[{kind, key}];
+        for (auto &c : group)
+            if (content(c.row) == value) {
                 c.row = r;
                 c.received = *t;
                 return;
             }
-        if (cache.size() >= 8192)
+        if (candidate_count >= 131072)
             throw std::runtime_error("Broadcast candidate capacity exceeded");
-        cache.push_back({kind, key, r, *t, *t});
+        group.push_back({kind, key, r, *t, *t, candidate_order++});
+        ++candidate_count;
     }
     void advance(Tick t) {
         if (progress && t < *progress)
@@ -283,7 +327,15 @@ struct BroadcastMessageDecoder::State {
                 {"statistics_scope", std::string("DECODER_LIFETIME")},
                 {"decoded_messages", int64_t(counts["decoded_messages"])}};
             emit("snapshot", std::move(summary));
-            for (const auto &c : cache) {
+            std::vector<const Candidate *> ordered;
+            ordered.reserve(candidate_count);
+            for (const auto &[identity, group] : cache)
+                for (const auto &c : group)
+                    ordered.push_back(&c);
+            std::sort(ordered.begin(), ordered.end(),
+                      [](auto a, auto b) { return a->order < b->order; });
+            for (const auto *candidate : ordered) {
+                const auto &c = *candidate;
                 if (c.received >= *next ||
                     *next - c.received > seconds(7 * 86400))
                     continue;
@@ -291,10 +343,17 @@ struct BroadcastMessageDecoder::State {
                 r["snapshot_gpst"] = *next;
                 r["first_received_gpst"] = c.first;
                 r["applicability"] = std::string("UNKNOWN");
+                if (c.kind.starts_with("gal_") &&
+                    !galileo_snapshot(r, c.kind, *next))
+                    continue;
+                if (c.kind.starts_with("bds_") &&
+                    !beidou_snapshot(r, c.kind, *next))
+                    continue;
                 if (c.kind == "cnav_eop") {
                     // QPNT 5.13.2: EOP week comes from UTC only when both
-                    // reference TOW and prediction TOW match, source-locally.
-                    for (const auto &utc : cache) {
+                    // reference TOW and prediction TOW match,
+                    // source-locally.
+                    for (const auto &utc : entries("cnav_utc", c.key)) {
                         if (utc.kind != "cnav_utc" || utc.key != c.key ||
                             utc.received >= *next ||
                             utc.row.at("tot_s") != r.at("teop_s") ||
@@ -318,7 +377,8 @@ struct BroadcastMessageDecoder::State {
                 if (c.kind == "almanac_entry") {
                     r["reference_gpst"] = Value{};
                     auto prefix = c.key.substr(0, c.key.rfind(':'));
-                    for (const auto &epoch : cache)
+                    for (const auto &epoch :
+                         entries("almanac_epoch", prefix + ":51"))
                         if (epoch.kind == "almanac_epoch" &&
                             epoch.key == prefix + ":51" &&
                             epoch.row.at("toa_s") == r.at("toa_s") &&
@@ -375,6 +435,7 @@ struct BroadcastMessageDecoder::State {
             *next += interval;
         }
         progress = t;
+        prune(t);
     }
     void decode(const Bits &b, Row base, const std::string &key,
                 std::optional<Tick> t) {
@@ -647,6 +708,8 @@ void BroadcastMessageDecoder::discontinuity() {
     std::lock_guard guard(state_->mutex);
     state_->ephemeris.clear();
     state_->cnav.clear();
+    state_->galileo.clear();
+    state_->beidou.clear();
     state_->progress.reset();
     state_->next.reset();
     ++state_->counts["discontinuities"];
@@ -686,8 +749,14 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
             if (t)
                 s.advance(*t);
             auto fam = family.str(row);
+            const bool gal =
+                fam == "GAL_INAV" || fam == "GAL_FNAV" || fam == "GAL_CNAV";
+            const bool bds_legacy = fam == "BDS_D1" || fam == "BDS_D2";
+            const bool bds = bds_legacy || fam == "BDS_PPP_B2B" ||
+                             fam == "BDS_BCNAV1" || fam == "BDS_BCNAV2" ||
+                             fam == "BDS_BCNAV3";
             if (fam != "GPS_LNAV" && fam != "QZS_LNAV" && fam != "QZS_CNAV" &&
-                fam != "SBAS_L1") {
+                fam != "SBAS_L1" && !gal && !bds) {
                 ++s.counts["unsupported_families"];
                 continue;
             }
@@ -695,16 +764,39 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
             auto sat = root.child("satellite_number").integer(row);
             const bool sbas = fam == "SBAS_L1";
             const bool cnav = fam == "QZS_CNAV";
-            if (sys != (sbas                ? "S"
+            const auto bds_format = bds_legacy            ? "D1D2_300_V1"
+                                    : fam == "BDS_BCNAV1" ? "BCNAV1_1800_V1"
+                                    : fam == "BDS_BCNAV2" ? "BCNAV2_576_V1"
+                                                          : "B2B_984_V1";
+            const size_t bds_length = bds_legacy            ? 300
+                                      : fam == "BDS_BCNAV1" ? 1800
+                                      : fam == "BDS_BCNAV2" ? 576
+                                                            : 984;
+            const auto gal_format = fam == "GAL_INAV"   ? "INAV_228_V1"
+                                    : fam == "GAL_FNAV" ? "FNAV_238_V1"
+                                                        : "CNAV_PAGE_486_V1";
+            const size_t gal_length = fam == "GAL_INAV"   ? 228
+                                      : fam == "GAL_FNAV" ? 238
+                                                          : 486;
+            if (sys != (bds                 ? "C"
+                        : gal               ? "E"
+                        : sbas              ? "S"
                         : fam == "GPS_LNAV" ? "G"
                                             : "J") ||
                 sat < 1 || sat > 255 ||
-                root.child("body_format").str(row) != (sbas ? "SBAS_L1_250_V1"
+                root.child("body_format").str(row) != (bds    ? bds_format
+                                                       : gal  ? gal_format
+                                                       : sbas ? "SBAS_L1_250_V1"
                                                        : cnav
                                                            ? "CNAV_300_V1"
                                                            : "LNAV_300_V1") ||
-                root.child("content_kind").str(row) != "navigation_bits" ||
-                root.child("bit_length").integer(row) != (sbas ? 250 : 300) ||
+                root.child("content_kind").str(row) !=
+                    (bds && !bds_legacy ? "binary_symbols"
+                                        : "navigation_bits") ||
+                root.child("bit_length").integer(row) != (bds    ? bds_length
+                                                          : gal  ? gal_length
+                                                          : sbas ? 250
+                                                                 : 300) ||
                 root.child("completeness").str(row) != "complete")
                 throw std::runtime_error("Invalid broadcast identity/layout");
             bool pass = false, fail = false;
@@ -769,6 +861,58 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
                 {"broadcasting_satellite", sat}, {"message_family", fam},
                 {"bitstream_source", signals},   {"nav_epoch_gpst", tv(t)}};
             ++s.counts["accepted_frames"];
+            if (bds) {
+                if (bytes.size_bytes != int64_t((bds_length + 7) / 8) ||
+                    (bds_length % 8 &&
+                     (bytes.data.as_uint8[bytes.size_bytes - 1] &
+                      ((1u << (8 - bds_length % 8)) - 1))))
+                    throw std::runtime_error("Invalid BeiDou body size");
+                for (auto &entry : s.beidou.decode(
+                         {bytes.data.as_uint8, size_t(bytes.size_bytes)}, fam,
+                         key + "/" + fam, sat, t, s.counts)) {
+                    auto r = base;
+                    r.insert(entry.fields.begin(), entry.fields.end());
+                    s.emit(entry.kind, r);
+                    if (entry.kind == "bds_pppb2b_status" &&
+                        !std::get<bool>(r.at("service_available"))) {
+                        std::erase_if(s.cache, [&](const auto &cached) {
+                            if (!cached.first.first.starts_with(
+                                    "bds_pppb2b_") ||
+                                cached.first.second != key + "/" + fam + ":")
+                                return false;
+                            s.candidate_count -= cached.second.size();
+                            return true;
+                        });
+                    }
+                    if (entry.candidate)
+                        s.remember(entry.kind,
+                                   key + "/" + fam + ":" + entry.discriminator,
+                                   r, t);
+                }
+                continue;
+            }
+            if (gal) {
+                if (bytes.size_bytes != int64_t((gal_length + 7) / 8) ||
+                    (bytes.data.as_uint8[bytes.size_bytes - 1] &
+                     ((1u << ((8 - gal_length % 8) % 8)) - 1)))
+                    throw std::runtime_error("Invalid Galileo size/padding");
+                bool e1 = signals.size() == 1 && signals[0] == "GAL_E1_B";
+                for (auto &entry : s.galileo.decode(
+                         {bytes.data.as_uint8, size_t(bytes.size_bytes)}, fam,
+                         key + "/" + fam, sat, e1, t, s.counts)) {
+                    auto r = base;
+                    r.insert(entry.fields.begin(), entry.fields.end());
+                    s.emit(entry.kind, r);
+                    if (entry.kind == "gal_has_status" &&
+                        integer(r, "has_status") == 3)
+                        s.invalidate_has();
+                    if (entry.candidate)
+                        s.remember(entry.kind,
+                                   key + "/" + fam + ":" + entry.discriminator,
+                                   r, t);
+                }
+                continue;
+            }
             if (cnav) {
                 bool l2 = std::find(signals.begin(), signals.end(),
                                     "QZS_L2C") != signals.end();

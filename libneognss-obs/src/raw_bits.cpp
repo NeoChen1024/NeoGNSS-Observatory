@@ -579,7 +579,8 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         const auto type = value(b, 12, 18);
         if (type == 10 || type == 30 || type == 40)
             r.family = "BDS_BCNAV3";
-        else if ((type >= 1 && type <= 7) || type == 63)
+        else if (((type >= 1 && type <= 7) || type == 63) &&
+                 bds_ppp_b2b_code_assigned(r.satellite))
             r.family = "BDS_PPP_B2B";
     }
     if (sbf) {

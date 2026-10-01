@@ -218,8 +218,10 @@ association and storage; use the shared [receiver-time contract](receiver-time.m
 - B2b routing requires both receiver and independent message CRC success and
   agreement between the body prefix PRN and SBF satellite identity. Under the
   July 2020 ICD assignments, types 10/30/40 select `BDS_BCNAV3`, while 1-7/63
-  select `BDS_PPP_B2B`. All other cases retain `BDS_B2B_UNCLASSIFIED`.
-  CRC alone, reserved prefix values or PRN ranges never select the service.
+  select `BDS_PPP_B2B` only for C01-C05/C59-C63, the ten ranging codes assigned
+  by PPP-B2b ICD table 5-1. Other satellites using those type numbers retain
+  `BDS_B2B_UNCLASSIFIED`; the type number alone does not establish a PPP service.
+  CRC alone, reserved prefix values or PRN ranges alone never select the service.
   No classifier state is shared across occurrences; body/checks are unchanged.
   This is supported-type routing, not full content validation or a PPP decoder.
 - `QZS_L6_UNCLASSIFIED` preserves full 2000-bit messages, including RS parity.

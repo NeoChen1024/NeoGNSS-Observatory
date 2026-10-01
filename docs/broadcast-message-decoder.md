@@ -1,6 +1,7 @@
 # Broadcast message decoding and assembly
 
-Selected design and remaining roadmap. GPS/QZSS LNAV, QZSS CNAV and SBAS L1 decoding is
+Selected design and remaining roadmap. GPS/QZSS LNAV, QZSS CNAV,
+Galileo I/NAV/F/NAV/C/NAV, BeiDou and SBAS L1 decoding is
 available through [the realtime decoder and Python API](broadcast-decode-realtime.md).
 That guide owns current coverage and concrete fields; proposals below are not
 claims of complete implementation for every family or validity model.
@@ -282,6 +283,8 @@ behavior, not silent loss of completed MessageOutput records.
 The [QZSS CNAV contract](broadcast-qzss-cnav.md) owns its implemented field,
 assembly and snapshot rules. CNAV-2 remains unsupported pending receiver-sample
 verification; it is not an alias of the 300-bit CNAV decoder.
+The [Galileo contract](broadcast-galileo.md) owns navigation, SAR/ISM and HAS
+decoding, with explicit limits on FEC2 recovery and authentication.
 
 - [x] Establish decoder ownership, separate MessageOutput/Snapshot semantics,
   source preservation and backend-independent typed outputs.
@@ -304,6 +307,13 @@ verification; it is not an alias of the 300-bit CNAV decoder.
   MessageOutput and snapshot-only cross-broadcaster almanac aggregation.
 - [x] Decode all QPNT-006 QZSS CNAV types, assemble source-local ephemerides and
   expose model-specific snapshots without discarding modern orbit parameters.
+- [x] Decode Galileo I/NAV/F/NAV navigation parameters and C/NAV HAS MT1;
+  share Galileo ephemeris decoding with the realtime STEC backend adapter.
+- [x] Decode BeiDou D1/D2 and B-CNAV1/2/3 navigation parameters and PPP-B2b
+  types 1-7; share legacy ephemeris extraction with STEC. See the
+  [BeiDou contract](broadcast-beidou.md) for coverage and remaining payloads.
+- [ ] Recover missing I/NAV CED words using FEC2 parity; authenticate OSNMA.
+- [ ] Support cross-broadcaster HAS page assembly with explicit contributor identity.
 - [ ] Complete scientific applicability and normalized signal-health mapping
   for all retained parameter categories; UNKNOWN is not valid coverage.
 - [ ] Implement against canonical RawBits, reusing existing decoding mechanisms

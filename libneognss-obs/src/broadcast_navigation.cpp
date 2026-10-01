@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "arrow_batch.hpp"
+#include "broadcast_beidou.hpp"
+#include "broadcast_galileo.hpp"
 #include "rtklib.h"
 #include <algorithm>
 #include <array>
@@ -70,10 +72,39 @@ struct BroadcastNavigation::State {
     std::string setup;
     mutable std::mutex mutex;
     std::map<std::pair<int, std::string>, Assembly> pending;
+    broadcast_detail::GalileoDecoder galileo;
+    broadcast_detail::BeidouDecoder beidou;
+    std::map<std::string, uint64_t> galileo_diagnostics;
     std::map<int, std::deque<Entry>> ephemerides;
     uint64_t count = 0;
     std::map<std::string, uint64_t> family_counts;
     explicit State(std::string id) : setup(std::move(id)) {}
+    void publish(eph_t eph, int sat, int64_t hi, std::string_view fam) {
+        eph.sat = sat;
+        if (eph.toes < 0 || eph.toes >= 604800 ||
+            std::abs(timediff(time_of(hi), eph.ttr)) > 120 ||
+            !std::isfinite(eph.A) || eph.A < 1e7 || eph.A > 5e7 ||
+            !std::isfinite(eph.e) || eph.e < 0 || eph.e >= 1)
+            return;
+        auto &cache = ephemerides[sat];
+        auto previous =
+            std::find_if(cache.rbegin(), cache.rend(),
+                         [&](const auto &e) { return e.family == fam; });
+        if (previous != cache.rend() && previous->eph.iode == eph.iode &&
+            previous->eph.iodc == eph.iodc && previous->eph.svh == eph.svh &&
+            previous->eph.fit == eph.fit &&
+            timediff(previous->eph.toe, eph.toe) == 0 &&
+            timediff(previous->eph.toc, eph.toc) == 0)
+            return;
+        cache.push_back({eph, hi, std::string(fam)});
+        if (std::count_if(cache.begin(), cache.end(),
+                          [&](const auto &e) { return e.family == fam; }) > 8)
+            cache.erase(
+                std::find_if(cache.begin(), cache.end(),
+                             [&](const auto &e) { return e.family == fam; }));
+        ++count;
+        ++family_counts[std::string(fam)];
+    }
 };
 BroadcastNavigation::BroadcastNavigation(std::string setup)
     : state_(std::make_unique<State>(std::move(setup))) {}
@@ -81,6 +112,8 @@ BroadcastNavigation::~BroadcastNavigation() = default;
 void BroadcastNavigation::clear() {
     std::lock_guard lock(state_->mutex);
     state_->pending.clear();
+    state_->galileo.clear();
+    state_->beidou.clear();
     state_->ephemerides.clear();
 }
 uint64_t BroadcastNavigation::decoded() const {
@@ -177,6 +210,122 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
             (raw[bits.size_bytes - 1] &
              ((1u << ((8 - bit_count % 8) % 8)) - 1)))
             throw std::runtime_error("Invalid broadcast body size/padding");
+        if (inav || fnav || d1 || d2) {
+            using namespace broadcast_detail;
+            auto sources = f("bitstream_source");
+            if (sources->storage_type != NANOARROW_TYPE_LIST ||
+                ArrowArrayViewIsNull(sources, row))
+                throw std::runtime_error(
+                    "Missing broadcast signal contributors");
+            std::vector<std::string> signals;
+            for (auto j = ArrowArrayViewListChildOffset(sources,
+                                                        row + sources->offset);
+                 j < ArrowArrayViewListChildOffset(sources,
+                                                   row + sources->offset + 1);
+                 ++j)
+                signals.emplace_back(text(sources->children[0], j));
+            if (signals.empty())
+                throw std::runtime_error("Empty broadcast signal contributors");
+            std::sort(signals.begin(), signals.end());
+            std::string key = std::to_string(sat) + "/" + std::string(fam);
+            for (const auto &signal : signals)
+                key += "/" + signal;
+            auto decoded =
+                (d1 || d2)
+                    ? state_->beidou.decode(
+                          {raw, size_t(bits.size_bytes)}, std::string(fam), key,
+                          prn, Tick(*t) * 1000, state_->galileo_diagnostics)
+                    : state_->galileo.decode(
+                          {raw, size_t(bits.size_bytes)}, std::string(fam), key,
+                          prn, signals.size() == 1 && signals[0] == "GAL_E1_B",
+                          Tick(*t) * 1000, state_->galileo_diagnostics);
+            for (const auto &message : decoded) {
+                if (message.kind != "gal_inav_ephemeris" &&
+                    message.kind != "gal_fnav_ephemeris" &&
+                    message.kind != "bds_d1_ephemeris" &&
+                    message.kind != "bds_d2_ephemeris")
+                    continue;
+                const auto &r = message.fields;
+                if (!std::holds_alternative<Tick>(r.at("toe_gpst")) ||
+                    !std::holds_alternative<Tick>(r.at("toc_gpst")) ||
+                    !std::holds_alternative<Tick>(r.at("transmission_gpst")))
+                    continue;
+                eph_t eph{};
+                auto d = [&](const char *n) {
+                    return std::get<double>(r.at(n));
+                };
+                auto u = [&](const char *n) {
+                    return int(std::get<int64_t>(r.at(n)));
+                };
+                auto ts = [&](const char *n) {
+                    auto tick = std::get<Tick>(r.at(n));
+                    return gpst2time(int(tick / seconds(604800)),
+                                     double(tick % seconds(604800)) /
+                                         double(ps));
+                };
+                if (d1 || d2) {
+                    eph.iodc = u("aodc");
+                    // Preserve RTKLIB's legacy issue convention at this adapter
+                    // only.
+                    eph.iode =
+                        int(std::get<Tick>(r.at("toc_bdt_s")) / seconds(720)) %
+                        240;
+                } else
+                    eph.iode = eph.iodc = u("iod_nav");
+                eph.A = d("sqrt_a") * d("sqrt_a");
+                eph.e = d("eccentricity");
+                eph.M0 = d("m0_rad");
+                eph.OMG0 = d("omega0_rad");
+                eph.i0 = d("i0_rad");
+                eph.omg = d("omega_rad");
+                eph.OMGd = d("omega_dot_rad_s");
+                eph.idot = d("idot_rad_s");
+                eph.deln = d("delta_n_rad_s");
+                eph.cuc = d("cuc_rad");
+                eph.cus = d("cus_rad");
+                eph.crc = d("crc_m");
+                eph.crs = d("crs_m");
+                eph.cic = d("cic_rad");
+                eph.cis = d("cis_rad");
+                eph.f0 = double(std::get<Tick>(r.at("af0_s"))) / ps;
+                eph.f1 = d("af1_s_s");
+                eph.f2 = d("af2_s_s2");
+                eph.toe = ts("toe_gpst");
+                eph.toc = ts("toc_gpst");
+                eph.ttr = ts("transmission_gpst");
+                eph.toes = time2gpst(eph.toe, &eph.week);
+                if (d1 || d2) {
+                    eph.toes = double(std::get<Tick>(r.at("toe_bdt_s"))) / ps;
+                    eph.week = int((std::get<Tick>(r.at("toe_gpst")) -
+                                    seconds(1356LL * 604800 + 14)) /
+                                   seconds(604800));
+                    eph.sva = u("urai");
+                    eph.svh = u("health");
+                    eph.flag = d2 ? 2 : 1;
+                    eph.tgd[0] = double(std::get<Tick>(r.at("tgd_b1i_s"))) / ps;
+                    eph.tgd[1] = double(std::get<Tick>(r.at("tgd_b2i_s"))) / ps;
+                } else {
+                    eph.sva = u("sisa_index");
+                    eph.tgd[0] =
+                        double(std::get<Tick>(r.at("bgd_e1_e5a_s"))) / ps;
+                    if (inav) {
+                        eph.tgd[1] =
+                            double(std::get<Tick>(r.at("bgd_e1_e5b_s"))) / ps;
+                        eph.svh = (u("e5b_health") << 7) |
+                                  (u("e5b_data_invalid") << 6) |
+                                  (u("e1b_health") << 1) |
+                                  u("e1b_data_invalid");
+                        eph.code = 1 << 9;
+                    } else {
+                        eph.svh = (u("e5a_health") << 4) |
+                                  (u("e5a_data_invalid") << 3);
+                        eph.code = 1 << 8;
+                    }
+                }
+                state_->publish(eph, sat, *t, fam);
+            }
+            continue;
+        }
         auto &a = state_->pending[{sat, std::string(fam)}];
         int id = 0, count = 0, stride = 0, offset = 0;
         uint8_t data[38]{};
@@ -189,41 +338,6 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
             count = 3;
             stride = 30;
             offset = (id - 1) * stride;
-        } else if (inav) {
-            // Canonical I/NAV has 114 even bits followed by 114 odd bits.
-            if (getbitu(raw, 0, 1) != 0 || getbitu(raw, 114, 1) != 1 ||
-                getbitu(raw, 1, 1) || getbitu(raw, 115, 1))
-                continue;
-            id = int(getbitu(raw, 2, 6));
-            count = 5;
-            stride = 16;
-            offset = id * stride;
-            for (int j = 0; j < 112; ++j)
-                setbitu(data, j, 1, getbitu(raw, j + 2, 1));
-            for (int j = 0; j < 16; ++j)
-                setbitu(data, 112 + j, 1, getbitu(raw, 116 + j, 1));
-        } else if (fnav) {
-            id = int(getbitu(raw, 0, 6));
-            count = 4;
-            stride = 31;
-            offset = (id - 1) * stride;
-            std::copy(raw, raw + 30,
-                      data); // decoder does not read the omitted tail
-        } else {
-            if (getbitu(raw, 0, 11) != 0x712)
-                continue;
-            id = int(getbitu(raw, 15, 3));
-            count = d1 ? 3 : 10;
-            stride = 38;
-            if (d2) {
-                if (id != 1)
-                    continue;
-                id = int(getbitu(raw, 42, 4));
-                if (id == 2)
-                    continue;
-            }
-            offset = (id - 1) * stride;
-            std::copy(raw, raw + 38, data);
         }
         if (id < 1 || id > count || a.times[id - 1] > *t)
             continue;
@@ -232,8 +346,6 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
         int64_t lo = INT64_MAX, hi = -1;
         bool complete = true;
         for (int j = 0; j < count; ++j) {
-            if (d2 && j == 1)
-                continue; // page 2 is not required for the D2 ephemeris
             if (a.times[j] < 0) {
                 complete = false;
                 break;
@@ -248,15 +360,7 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
         if (lnav)
             decoded = decode_frame(a.bytes.data(), native_system, &eph, nullptr,
                                    nullptr, nullptr);
-        else if (inav)
-            decoded = decode_gal_inav(a.bytes.data(), &eph, nullptr, nullptr);
-        else if (fnav)
-            decoded = decode_gal_fnav(a.bytes.data(), &eph, nullptr, nullptr);
-        else if (d1)
-            decoded = decode_bds_d1(a.bytes.data(), &eph, nullptr, nullptr);
-        else
-            decoded = decode_bds_d2(a.bytes.data(), &eph, nullptr);
-        if (!decoded || ((inav || fnav) && eph.sat != sat))
+        if (!decoded)
             continue;
         if (lnav) {
             int reference = int(hi / (604800 * second));
@@ -273,59 +377,8 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
             eph.week = week;
             eph.toe = gpst2time(week, eph.toes);
             eph.toc = gpst2time(week, toc);
-        } else {
-            // Decoder dates are GST/BDT-derived. Resolve finite week fields
-            // against reception, never host time. BDT conversion includes +14
-            // s.
-            const double rollover = (inav || fnav ? 4096. : 8192.) * 604800;
-            const double shift =
-                std::round(timediff(time_of(hi), eph.ttr) / rollover) *
-                rollover;
-            // RTKLIB timeadd narrows whole seconds to int; an entire GST/BDT
-            // rollover exceeds that range. This shift is integral seconds.
-            eph.ttr.time += static_cast<time_t>(shift);
-            eph.toe.time += static_cast<time_t>(shift);
-            eph.toc.time += static_cast<time_t>(shift);
-            eph.week += int(shift / 604800);
-            // Resolve each model epoch around transmission time independently
-            // of a source decoder's opposite-sign week carry.
-            auto near_week = [&](gtime_t value) {
-                return timeadd(value,
-                               std::round(timediff(eph.ttr, value) / 604800) *
-                                   604800);
-            };
-            auto adjusted_toe = near_week(eph.toe);
-            eph.week +=
-                int(std::llround(timediff(adjusted_toe, eph.toe) / 604800));
-            eph.toe = adjusted_toe;
-            eph.toc = near_week(eph.toc);
         }
-        eph.sat = sat;
-        if (eph.toes < 0 || eph.toes >= 604800 ||
-            std::abs(timediff(time_of(hi), eph.ttr)) > 120 ||
-            !std::isfinite(eph.A) || eph.A < 1e7 || eph.A > 5e7 ||
-            !std::isfinite(eph.e) || eph.e < 0 || eph.e >= 1)
-            continue;
-        auto &cache = state_->ephemerides[sat];
-        const auto unchanged = [&](const auto &e) {
-            return e.eph.iode == eph.iode && e.eph.iodc == eph.iodc &&
-                   e.eph.svh == eph.svh && e.eph.fit == eph.fit &&
-                   timediff(e.eph.toe, eph.toe) == 0 &&
-                   timediff(e.eph.toc, eph.toc) == 0;
-        };
-        auto previous =
-            std::find_if(cache.rbegin(), cache.rend(),
-                         [&](const auto &e) { return e.family == fam; });
-        if (previous != cache.rend() && unchanged(*previous))
-            continue;
-        cache.push_back({eph, hi, std::string(fam)});
-        if (std::count_if(cache.begin(), cache.end(),
-                          [&](const auto &e) { return e.family == fam; }) > 8)
-            cache.erase(
-                std::find_if(cache.begin(), cache.end(),
-                             [&](const auto &e) { return e.family == fam; }));
-        ++state_->count;
-        ++state_->family_counts[std::string(fam)];
+        state_->publish(eph, sat, hi, fam);
     }
 }
 bool BroadcastNavigation::position(int sat, int64_t ns, double travel,

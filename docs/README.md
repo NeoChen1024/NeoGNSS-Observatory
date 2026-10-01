@@ -30,7 +30,7 @@ only when they affect present interpretation or processing.
 
 - [TCP caster](tcp-caster.md): receive-only serial/TCP broadcasting with bounded
   per-client buffers, upstream reconnection and a systemd service example.
-- [Broadcast-message decoding](broadcast-decode-realtime.md): GPS/QZSS LNAV, QZSS CNAV and SBAS L1
+- [Broadcast-message decoding](broadcast-decode-realtime.md): GPS/QZSS, Galileo, BeiDou and SBAS L1
   messages, assemblies and periodic snapshots from live or recorded inputs.
 - [SBAS broadcast fields](broadcast-sbas.md): implemented L1 message schemas
   and remaining downstream association/snapshot work.

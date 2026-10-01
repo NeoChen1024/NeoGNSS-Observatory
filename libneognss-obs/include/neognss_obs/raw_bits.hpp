@@ -6,6 +6,11 @@
 #include <vector>
 
 namespace neognss_obs {
+// PPP-B2b ICD 1.0 table 5-1 assigns exactly these ten ranging codes.
+// Assignment is a necessary condition, not proof of service or data validity.
+inline constexpr bool bds_ppp_b2b_code_assigned(int64_t prn) {
+    return (prn >= 1 && prn <= 5) || (prn >= 59 && prn <= 63);
+}
 struct RawBitsCheck {
     std::string origin, kind, scope, result, evidence, source_field;
 };

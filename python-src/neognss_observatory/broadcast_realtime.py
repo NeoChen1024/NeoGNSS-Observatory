@@ -22,8 +22,14 @@ def aggregate_almanacs(output):
         ("snapshot_almanac_entry", "snapshot_almanac_entries", "snapshot_almanac_sets"),
         ("snapshot_cnav_reduced_almanac", "snapshot_cnav_reduced_almanac_entries", "snapshot_cnav_reduced_almanac_sets"),
         ("snapshot_cnav_midi_almanac", "snapshot_cnav_midi_almanac_entries", "snapshot_cnav_midi_almanac_sets"),
+        ("snapshot_gal_inav_almanac", "snapshot_gal_inav_almanac_entries", "snapshot_gal_inav_almanac_sets"),
+        ("snapshot_gal_fnav_almanac", "snapshot_gal_fnav_almanac_entries", "snapshot_gal_fnav_almanac_sets"),
     ):
         _aggregate_almanacs(output, source, entries, summary)
+    for family in ("d1", "d2", "bcnav1", "bcnav2", "bcnav3"):
+        for kind in ("almanac",) if family in ("d1", "d2") else ("midi_almanac", "reduced_almanac"):
+            source = f"snapshot_bds_{family}_{kind}"
+            _aggregate_almanacs(output, source, source + "_entries", source + "_sets")
     return output
 
 
@@ -230,7 +236,7 @@ def json_records(outputs):
 )
 @click.option("--output", type=click.Path(path_type=Path), help="Exclusive-create JSONL file; default stdout.")
 def cli(host, port, input_path, protocol, setup_path, max_latency, duration, snapshot_interval, output):
-    """Decode GPS/QZSS LNAV, QZSS CNAV and SBAS L1 from CommonNEX."""
+    """Decode GPS/QZSS, Galileo, BeiDou and SBAS L1 from CommonNEX."""
     if bool(host) == bool(input_path):
         raise click.UsageError("Specify exactly one of --host or --input")
     if input_path and duration is not None:
@@ -245,7 +251,7 @@ def cli(host, port, input_path, protocol, setup_path, max_latency, duration, sna
             if input_path
             else tcp_groups(host, port, stream, max_latency=max_latency, duration=duration)
         )
-        click.echo("Decoding GPS/QZSS LNAV, QZSS CNAV and SBAS L1; other families are counted as unsupported.", err=True)
+        click.echo("Decoding GPS/QZSS, Galileo, BeiDou navigation/corrections and SBAS L1.", err=True)
         with output.open("x") if output else nullcontext(click.get_text_stream("stdout")) as target:
             for group in groups:
                 if group is None:

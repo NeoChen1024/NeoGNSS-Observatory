@@ -1,7 +1,8 @@
 # Realtime broadcast-message decoding
 
 `ngo-broadcast-decode-realtime` consumes CommonNEX RawBits through a native
-GPS/QZSS LNAV, QZSS CNAV and SBAS L1 decoder. Receiver input is normalized by the shared CommonNEX
+GPS/QZSS LNAV, QZSS CNAV, Galileo I/NAV/F/NAV/C/NAV, BeiDou and SBAS L1 decoder.
+Receiver input is normalized by the shared CommonNEX
 engine, not parsed again by the scientific consumer. No precise products,
 orbit calculation or DCB calibration is required.
 
@@ -40,6 +41,8 @@ it is not a durable identity or a CommonNEX reference.
 | `qznma_payload` | Extracted 182-bit data region; no authentication verification |
 | `sbas_*` | SBAS L1 fields, corrections, masks, GEO parameters, service regions and covariance factors; [complete field contract](broadcast-sbas.md) |
 | `cnav_*` | QZSS L2C/L5 parameters, per-entry almanacs, text/authentication payloads and assembled ephemeris; [complete field contract](broadcast-qzss-cnav.md) |
+| `gal_*` | Galileo navigation units, assembled ephemerides/almanacs, SAR/OSNMA/ISM and reconstructed HAS messages/corrections; [field contract and limits](broadcast-galileo.md) |
+| `bds_*` | D1/D2 and B-CNAV1/2/3 parameters/assemblies, PPP-B2b correction messages; [field contract and limits](broadcast-beidou.md) |
 
 GPS and QZSS emit every decoded almanac entry immediately, including repeated
 entries. Epoch/health/configuration messages are independent outputs. There is
@@ -119,8 +122,9 @@ restart Events and group notices. Inputs and outputs remain independently owned.
 Native decoding/assembly releases the GIL; low-rate snapshot aggregation and
 JSONL presentation are Python consumers of typed results.
 
-Use bounded batches. The decoder allows 8,192 retained candidates, approximately
-1,024 source assembly states each for LNAV and CNAV, and 100,000 emitted native rows per feed. Exceeding
+Use bounded batches. The decoder allows 131,072 retained candidates, approximately
+1,024 source assembly states each for LNAV and QZSS CNAV, 2,048 combined Galileo
+navigation/almanac states, and 100,000 emitted native rows per feed. Exceeding
 a bound fails explicitly rather than silently dropping valid output. A failed
 decoder must be reconstructed. Full health interpretation, other navigation
 families, persistent recovery and replacement of the older orbit adapter remain

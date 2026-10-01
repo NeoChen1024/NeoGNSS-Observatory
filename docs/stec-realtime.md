@@ -73,11 +73,16 @@ The backend accepts these canonical RawBits families, not receiver envelopes:
 | BeiDou GEO | BDS_D2 | Subframe 1 pages 1 and 3-10; page 2 is not required |
 
 At least one recorded check must pass and none may fail. Required units must
-be available within a 120-second context window, with source decoder checks on
+be available within a 120-second context window for GPS/QZSS, with source decoder checks on
 subframe/page identity, IOD and, for BeiDou, SOW and TOE/TOC consistency. Galileo
 satellite identity is checked against the decoded message. I/NAV alert pages
 remain unsupported. Families have separate assembly/cache histories; I/NAV and
-F/NAV never supply each other's missing pieces.
+F/NAV never supply each other's missing pieces. Galileo uses the
+[shared broadcast decoder](broadcast-galileo.md): fresh I/NAV words within
+90 seconds or F/NAV pages within 150 seconds, separated by signal-source set.
+BeiDou uses the [shared D1/D2 decoder](broadcast-beidou.md), with fresh pieces
+within 90 seconds and source/signal isolation; RTKLIB receives the assembled
+parameters rather than decoding a second copy of the raw pages.
 
 The latest contributing navigation-context time is the complete ephemeris's
 availability time. Untimed RawBits do not update the cache. Finite/truncated week
