@@ -144,8 +144,15 @@ not GNSS-lock evidence. UBX qErr maps as -qErr picoseconds; qErrInvalid makes
 the numeric error null without discarding other pulse fields. TIM-TP describes
 the next pulse. Only locked GPST-based TIM-TP currently has resolved target GPST;
 UTC/GST/BDT targets remain null without a supported conversion. Zero qErr alone
-is not invalid. UBX sign follows the previously adopted F9T experiment and is
-not independently verified on this station's hardware.
+is not invalid.
+
+The sign conversion agrees with satpulse's independent implementation:
+its [TIM-TP adapter](https://github.com/jclark/satpulse/blob/234bb6e9d04c66a885212b2b79fa96710d5a4b55/gps/internal/ubx/ubxtime.go#L113-L117)
+sets `PulseOffset = qErr / 1000` in nanoseconds, and its
+[PPS correction](https://github.com/jclark/satpulse/blob/234bb6e9d04c66a885212b2b79fa96710d5a4b55/time/internal/phcsync/tracking.go#L260-L272)
+uses `ideal = actual + PulseOffset`. CommonNEX stores `actual - ideal`, hence
+`-qErr` in picoseconds. This is an implementation cross-check, not a local
+hardware measurement.
 
 ## RawBits mapping
 

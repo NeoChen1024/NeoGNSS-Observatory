@@ -27,8 +27,12 @@ Two independent outputs share decoding state:
   the consumer, not the decoder, chooses the calculation input.
 
 Snapshots cannot query past processing state. Historical queries require replay.
-Periodic snapshots use the GPST grid and statistics contract in the
-[processing roadmap](TODO.md#optional-periodic-snapshots). When navigation context
+Periodic snapshot targets are integer multiples of a positive-integer
+`interval_s` since the GPST origin; input timestamps retain their full precision.
+The first target is strictly after the first reliable navigation context.
+Snapshot statistics declare their accumulation scope; current decoder counts
+use `DECODER_LIFETIME`, while [SBAS grid statistics](subframes.md#snapshot-products)
+use explicit windows and coverage. When navigation context
 advances across a grid target, emit the previously known state before consuming
 the new context's record. Do not backfill from a later cache. This is an
 input-order view, not a claim of exact RF-time completeness: RawBits timestamps
@@ -49,7 +53,7 @@ groups share `snapshot_gpst`; their schemas and applicability remain specific
 to their contents. Clock or delay parameters published inseparably with an
 ephemeris stay with that candidate rather than being independently recombined.
 Missing categories produce no invented candidates. Statistics declare their
-window, coverage and missingness as specified by the shared snapshot contract.
+accumulation scope and any applicable window, coverage and missingness.
 
 Only snapshots may aggregate common information across broadcasting satellites
 within one GNSS system. MessageOutput assembly remains source-local. Aggregation
@@ -278,7 +282,7 @@ station requires a new decoder state. Checkpointing incomplete messages is not
 planned. Output and assembly buffers must be bounded with explicit overflow
 behavior, not silent loss of completed MessageOutput records.
 
-## Definition and implementation checklist
+## Remaining work
 
 The [QZSS CNAV contract](broadcast-qzss-cnav.md) owns its implemented field,
 assembly and snapshot rules. CNAV-2 remains unsupported pending receiver-sample
@@ -286,38 +290,22 @@ verification; it is not an alias of the 300-bit CNAV decoder.
 The [Galileo contract](broadcast-galileo.md) owns navigation, SAR/ISM and HAS
 decoding, with explicit limits on FEC2 recovery and authentication.
 
-- [x] Establish decoder ownership, separate MessageOutput/Snapshot semantics,
-  source preservation and backend-independent typed outputs.
-- [x] Inventory standard GPS section-20 and QZSS LNAV dispatch differences.
-- [x] Draft common occurrence fields and the assembled ephemeris parameter set.
-- [x] Define source-local fresh ephemeris assemblies, per-entry almanacs and semantic-only outputs,
-  snapshot-only cross-broadcaster aggregation and model-based normalization.
-- [x] Define snapshot bundle categories and almanac candidate/conflict semantics.
-- [x] Select standards-based health/applicability and the three-cycle assembly
-  policy for periodic sets, distinct from parameter validity.
-- [ ] Finalize subframe field schemas, check acceptance, exact time-resolution
-  rules, health/fit applicability, buffer bounds and assembly time limits.
-- [ ] Finalize snapshot almanac reference resolution, expected membership and
-  rollover semantics; ordinary MessageOutput requires no set completion.
-- [ ] Define ionosphere/UTC, NMCT, health/configuration, special-message and
-  QZNMA extraction schemas; review expanded-PRN and historical ICD variants.
-- [x] Replace the proposed completeness watermark with navigation-context,
-  input-order snapshot boundaries; expose the first typed batch/JSONL API.
-- [x] Implement source-local SF1-3 assemblies, GPS/QZSS per-entry almanac
-  MessageOutput and snapshot-only cross-broadcaster almanac aggregation.
-- [x] Decode all QPNT-006 QZSS CNAV types, assemble source-local ephemerides and
-  expose model-specific snapshots without discarding modern orbit parameters.
-- [x] Decode Galileo I/NAV/F/NAV navigation parameters and C/NAV HAS MT1;
-  share Galileo ephemeris decoding with the realtime STEC backend adapter.
-- [x] Decode BeiDou D1/D2 and B-CNAV1/2/3 navigation parameters and PPP-B2b
-  types 1-7; share legacy ephemeris extraction with STEC. See the
-  [BeiDou contract](broadcast-beidou.md) for coverage and remaining payloads.
+Implemented decoding and delivery are described in the
+[API guide](broadcast-decode-realtime.md) and family contracts. BeiDou payload
+and backend extensions are owned by its [remaining scope](broadcast-beidou.md#remaining-scope).
+
+- [ ] Complete the LNAV scientific field/schema contract and independently
+  verify check acceptance, time resolution, health/fit applicability and
+  assembly limits. Existing field extraction is not a missing decoder task.
+- [ ] Establish justified expected membership and completeness for snapshot
+  almanac sets; summaries currently retain UNKNOWN membership. Validate
+  reference-epoch resolution and rollover independently.
+- [ ] Audit expanded-PRN LNAV and historical ICD variants before extending
+  coverage beyond the documented GPS section-20/QZSS dispatch.
 - [ ] Recover missing I/NAV CED words using FEC2 parity; authenticate OSNMA.
 - [ ] Support cross-broadcaster HAS page assembly with explicit contributor identity.
 - [ ] Complete scientific applicability and normalized signal-health mapping
   for all retained parameter categories; UNKNOWN is not valid coverage.
-- [ ] Implement against canonical RawBits, reusing existing decoding mechanisms
-  where correct; retire duplicate processing paths after parity verification.
 - [ ] Validate GPS/QZSS recorded samples against independent field references,
   including issue transitions, repeated sets, week rollover and interruptions.
   No automated test-suite expansion is implied by this checklist.

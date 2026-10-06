@@ -106,4 +106,5 @@ ordered measurement list remains on derived clock rows.
 
 - [u-blox interface](https://content.u-blox.com/sites/default/files/documents/u-blox-F9-HPG-1.51_InterfaceDescription_UBXDOC-963802114-13124.pdf)
 - [F9T polarity experiment](https://www.anderswallin.net/2019/10/ublox-f9t-qerr-correction/)
+- [satpulse TIM-TP sign conversion cross-check](receiver-mappings.md#pulse-timing)
 - [Septentrio reference, ReceiverStatus/AGCState pp. 402-405](https://docs.sparkfun.com/SparkFun_GNSS_mosaic-X5/assets/component_documentation/firmware/mosaic-X5_Firmware_v4.15.0_Reference_Guide.pdf)

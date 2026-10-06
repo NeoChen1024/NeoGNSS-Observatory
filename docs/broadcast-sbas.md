@@ -157,13 +157,11 @@ The decoder does not project it along a user line of sight or apply UDRE.
 
 ## Remaining downstream work
 
-- [x] Source-local ionospheric mask/issue association and research freshness rules in the grid processor.
-- [x] Per-source grid snapshots and window statistics.
+Implemented grid mask/issue association, snapshots, window statistics and MT0
+aging are documented in [grid processing](subframes.md).
+
 - [ ] Satellite correction state and service-region assembly.
-- [x] Grid research MT0 annotations and correction/mask aging.
 - [ ] General correction application and service-specific recovery policies.
-- [x] Unified snapshot-first grid processing using the shared decoder; remove legacy interval APIs.
-- [ ] Additional service/profile extensions when documented and useful.
 
 ## References
 

@@ -1,505 +1,157 @@
 # Project implementation roadmap
 
-This is an implementation checklist. Unchecked items remain unimplemented or
-unverified; current behavior is documented in the linked tool guides.
-Update this document as work lands; move implemented behavior into the relevant
-usage/design guides and remove superseded plans rather than retaining history.
+This checklist contains remaining implementation and scientific validation work.
+Current behavior belongs in the linked tool and format guides; completed tasks
+and superseded designs are removed rather than retained as history.
 
-## Composable processing and Unified SBAS
+Detailed owning checklists:
 
-The next prerequisite is the [broadcast decoder design](broadcast-message-decoder.md):
-decode and assemble complete satellite-message parameters without requiring
-calculation-backend support. Its checklist owns navigation-family coverage;
-the implemented QZSS CNAV contract is linked there.
-Decoded outputs are downstream products, not CommonNEX catalogs. Fixed receiver
-DCB reuse and SBAS-constrained calibration are not current implementation tasks.
+- [CommonNEX](commonnex/TODO.md): remaining receiver mappings, input validation,
+  consumer integration and explicitly deferred acquisition work.
+- [Broadcast decoding](broadcast-message-decoder.md#remaining-work): remaining
+  assembly, applicability and independent field validation.
+- [BeiDou](broadcast-beidou.md#remaining-scope) and
+  [SBAS](broadcast-sbas.md#remaining-downstream-work): family-specific extensions.
+- [Ginan shim](ginan-shim.md): selected backend integration direction, lifecycle,
+  observability, GIM constraints and validation; the shim is not implemented.
 
-These are agreed architecture targets, not a claim that the current pipelines
-already implement them. Detailed APIs and the implementation plan remain open.
+## STEC models and scientific validation
 
-### Common processing boundary
+[Offline multi-GNSS STEC](stec.md) already implements exact-pair processing,
+receiver antenna correction, phase-arc continuity, leveling, receiver DCB fits,
+incremental publication and calibrated-family fusion.
+[Realtime relative STEC](stec-realtime.md) shares the phase engine but uses
+broadcast geometry and receiver-exported phase, without absolute calibration.
 
-- [ ] Make CommonNEX the shared receiver-data input for all scientific
-  processors, replacing RINEX as the project's internal processing boundary.
-  Downstream processors must not parse UBX/SBF envelopes or repeat receiver
-  normalization. Satellite-content decoding from canonical RawBits remains
-  downstream work; external scientific products remain separate dependencies.
-  Acquisition, logging and raw-recording inspection are outside this boundary.
-- [ ] Use the same processor and scientific rules for offline replay and live
-  delivery. With equivalent ordered input, configuration, external products and
-  initial state, results must not depend on batch size, delivery speed or daily
-  file boundaries. Explicit future-data reprocessing is a distinct calculation,
-  not an implicit offline-mode change of algorithm.
-- [ ] Expose composable processing building blocks with owned state and batch
-  interfaces. Each processor defines its own result schemas, native output
-  pacing, finalization and discontinuity semantics; do not require one generic
-  output model or a universal processor superclass.
-- [ ] Keep scientific products independent of presentation requirements.
-  Storage, source selection/fusion, statistical consumers and rendering should
-  compose without forcing decoding or calculation to discard useful data.
-  Share exchange/ownership and bounded-delivery mechanisms where semantics
-  agree, rather than introducing a general scheduling framework in advance.
+- [ ] Add satellite antenna phase corrections and phase wind-up to offline
+  STEC, with explicit signal/model coverage and independent sign/unit checks.
+  Receiver PCO/PCV is already implemented; realtime correction policy requires
+  a separate decision rather than silently changing its raw-phase contract.
+- [ ] Validate STEC and receiver DCB against independent references and examine
+  sensitivity to mapping height, elevation masks, leveling scatter, fit-window
+  boundaries, antenna approximations and receiver temperature. The constraining
+  IONEX GIM cannot serve as an independent absolute-calibration reference.
+- [ ] Evaluate pair-specific GF-jump thresholds under gaps and rapid ionospheric
+  variation. The current detector already includes elapsed-time dependence;
+  candidates must remain distinct from confirmed slips.
+- [ ] Independently check multi-GNSS geometry, exact-code bias/datum transfer
+  and product-gap behavior against equivalent reference calculations, including
+  the pinned backend's satellite/signal limits and unsupported combinations.
+- [ ] Validate throughput and peak memory on long multi-GNSS intervals,
+  including long open phase arcs and incremental append/rebuild processing.
+- [ ] Investigate independent absolute calibration and time-varying receiver
+  bias models separately from the existing GIM-constrained estimates.
 
-### Optional periodic snapshots
+## PPP Float extensions
 
-Snapshots are processing summaries as of a specified GPST, and may include both
-current state and necessary statistics. They supplement, rather than replace,
-each processor's native result stream. Snapshot support is optional.
+[GPS static forward Float PPP](ppp.md) already consumes raw UBX/SBF without a
+RINEX intermediate, maintains state across files/days, checks local product
+coverage, applies antenna models and exports numerical tables, PNGs and a PDF.
+The [shared antenna model](antenna.md) owns implemented calibration selection
+and approximation rules.
 
-- [ ] Define a shared positive-integer `interval_s`. Snapshot targets are
-  `k * interval_s` seconds since the GPST origin, 1980-01-06 00:00:00 GPST.
-  Calculate the schedule with integer arithmetic, independent of GPS week,
-  calendar day and process start; do not truncate input timestamp precision.
-- [ ] Drive snapshots from trustworthy input-time progress, not host time or
-  exact timestamp equality. Each processor defines its input-order boundary;
-  do not require a universal completeness watermark. Broadcast snapshots emit
-  previously known state before consuming a newly advanced navigation context
-  that reaches/crosses a target. These are not precise RF-time reconstructions.
-  Missing reliable progress must not manufacture GPST snapshots or allow later
-  state to backfill earlier snapshots.
-- [ ] Include `snapshot_gpst` in each snapshot. The processor owns its payload
-  schema and statistics, not a common list of scientific fields. Define each
-  statistic's window or accumulation scope, such as trailing 60 seconds,
-  between snapshot targets, or since the current continuous segment began.
-  Preserve missingness and applicable counts/coverage explicitly.
-- [ ] Keep snapshot cadence distinct from statistical window length: a
-  five-second snapshot may summarize a trailing sixty-second window. Statistics
-  can be part of the snapshot; they need not be a separate output product.
-- [ ] Make snapshot emission non-destructive to scientific state. Only
-  explicitly interval-scoped accumulators advance their accumulation boundaries
-  with the snapshot grid. Define initial partial-window and discontinuity
-  behavior per processor without silently treating partial coverage as full.
-- [ ] Verify matching snapshot targets and contents for equivalent historical
-  and live delivery, including batches crossing multiple targets and time gaps.
+- [ ] Extend Float PPP beyond GPS L1/L2, with exact signal mapping, justified
+  constellation clock/bias datums, compatible products and antenna coverage.
+  Check backend satellite/frequency limits before exposing supported modes.
+- [ ] Export remaining diagnostics: ambiguity arcs/reset reasons, tracked versus
+  selected/used/rejected observation counts, available rejection diagnostics,
+  coordinate epoch and separate hydrostatic/wet troposphere interpretation.
+  Preserve the current ionosphere-free residual identity and unavailable states.
+- [ ] Extend plots with tracked/used distinctions, initial-convergence detail,
+  ambiguity-reset statistics and supported ambiguity timelines. Float processing
+  must not display invented fixed percentages or reference-ambiguity states.
+- [ ] Add explicit NGS ANTEX preparation/download configuration alongside the
+  existing local multi-catalog lookup; keep acquisition separate from solving.
+- [ ] Compare equivalent observations, products, antenna/reference-point and
+  model settings with an independent positioning solution such as CSRS-PPP.
+  Similar plots or formal covariance do not establish absolute accuracy.
+- [ ] Validate long-interval throughput, memory and scientific continuity under
+  product-window changes, calibration changes and actual receiver outages.
 
-### Unified SBAS
+Kinematic PPP, backward/combined solutions and PPP-AR remain deferred pending
+an explicit scope decision and compatible backend/product support. Ginan
+integration does not implicitly enable these modes.
 
-The [snapshot-first grid processor](subframes.md) is shared by historical
-replay and live processing. The [SBAS decoder contract](broadcast-sbas.md) owns
-MessageOutput fields. Snapshot export does not require an interval intermediate
-or promise exact retrospective time-varying source compositing.
+## SBAS source combination
 
-- [x] Define one high-level batch API for CommonNEX RawBits and Events, with
-  explicit time advancement, restart/discontinuity handling and finalization.
-  Keep file/day partitioning in storage, not in the scientific state lifecycle.
-- [x] Produce per-source current grid snapshots and window statistics
-  from the same decoding, mask, correction and aging state. Preserve every
-  usable source, not only the highest-priority provider. Retain source identity,
-  grid identity/coordinates, VTEC, GIVEI, report time and relevant MT0 status.
-- [x] Support GPST-aligned snapshots with valid duration, coverage, mean VTEC
-  and MT0-affected duration over the preceding snapshot window. Snapshot cadence
-  does not alter correction arrival or aging.
-- [x] Specify how do-not-use, not-monitored, expiry and mask changes invalidate
-  prior values; never leave stale values active.
-- [x] Keep provider selection/fusion outside the decoding and validity engine.
-  Share the selection policy between historical plots and live displays so
-  users can change priorities without decoding or importing the input again.
-- [ ] Investigate optional weighting separately, including spatial alignment,
-  uncertainty interpretation and correlated broadcasts. Do not treat GIVEI as
-  a linear weight or multiple satellites of one provider as independent data.
-- [x] Provide Parquet and live Arrow/JSONL snapshot adapters. Preserve independent
-  source products; plot current values or existing per-source means. Precise
-  interval-level retrospective source recomposition is outside these scripts.
-- [x] Replace the old interval APIs and CLI entry points with `ngo-sbas-grid`,
-  `ngo-sbas-realtime` and `ngo-sbas-plot`, without aliases or dataset rewrites.
-- [x] Verify equivalent results across historical/live batch delivery, batch
-  sizes, midnight, aging without new SBAS messages, MT0, restart and provider
-  changes. Retain old code only as a temporary comparison baseline, not a
-  permanent second implementation.
+[Grid snapshots](subframes.md) and their live/offline adapters share decoding,
+aging, restart rules and per-source statistics. Provider selection is already
+shared by historical plots and live displays.
 
-## Scope and architecture
+- [ ] Investigate optional source weighting, including spatial alignment,
+  uncertainty interpretation and correlated broadcasts. GIVEI is not a linear
+  weight; multiple satellites from one provider are not independent evidence.
 
-The current GPS L1/L2 implementation is described in [STEC and receiver DCB](stec.md).
-It produces satellite-corrected, phase-leveled STEC and GIM-constrained receiver
-DCB estimates. No independent receiver calibration is supplied for these
-datasets. IONEX is an ionosphere model, not a calibration of this receiver;
-its use as a bias constraint must remain explicit in absolute STEC results.
+## Regional Network RTK and VRS
 
-- [x] Implement the GPS raw-observation path, exact-signal satellite bias transfer
-  into the IONEX datum, robust arc leveling and receiver DCB fitting.
-- [x] Keep full-arc offsets and receiver-window solutions in small Parquet tables;
-  reconstruct absolute estimates by batched join without reopening raw data.
-- [x] Reject insufficient receiver-bias coverage without substituting zero.
-- [x] Add an absolute-STEC plot consumer for finalized Parquet estimates, with
-  parallel hourly PNG export and optional separate SBAS VTEC backgrounds.
-- [x] Read CommonNEX Observation Arrow batches natively; support daily incremental
-  extraction, cross-day arc checkpoints, affected-window DCB refits and plots.
-- [ ] Validate independent-reference accuracy and sensitivity to mapping height,
-  elevation mask, leveling scatter, estimation-window boundaries and temperature.
-- [ ] Add phase wind-up and appropriate antenna corrections to the STEC path.
+Planned research, not implemented positioning or correction services. Start
+with a small regional relative Network RTK solver, then evaluate virtual
+reference station (VRS) synthesis and rover delivery. Solver/backend selection
+and synthesis equations remain open; neither multi-frequency processing nor
+independent implementation establishes freedom to operate.
 
-The remaining generalized signal/model extensions below are broader than the
-initial GPS-only implementation.
+Use [CommonNEX](commonnex/overview.md) UBX/SBF observations for historical replay
+and live processing. Initial signal scope is GPS and Galileo, followed by
+BeiDou and QZSS with independently verified signal coverage. Preserve SBAS
+observations but defer their use in network ambiguity resolution and synthesis.
+GLONASS and NavIC scientific processing remain out of scope.
 
-- [ ] Decode UBX/SBF observations with `libcppgnss`, normalize and process them
-  in `libneognss-obs`, and use RTKLIB-EX internally for supported calculations.
-- [ ] Keep the canonical observation representation independent of RTKLIB's
-  structures, satellite numbering and fixed signal slots. Convert only at the
-  calculation boundary; report unsupported signals/satellites explicitly.
-- [ ] Make RINEX conversion optional for export and independent comparisons,
-  not a required internal processing stage. Preserve the existing converters.
-- [ ] Process expanded, ordered, nonoverlapping recordings directly without
-  requiring reconstruction indexes or QA stamps. Era A still needs overlap
-  removal; exclude its unassigned data. Do not repeat full QA in extraction.
-- [ ] Keep all observation axes, windows and partitions in GPST. Preserve raw
-  archives and avoid a mandatory full observation cache or provenance bundle.
+### Observation model and relative solver
 
-Target flow:
+- [ ] Inventory station geometry, coordinate frame/epoch and reference point,
+  antenna calibration, measurement cadence and actual common signal coverage.
+  Enabled receiver signals are not evidence of simultaneous usable observations.
+- [ ] Define uncombined code/phase equations, clock and signal-bias datums,
+  estimable parameters and rank constraints. Support varying frequency counts;
+  establish integer ambiguity resolution in a justified relative subspace
+  rather than fixing every undifferenced phase state independently.
+- [ ] Build a two-station GPS dual-frequency baseline, then add Galileo and
+  further supported systems/frequencies. Evaluate WL/EWL combinations as
+  optional search/validation tools without making a satellite MW-bias or
+  phase-leveled clock product a prerequisite.
+- [ ] Validate against known baselines and an independent positioning solution,
+  including incorrect fixes, code/phase loss, half-cycle changes, clock
+  adjustments and discontinuities across batches, files and GPST midnight.
 
-```text
-UBX/SBF -> libcppgnss -> canonical observation batches
-                    -> libneognss-obs + internal RTKLIB adapter
-                       + required predownloaded products
-                    -> sample batches and finalized arc solutions
-                    -> Python daily Parquet -> plots/maps
-```
+### Regional correction estimation
 
-## 1. Canonical observation batches
+- [ ] Estimate relative ionospheric and tropospheric residuals on a small
+  station network. Define spatial support, uncertainty and behavior outside
+  supported geometry; do not average raw carrier phases across receivers.
+- [ ] With sufficient station coverage, withhold a station from estimation
+  and inspect positioning errors and phase residuals there. Existing
+  GIM-constrained STEC is auxiliary evidence, not an independently calibrated
+  centimeter-level phase correction or validation reference.
 
-One observation represents one receiver/antenna, measurement epoch, satellite
-and signal. This is primarily a native in-memory representation, not a
-mandatory Python object or persisted observation table.
+### VRS synthesis and patent review
 
-- [ ] Define epoch association and `gpst_ns` as integer nanoseconds since the
-  GPS epoch. Storage resolution is not a claim of measurement accuracy. Do not
-  replace RAWX measurement time with NAV time, filename time or snapped seconds.
-- [ ] Define receiver and antenna identity, constellation, PRN, precise signal
-  identity and actual `frequency_hz`, including GLONASS frequency channel.
-- [ ] Map signals to exact standardized observation codes such as `C1C` and
-  `C2L` for product lookup. Sharing RINEX terminology does not require RINEX I/O.
-- [ ] Preserve pseudorange in meters, carrier phase in cycles, Doppler in Hz,
-  and C/N0 in dB-Hz with separate validity indicators. Do not conflate missing
-  values with numeric zero.
-- [ ] Normalize available lock duration, half-cycle state, loss-of-lock/slip
-  indications and measurement uncertainties. Leave unsupported/absent fields
-  unavailable rather than manufacturing values.
-- [ ] Carry epoch/receiver events such as clock adjustments and observed
-  restarts separately from repeated per-signal data. Do not equate every clock
-  adjustment with a restart or blindly break all phase arcs.
-- [ ] Implement UBX and SBF observation adapters using the generated decoders
-  and protocol-specific measurement semantics, including supported SBF block
-  variants and their epoch assembly requirements.
-- [ ] Preserve all decoded signals before explicit pair selection. Do not
-  silently discard measurements to fit RTKLIB frequency slots.
+- [ ] Compare candidate estimator, synthesis and delivery operations against
+  relevant independent claims and patent families for intended deployment
+  jurisdictions, including the United States and Taiwan. Verify official legal
+  status and review continuation applications before treating a design as
+  cleared. Independent code, CommonNEX input and three frequencies do not by
+  themselves avoid method or apparatus claims.
+- [ ] Prioritize synthesis review of [Swift US12216211B2](https://patents.google.com/patent/US12216211B2/en)
+  and its [continuation application](https://patents.google.com/patent/US20250130332A1/en),
+  [Trimble US9594168B2](https://patents.google.com/patent/US9594168B2/en)
+  and [Sejong US12332361B2](https://patents.google.com/patent/US12332361B2/en).
+  Also review network ambiguity/bias estimation, atmospheric representation
+  and delivery claims; this starting list is not an exhaustive clearance.
+- [ ] Define synthetic code/phase equations, integer-consistent phase datum,
+  antenna/reference-point treatment, ephemeris/correction conventions and
+  continuity/reset behavior before finalizing the synthesizer. Keep synthesis
+  separate from the network estimator and output codec.
 
-## 2. Required products and station configuration
+### Live delivery and rover validation
 
-CDDIS products are downloaded before processing; the solver neither downloads
-on demand nor silently switches to broadcast-only or uncorrected processing.
-STEC continues through absent files and coverage gaps, preserving phase state
-and marking affected fields unavailable. This does not change PPP's strict
-product requirements.
-The existing download configuration requests SP3, CLK, ERP, OSB, BRDC, IONEX and
-ANTEX. Product availability and actual application are separate concerns:
-
-| Product | Intended role |
-| --- | --- |
-| SP3 | Precise satellite orbit and line-of-sight/IPP geometry |
-| CLK | Compatible satellite clocks for the selected timing/geometry model |
-| OSB/DSB | Satellite code-bias correction for the exact selected observables |
-| BRDC | Health and other supported auxiliary navigation information; no silent precise-orbit fallback |
-| IONEX | GIM reference and satellite C1W-C2W datum for receiver-bias fitting |
-| ANTEX, ERP | Inputs to explicitly implemented antenna/geometric corrections, not implied corrections merely because files exist |
-
-- [ ] Define station receiver/antenna identifiers, ECEF coordinates and their
-  reference point, plus calculation window, signal-pair selection and IPP shell
-  height. Do not rely on a RINEX header for station position.
-- [ ] Specify the exact required product set and compatible product family/
-  reference conventions for the first solver. State which corrections actually
-  run and which downloaded inputs are reserved for comparison or later work.
-- [ ] Validate product contents, time scales, time coverage and supported
-  satellite/signal identities before processing where possible. A matching
-  filename or successful decompression does not establish scientific coverage.
-- [ ] Preload/cache products across the processing window and its interpolation
-  margins. Choose margins from the selected interpolator rather than assuming a
-  fixed guard day proves adequate coverage.
-- [ ] Keep cache retention separate from validity. Reject invalid/stale data
-  and forbidden extrapolation; do not indefinitely extend the last bias record.
-- [ ] Implement time-aware bias lookup by satellite/receiver and observable.
-  Normalize units, sign, datum and OSB/DSB interpretation at the adapter boundary;
-  do not apply both representations of the same correction twice.
-- [ ] Require applicable satellite corrections for selected calculations.
-  Report any runtime coverage holes explicitly, never substitute zero bias or
-  silently select a different signal/product mode. Distinguish unavailable
-  corrections from unhealthy satellites and missing observations.
-- [ ] Audit the pinned RTKLIB adapter's support and limits, including
-  `MAXPRNCMP`, `NFREQ`, `NEXOBS`, bias validity handling and signal mapping.
-  Avoid implying that bypassing RINEX removes those limits.
-
-Geometry-free same-epoch combinations cancel common geometry and clock terms.
-Precise products support the overall processing model; a precise clock alone
-does not calibrate STEC or remove receiver differential code bias.
-
-## 3. Geometry, signal pairs and phase leveling
-
-- [ ] Define explicit supported signal-pair selection with `f1 > f2`; preserve
-  actual signal identities instead of hard-coding only generic L1/L2 bands.
-- [ ] Use the internal RTKLIB adapter for supported orbit/timing calculations,
-  then compute azimuth, elevation, IPP and mapping factor with documented station
-  and shell conventions. Keep unsupported combinations explicit.
-- [ ] Define and implement the following sign convention, with `L` in cycles,
-  `lambda` in meters/cycle and pseudorange `P` in meters:
-
-  ```text
-  code_gf_m  = P2 - P1
-  phase_gf_m = lambda1 * L1 - lambda2 * L2
-  K = 40.3e16 * (1/f2^2 - 1/f1^2)       # meters per TECU
-  tecu_per_m = 1 / K
-  level_offset_m = weighted_mean(code_gf_corrected_m - phase_gf_m)
-  stec_leveled_tecu = (phase_gf_m + level_offset_m) * tecu_per_m
-  ```
-
-- [ ] Apply the selected satellite code-bias corrections consistently before
-  leveling. Keep the convention for phase offsets and any future phase-bias
-  correction explicit; do not silently mix code and phase bias products.
-- [ ] Estimate one offset per continuous arc using explicit quality exclusions
-  and elevation weights. Specify minimum usable duration/sample count and the
-  initial outlier policy; mark insufficiently constrained arcs rather than
-  claiming a valid level.
-- [ ] Accumulate leveling sample count, weight totals and residual scatter.
-  Do not present scatter as a complete absolute TEC uncertainty estimate.
-- [x] Distinguish satellite-corrected code-leveled STEC from GIM-constrained
-  absolute estimates. Unusable receiver-bias windows have null absolute results;
-  never present these estimates as independent receiver calibration.
-
-## 4. Continuity and scientific validity
-
-- [ ] Track arcs by receiver, antenna, satellite and exact signal pair.
-- [ ] Preserve parser, measurement, product and arc state across batches,
-  physical files and GPST midnight. Close final arcs explicitly at stream end.
-- [ ] Handle slip indications, half-cycle changes, signal/frequency changes,
-  time reversal, observed restart and timeout with explicit reasons.
-- [x] Use a configurable 50-second phase gap limit. An allowed gap is not proof that
-  no slip occurred; do not interpolate missing measurements.
-- [ ] Make GF-jump detection sensitive to elapsed time and signal pair rather
-  than copying a fixed 0.1-meter threshold. Keep candidates distinct from
-  confirmed slips and avoid interpreting all ionospheric variability as slips.
-- [ ] Retain a phase arc through temporary code loss when phase remains usable;
-  exclude those samples from offset estimation.
-- [ ] Keep phase continuity separate from geometric/product availability and
-  elevation-based eligibility. Missing products do not prove receiver outage.
-
-## 5. Daily Parquet samples and finalized arc solutions
-
-Full-arc leveling cannot be finalized at the first sample. Store the compact
-phase/code combinations separately from arc solutions so raw input needs only
-one observation pass, without retaining entire arcs in RAM or rewriting prior
-daily sample files when an arc closes.
-
-- [ ] Define a daily GPST `samples` table containing:
-  - `gpst_ns`, receiver/antenna, constellation/PRN, exact `signal_pair`, `arc_id`;
-  - `phase_gf_m`, nullable `code_gf_corrected_m`, `tecu_per_m`;
-  - azimuth/elevation, IPP latitude/longitude and mapping factor;
-  - scientific validity flags and leveling eligibility.
-- [ ] Define an `arcs` table containing:
-  - globally unambiguous within-dataset `arc_id`, signal identity and start/end GPST;
-  - nullable finalized `level_offset_m` and explicit solution quality/status;
-  - phase/leveling counts, effective duration and residual scatter;
-  - boundary reasons and bias-correction status.
-- [x] Store finalized arc solutions in one compact table, resolving arcs across
-  daily sample partitions. Distinguish missing and insufficient arc solutions.
-- [x] Compute finalized STEC by a batched samples/arcs join, not row-by-row
-  Python processing. Do not repeat arc constants in every sample or require a
-  second raw scan to apply them.
-- [ ] Store only scientific interpretation metadata: GPST epoch/units, signal
-  definitions, correction status, shell and calculation settings. Do not add
-  transport envelopes, redundant observation copies or provenance bundles.
-- [ ] Use bounded Python-side Parquet writers and daily publication. Keep data
-  reduction for hourly plots separate from native-rate scientific samples.
-
-## 6. High-level binding and orchestration
-
-- [ ] Expose a high-level processor configured with protocol, station, products,
-  window, signal pairs and calculation settings; batch raw input through it.
-- [ ] Return columnar sample batches and finalized arc batches, with explicit
-  finish and summary operations. Keep RTKLIB structs, indices, allocation and
-  low-level calls private to native code.
-- [ ] Release the GIL during native work. Avoid per-frame Python calls and
-  per-observation JSON/dictionary serialization.
-- [ ] Keep file scheduling, Parquet and plotting in Python. Use Click and an
-  `ngo-` command name with `--protocol/-p ubx|sbf`; do not invent a public CLI
-  contract until its configuration and processing API are implemented.
-- [ ] Preserve the shared foreign-protocol warning/skip policy and required
-  parsing/scientific checks without adding another full dataset QA pass.
-- [ ] Parallelize independent streams and plotting/compression jobs where safe;
-  do not split stateful observations arbitrarily into independent hour/day jobs.
-
-## 7. Proportionate implementation checks
-
-These are one-off validation tasks, not authorization to add permanent tests.
-
-- [ ] Inspect small representative UBX and SBF batches against existing
-  decoders/converters for time, observables, signal identity and validity.
-- [ ] Verify combination signs, dimensions and bias application with inspectable
-  numeric examples, including code loss and unavailable receiver calibration.
-- [ ] Check cross-file, cross-day and subsecond continuity, arc finalization,
-  missing-product errors and explicit unsupported-signal behavior.
-- [ ] Compare supported geometry and observables with the existing RINEX route
-  on equivalent samples/parameters. Account for converter filtering rather than
-  treating RINEX as lossless ground truth.
-- [ ] Measure same-input throughput, memory and output volume. Do not promise
-  a speedup solely from eliminating RINEX serialization.
-- [ ] Verify that downstream readers reconstruct finalized STEC from daily
-  samples and cross-day arcs without reopening raw inputs. Update current usage
-  documentation only after the corresponding path works.
-
-## 8. Offline PPP pipeline
-
-PPP is an additional project goal sharing the raw-observation adapters, product
-resolver and native processing infrastructure above. It is not a prerequisite
-for the first STEC version. The report design follows the scientific content of
-the reviewed CSRS-PPP report, not its branding or a promise of equivalent solver
-behavior, ambiguity resolution or accuracy.
-
-### Processing and product selection
-
-The initial GPS L1/L2 static Float path is implemented as `ngo-ppp` and
-`ngo-ppp-plot`; see [current usage and limitations](ppp.md). The broader
-multi-GNSS requirements below remain unchecked where only partially covered.
-
-- [x] Deliver an initial GPS RAWX/MeasEpoch-to-Float path with native batches,
-  local CODE product lookup, IGS20/NGS20 receiver lookup, daily numerical outputs
-  and parallel position/state/sky/residual plots.
-- [ ] Accept an ordered UBX/SBF interval directly, with no mandatory RINEX
-  intermediate. Derive actual observation times from payloads, not filenames.
-- [ ] Resolve the corresponding interval plus interpolation/validity safety
-  margins from the already downloaded CDDIS dataset. Preload or extend caches
-  as payload coverage becomes known; never require a full observation index
-  merely to establish the input window.
-- [ ] Validate compatible SP3, CLK, bias and required auxiliary products and
-  their actual temporal/satellite/signal coverage. Missing required inputs must
-  produce explicit errors, not online downloads or broadcast-only fallback.
-- [x] Define the station reference point, initial position, antenna setup,
-  processing interval, elevation mask and supported signal selection.
-- [x] Integrate RTKLIB-EX's PPP library core behind `libneognss-obs`, using
-  canonical observations decoded by `libcppgnss`. Keep low-level filter state
-  and RTKLIB structures out of Python; expose high-level batch processing.
-- [ ] Preserve filter/ambiguity state across physical files and GPST days;
-  handle actual outages, restarts and observation discontinuities explicitly.
-- [x] Establish static, forward-only float PPP as the initial implementation
-  target. Treat kinematic, backward/combined processing and PPP-AR as subsequent
-  extensions, not features implied by availability of precise products.
-- [x] Specify applied troposphere, antenna, phase wind-up, tidal/loading and
-  other geometric corrections and their prerequisites. Identify omitted models
-  explicitly rather than assuming CSRS-PPP behavior is reproduced by RTKLIB.
-
-### Receiver antenna lookup: IGS20 and NGS20
-
-Search both IGS `igs20*.atx` and NGS `ngs20.atx` to broaden receiver-antenna
-coverage. NGS20 here means the NGS composite ANTEX product in the IGS20 system,
-not a second reference frame. The NGS composite already includes IGS entries
-alongside additional NGS calibrations; combining catalogs must not apply the
-same correction twice.
-
-- [ ] Accept locally available IGS20 and NGS20 ANTEX catalogs and add explicit
-  preparation/download configuration for the NGS catalog. Do not fetch it
-  implicitly during PPP calculation.
-- [ ] Match exact standardized antenna model and radome, plus serial-specific
-  calibration and validity interval when applicable. Do not silently substitute
-  a similar model or a different radome.
-- [ ] Resolve duplicate matches deterministically: use an applicable individual
-  calibration when explicitly identified; for equivalent type-mean coverage,
-  prefer IGS and use NGS for additional coverage. Report conflicting applicable
-  calibrations and allow explicit selection instead of silently merging values.
-- [ ] Check calibration coverage for each used frequency. Any per-frequency
-  combination must have compatible reference conventions and be reported;
-  never fabricate PCO/PCV for an uncalibrated signal or claim it is calibrated.
-- [ ] Verify reference-system compatibility with orbit/station products. Keep
-  satellite antenna calibration selection consistent with precise products;
-  a receiver-catalog fallback does not authorize changing the satellite model.
-- [ ] Apply supported frequency-dependent PCO/PCV, including azimuth-dependent
-  corrections where available. Preserve APC, ARP and marker distinctions and
-  explicit height/east/north offsets and orientation conventions.
-- [ ] Record the selected scientific calibration identity/source and coverage
-  in the result summary, including unavailable corrections. Define an explicit
-  error or user-selected uncalibrated policy; no silent zero calibration.
-
-### Numerical outputs before rendering
-
-- [ ] Store a concise run summary: engine version, input identity, station,
-  observation coverage, GPST time scale, processing mode/direction, product
-  families, observation codes, elevation mask, estimation step, applied models
-  and antenna/reference-point settings. Distinguish processing timestamp from
-  elapsed runtime and span from actual observation coverage.
-- [ ] Export final static ECEF and geodetic coordinates, ellipsoidal height,
-  reference frame and coordinate epoch, a priori position and estimated-minus-
-  a-priori displacement. Do not label ellipsoidal height as orthometric height.
-- [x] Preserve covariance needed for ENU uncertainties and the horizontal
-  error ellipse. Label confidence levels and distinguish formal uncertainty
-  from independently measured absolute positioning error.
-- [ ] Export GPST-partitioned epoch solutions: position/covariance, solution
-  status, receiver clock and uncertainty with its reference convention,
-  troposphere estimates/uncertainties, tracked/used/rejected satellite counts
-  and ambiguity reset statistics. Preserve constellation clock offsets if the
-  solver estimates them; do not collapse them into an unexplained scalar.
-- [ ] Export satellite/observable-level geometry and residuals with satellite,
-  exact signal or combination, GPST, units, pre-fit/post-fit identity and
-  used/rejected status. Residuals are not pure receiver noise measurements.
-- [ ] Export ambiguity arcs/events with satellite/signal identity, start/end,
-  reset reason and available float/fixed/reference status. Represent unsupported
-  AR/datum concepts as unavailable, never synthesize CSRS-specific states.
-- [ ] Define every percentage's numerator and denominator, including rejected
-  epochs, fixed ambiguities and reset ambiguities. Keep unsupported metrics
-  unavailable rather than reporting misleading zero values.
-- [x] Keep implemented numerical outputs in compact, directly readable tables with
-  scientific metadata. Rendering must not reopen raw recordings or rerun PPP.
-
-### CSRS-PPP-style plots and summary report
-
-- [x] Position summary with a priori comparison and a confidence-labeled
-  horizontal error ellipse: semi-major/minor axes and azimuth. Add UTM zone,
-  hemisphere and scale factors only as optional derived presentation.
-- [ ] Satellite skyplot with per-satellite identity, explicit N/E/S/W,
-  elevation convention, zenith/horizon labels and distinction between tracked
-  and used observations. This is not an ionospheric pierce-point map.
-- [ ] ENU position/convergence time series, with an explicitly named reference
-  (a priori or final solution), final-solution line and uncertainty. Include an
-  initial-convergence zoom so the full-day plot does not hide settling behavior.
-- [ ] Zenith tropospheric delay time series and uncertainty. Distinguish total,
-  hydrostatic and wet components and model values from estimated states.
-- [ ] Station clock offset and uncertainty time series with explicit units and
-  reference convention. Preserve actual jumps; do not silently unwrap or equate
-  PPP clock estimates with UBX-NAV-CLOCK or infer hardware resets from a plot.
-- [ ] Satellite-count and ambiguity-reset time series, with explicit counts,
-  percentage denominators and separation of new arcs from receiver restarts.
-- [ ] Carrier-phase and pseudorange residual plots with per-satellite identity,
-  signal/combination and residual-stage labels. Use appropriate separate scales
-  for phase and code, and keep rejected observations identifiable.
-- [ ] Per-satellite ambiguity-status timeline with float/fixed/reference states
-  only where supported, and new-arc markers. First-version float PPP must not
-  display fabricated fixed percentages or reference-ambiguity assignments.
-- [x] Generate batch PNGs and a consolidated PDF from the numerical
-  outputs, using GPST on every observation time axis. Parallelize independent
-  rendering/compression jobs without cutting the PPP filter into arbitrary days.
-
-### PPP validation and later extensions
-
-- [ ] Check small UBX/SBF runs, product margins, antenna fallback/conflicts,
-  missing-frequency calibration, cross-file continuity and covariance units.
-- [ ] Compare equivalent observations/settings with an independent solution,
-  such as CSRS-PPP, while documenting differences in products, models, antenna
-  treatment, reference point, AR and processing direction. Similar graphics do
-  not establish numerical equivalence.
-- [ ] Measure throughput, memory and output size before scheduling full eras.
-  Use one-off checks under the project's pre-Alpha policy, not a new permanent
-  test suite unless requested.
-- [ ] Evaluate kinematic PPP, backward/combined solutions and PPP-AR separately
-  only if subsequently requested; PPP-AR work is currently deferred. Verify core capability and compatible bias
-  products before exposing any of these as supported modes.
-
-## Further STEC research
-
-- Independent absolute calibration and time-varying receiver-bias models.
-- IONEX-constrained estimates cannot use that same GIM as independent validation.
-- PPP is tracked as a separate project goal above. Additional STEC geophysical/
-  antenna models remain outside its first version unless explicitly implemented.
-- A persistent full-observation cache, unless measured repeated-decoding cost
-  justifies an optional cache later.
-
-## Scientific references
-
-- [ESA: signal combinations and clock/bias definitions](https://gssc.esa.int/navipedia/index.php/Combining_pairs_of_signals_and_clock_definition)
-- [IGS: Bias-SINEX format](https://files.igs.org/pub/data/format/sinex_bias_100.pdf)
-- [NGS: antenna calibration catalog and reference-system guidance](https://www.ngs.noaa.gov/ANTCAL/)
-- [NGS: antenna calibration FAQ, composite catalogs and IGS20 compatibility](https://www.ngs.noaa.gov/ANTCAL/FAQ.xhtml)
-- [CSRS-PPP: ambiguity-status tutorial](https://webapp.csrs-scrs.nrcan-rncan.gc.ca/geod/tools-outils/sample_doc_files/NRCan_CSRS-PPP-v3_Tutorial_EN.pdf)
+- [ ] Adapt [CommonNEX live delivery](commonnex/live.md) for per-epoch processing
+  with bounded multi-station alignment, waiting deadlines and explicit late or
+  missing-station behavior. Preserve equivalent scientific rules in replay.
+- [ ] Add RTCM observation encoding and required station/navigation context
+  after the synthesis contract is established. Initially evaluate 1 Hz output
+  with a virtual location fixed for each session; defer cross-region switching,
+  static VRS grids and large-scale distribution architectures.
+- [ ] Validate with real rover receivers and an independent coordinate
+  reference. Measure time to fix, position error, incorrect-fix frequency,
+  correction age, latency and outage behavior; successful encoding or a FIX
+  status alone does not establish accuracy.

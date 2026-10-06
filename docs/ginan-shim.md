@@ -38,29 +38,25 @@ Inspected source: Ginan v4.1.3, revision
 `7baa32a70f819c475b03d0c6834d9a6c90a67c1b`. These findings must be rechecked
 when updating it.
 
-- [x] Identify the epoch filter entry: `ppp(Trace&, ReceiverMap&, KFState&,
+- The epoch filter entry is `ppp(Trace&, ReceiverMap&, KFState&,
   KFState&)` in `src/cpp/pea/ppppp.cpp`.
-- [x] Identify shared context: global `nav`, `acsConfig`, `epoch` and `tsync`.
+- Shared context includes global `nav`, `acsConfig`, `epoch` and `tsync`.
   This is not an exhaustive inventory of static caches or side effects.
-- [x] Confirm `IONO_STEC` units: the model coefficient is
+- `IONO_STEC` uses the model coefficient
   `+/- 40.3e16 / frequency_hz^2`; the state is in TECU.
-- [x] Confirm receiver `CODE_BIAS` keys distinguish receiver, constellation and
+- Receiver `CODE_BIAS` keys distinguish receiver, constellation and
   observation code; model values enter code equations in meters.
-- [x] Confirm `clock_codes` can fix reference-system receiver code biases to
+- `clock_codes` can fix reference-system receiver code biases to
   zero and `zero_dcb_codes` generates a near-hard equality constraint between
   two receiver code biases. Neither is a measured calibration.
-- [x] Confirm an IONEX model route: `ionoModel()` with
+- The IONEX model route `ionoModel()` with
   `TOTAL_ELECTRON_CONTENT` calls `iontec()` in `common/ionModels.cpp`.
-- [x] Inspect the distinction between model initialization and constraints:
-  `pppIonStec()` obtains a model value, then uses an existing KF state when
+- `pppIonStec()` obtains a model value, then uses an existing KF state when
   available. With estimation enabled it adds the state to measurement design;
   this does not itself add a recurring GIM residual with GIM uncertainty.
-- [x] Locate the external-ionosphere pseudo-observation hook:
-  `ionoPseudoObs()` in `pea/ppp_pseudoobs.cpp` currently calls `getSSRIono()`.
+- The external-ionosphere pseudo-observation hook `ionoPseudoObs()` in
+  `pea/ppp_pseudoobs.cpp` calls `getSSRIono()`.
   It does not directly consume an IONEX GIM in the inspected path.
-- [x] Establish an initial Era C file-boundary smoke result: splitting a
-  continuous input preserved printed position results. This does not validate
-  the future shim, internal state bit equivalence or absolute calibration.
 - [ ] Inventory the complete initialization/preprocessing/filter/finalization
   call sequence and all required persistent objects.
 - [ ] Identify a narrow insertion point for project GIM constraints before
@@ -68,9 +64,9 @@ when updating it.
 - [ ] Identify native result/residual/covariance access without parsing TRACE,
   POS, MongoDB output or other serialized solver products.
 
-The previous smoke configuration deliberately used a zero GPS DCB datum.
-It demonstrated processing and state availability, not calibrated receiver DCB.
-Do not carry those constraints into the calibrated mode without review.
+Fixing a GPS DCB datum to zero is not calibrated receiver DCB. Review the rank
+constraints before using them in a calibrated mode; validate the future shim's
+continuity and calibration independently.
 
 ## Scientific gate: GIM-constrained STEC and receiver bias
 

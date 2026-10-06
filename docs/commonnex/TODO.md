@@ -1,54 +1,48 @@
 # CommonNEX remaining work
 
-[Overview](overview.md). This list contains unimplemented or unverified work,
-not completed decision history. Current contracts belong to their owning pages.
-No RINEX/RTCM3 importer or DecodedNav catalog is planned.
+[Overview](overview.md). This list contains remaining implementation or
+independent validation, not completed history. Current mappings and evidence
+limits belong in [receiver mappings](receiver-mappings.md). RINEX/RTCM3
+acquisition import and a DecodedNav catalog remain outside the selected scope.
 
-## Observation and receiver mappings
+## Observation and receiver validation
 
-- [ ] Complete the source-to-canonical observation signal/revision coverage
-      table and verify remaining phase/Doppler conventions with independent evidence.
-- [ ] Evaluate Meas3 only when explicitly needed; Measurements remains the
-      implemented SBF observation input.
+- [ ] Complete the observation signal/revision coverage table and independently
+  verify remaining phase/Doppler conventions for supported UBX/SBF mappings.
 
 ## RawBits validation and extensions
 
-- [ ] Validate UBX F/NAV and missing cross-receiver mappings with suitable samples.
-- [ ] Validate GPS/QZSS CNAV-2 receiver packing with real samples; documentary
-      52 + 1200 + 548 symbol mapping is implemented, not sample-validated.
-- [ ] Validate SBF QZSS L1S, QZSS L5S and L6 mappings with real samples.
-- [ ] Define legitimate I/NAV alert/partial assembly before claiming its support.
-- [ ] Independently validate B1C SF1 BCH and retained LDPC codewords where needed;
-      existing CRC checks do not establish complete FEC validation.
-- [ ] Add justified L6 service classification and further B2b subtype routing
-      only when useful; preserve explicit unclassified families meanwhile.
-- [ ] Study Galileo QP/restricted-signal exported representations before adding
-      canonical identifiers or mappings.
+- [ ] Validate documentary UBX F/NAV packing against real receiver samples.
+- [ ] Validate GPS/QZSS CNAV-2 and SBF QZSS L1S/L5S/L6 packing against real
+  receiver samples. Constructed containers do not establish RF validation.
+- [ ] Define I/NAV alert/horizontal-page normalization and assembly with
+  suitable receiver evidence; the retained nominal pair does not establish it.
+- [ ] Independently validate retained LDPC codewords where required; CRC success
+  is not full FEC validation. B-CNAV1 SF1 BCH decoding/validation is owned by the
+  [BeiDou checklist](../broadcast-beidou.md#remaining-scope).
+- [ ] Establish justified L6 service classification when independent service
+  evidence is available; retain unclassified identity meanwhile.
 
-## Events and downstream consumers
+## Consumer integration
 
-- [ ] Independently verify TIM-TP qErr polarity on appropriate hardware; the
-      current mapping retains the documented external experiment's sign choice.
-- [ ] Add CommonNEX PPP input and integrate Setup calibration where needed by
-      remaining consumers. STEC already uses the selected ANTEX companion.
-- [ ] Join measurement-clock telemetry into realtime phase processing without
-      treating a measurement adjustment as receiver reboot.
-- [ ] Implement overlap reconciliation only on explicit request; the current
-      input contract remains one continuous non-overlapping recording path.
+- [ ] Add CommonNEX Observation input to PPP and use Setup station/antenna
+  context. Preserve the supported GPS Float contract while replacing its
+  separate receiver-normalization input path.
+- [ ] Join measurement-clock telemetry into phase processing with explicit
+  observation-time association. Distinguish receiver clock adjustments from
+  restart Events; tracking and restart handling alone do not supply this join.
 
-## Deferred external sensor records
+## Deferred acquisition and mapping work
 
-No relevant sensor hardware is installed yet; defer implementation.
+Meas3, Galileo QP/restricted-signal mappings and overlap reconciliation require
+an explicit use case before implementation. The current acquisition contract is
+one ordered, continuous, non-overlapping recording path; unknown signal mappings
+remain counted rather than guessed.
 
-- [ ] Investigate SBF ASCIIIn/raw NMEA for external temperature, humidity and
-      pressure, including input-port, timestamp and fragmentation semantics.
-- [ ] Define a separate `raw-txt` catalog associated with navigation epochs;
-      preserve payload bytes and order without assuming UTF-8 or deduplicating.
-- [ ] Keep sensor parsing, units and calibration downstream; unknown time must
-      not be replaced with fabricated GPST.
+External temperature/humidity/pressure ingestion is deferred until concrete
+hardware and inputs are available. Evaluate SBF ASCIIIn/raw NMEA, source time,
+fragmentation, units and calibration before selecting a record schema.
 
-## Streaming extensions
-
-- [ ] Add durable live daily Parquet publication only with an explicit design
-      for transport-discontinuity persistence and incomplete-tail recovery.
-      The current live API delivers bounded batches/IPC, not a durable logger.
+- [ ] Design durable live daily Parquet publication before implementing it,
+  including discontinuity persistence and incomplete-tail handling. The current
+  bounded batch/IPC API is not a durable logger.
