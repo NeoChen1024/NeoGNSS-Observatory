@@ -85,11 +85,18 @@ class RealtimeStec:
                         raise ValueError("Cannot place untimed restart in realtime STEC")
                     restart.append(nanoseconds(row["gpst"]))
                 elif row["kind"] == "EPOCH_COMPLETION":
-                    if row["scope"] == "OBSERVATION":
-                        if row["gpst"] is None or row["payload"]["epoch_completion"]["completion"] != "COMPLETE":
+                    # INCOMPLETE groups carry no observations and do not advance the watermark.
+                    if row["scope"] == "OBSERVATION" and row["payload"]["epoch_completion"]["completion"] == "COMPLETE":
+                        if row["gpst"] is None:
                             raise ValueError("Expected timed complete observation epoch")
                         complete = max(complete, nanoseconds(row["gpst"]))
                         completed_epochs.append(nanoseconds(row["gpst"]))
+                elif row["scope"] == "NAVIGATION" or row["kind"] in (
+                    "OBSERVATION_GAP",
+                    "EPOCH_INTERVAL_SHORT",
+                    "REPEATED_TIMESTAMP",
+                ):
+                    continue
                 else:
                     raise ValueError(f"Unsupported STEC Event: {row['kind']}")
         if restart:

@@ -6,6 +6,8 @@
 #include <cppgnss/ubx_subframe.hpp>
 #include <map>
 #include <neognss_obs/raw_bits.hpp>
+#include <stdexcept>
+#include <string_view>
 
 namespace neognss_obs {
 namespace {
@@ -51,12 +53,13 @@ Bits unpack(std::span<const uint8_t> bytes, unsigned width = 32) {
 uint32_t value(const Bits &b, size_t begin, size_t end) {
     return b.get(begin, end);
 }
-void result(RawBits &r, std::string kind, std::string scope, bool pass) {
+void result(RawBits &r, std::string_view kind, std::string_view scope,
+            bool pass) {
     r.checks.push_back(
         {"independent", kind, scope, pass ? "pass" : "fail", "computed", ""});
 }
-void receiver(RawBits &r, std::string kind, std::string scope, uint8_t v,
-              std::string field = "CRCPassed") {
+void receiver(RawBits &r, std::string_view kind, std::string_view scope,
+              uint8_t v, std::string_view field = "CRCPassed") {
     r.checks.push_back({"receiver", kind, scope,
                         v == 1   ? "pass"
                         : v == 0 ? "fail"
@@ -64,7 +67,7 @@ void receiver(RawBits &r, std::string kind, std::string scope, uint8_t v,
                         "source_field", field});
 }
 void crc(RawBits &r, const Bits &b, size_t begin, size_t end,
-         std::string scope) {
+         std::string_view scope) {
     uint32_t c = 0;
     static constexpr auto table = [] {
         std::array<uint32_t, 256> out{};
@@ -452,18 +455,19 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
             return {RawBitsStatus::unsupported, {}};
         r.satellite = *satellite;
         if (g == 0 || g == 5) {
-            r.system = g == 0 ? "GPS" : "QZS";
+            const bool gps = g == 0;
+            r.system = gps ? "GPS" : "QZS";
             if (sig == 0) {
-                r.family = r.system + "_LNAV";
-                r.signals = {r.system + "_L1_CA"};
+                r.family = gps ? "GPS_LNAV" : "QZS_LNAV";
+                r.signals = {gps ? "GPS_L1_CA" : "QZS_L1_CA"};
                 width = 30;
-            } else if ((g == 0 && (sig == 3 || sig == 4)) ||
-                       (g == 5 && (sig == 4 || sig == 5))) {
-                r.family = r.system + "_CNAV";
-                r.signals = {r.system + "_L2C"};
-            } else if ((g == 0 && sig == 6) || (g == 5 && sig == 8)) {
-                r.family = r.system + "_CNAV";
-                r.signals = {r.system + "_L5_I"};
+            } else if ((gps && (sig == 3 || sig == 4)) ||
+                       (!gps && (sig == 4 || sig == 5))) {
+                r.family = gps ? "GPS_CNAV" : "QZS_CNAV";
+                r.signals = {gps ? "GPS_L2C" : "QZS_L2C"};
+            } else if ((gps && sig == 6) || (!gps && sig == 8)) {
+                r.family = gps ? "GPS_CNAV" : "QZS_CNAV";
+                r.signals = {gps ? "GPS_L5_I" : "QZS_L5_I"};
             } else if (g == 5 && sig == 1) {
                 r.family = "QZS_L1S";
                 r.signals = {"QZS_L1S"};
@@ -544,15 +548,26 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
     } else if (r.family == "QZS_L6_UNCLASSIFIED") {
         r.format = "L6_2000_V1";
         length = 2000;
-    } else {
-        r.format = r.family + "_250_V1";
+    } else if (r.family == "SBAS_L1") {
+        r.format = "SBAS_L1_250_V1";
         length = 250;
+    } else if (r.family == "SBAS_L5") {
+        r.format = "SBAS_L5_250_V1";
+        length = 250;
+    } else if (r.family == "QZS_L1S") {
+        r.format = "QZS_L1S_250_V1";
+        length = 250;
+    } else if (r.family == "QZS_L5S") {
+        r.format = "QZS_L5S_250_V1";
+        length = 250;
+    } else {
+        throw std::logic_error("RawBits family without format mapping");
     }
     if (length >= 576)
         r.content = "binary_symbols";
     const size_t words =
         r.format == "LNAV_300_V1" || (!sbf && r.format == "D1D2_300_V1") ? 10
-        : !sbf && r.format == "INAV_228_V1"                              ? 8
+        : !sbf && r.format == "INAV_228_V1" ? 8
                                             : (length + 31) / 32;
     const size_t actual_words =
         sbf ? navigation_bytes.size() / 4 : navigation_words.size();

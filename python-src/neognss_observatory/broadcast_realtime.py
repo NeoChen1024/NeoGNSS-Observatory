@@ -12,7 +12,13 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from . import _native
-from .cnex_stream import CnexStream, file_groups, tcp_groups
+from .cnex_stream import (
+    CnexStream,
+    arrival_position,
+    file_groups,
+    tcp_groups,
+    untimed_restarts,
+)
 from .setup_metadata import validate_setup
 
 
@@ -129,6 +135,7 @@ class BroadcastMessageDecoder:
 
     def __init__(self, setup_id, snapshot_interval_s=3600):
         self.native = _native.BroadcastMessageDecoder(setup_id, snapshot_interval_s)
+        self.restarts = []
 
     def process(self, raw_bits):
         if isinstance(raw_bits, pa.Table):
@@ -147,17 +154,29 @@ class BroadcastMessageDecoder:
         resets = []
         for batch in group.catalogs.get("events", ()):
             selected = batch.filter(pc.equal(batch.column("kind"), "RECEIVER_RESTART"))
-            resets.extend(selected.column("gpst").to_pylist())
-        if any(t is None for t in resets):
-            raise ValueError("Untimed receiver restart cannot be ordered for broadcast decoding")
+            resets.extend(t for t in selected.column("gpst").to_pylist() if t is not None)
         resets.sort()
+        # Untimed restarts are placed by arrival coordinate; one later than every
+        # row seen so far waits for following RawBits.
+        self.restarts.extend(untimed_restarts(group.catalogs.get("events", ())))
         result = {}
 
         def consume(batch):
             for kind, values in self.process(batch).items():
                 result.setdefault(kind, []).extend(values)
 
-        for batch in group.catalogs.get("raw-bits", ()):
+        def pieces(batch):
+            begin = 0
+            while self.restarts and (stop := arrival_position(batch, self.restarts[0])) < batch.num_rows:
+                if stop > begin:
+                    yield batch.slice(begin, stop - begin)
+                self.native.discontinuity()
+                self.restarts.pop(0)
+                begin = stop
+            if begin < batch.num_rows or not begin:
+                yield batch.slice(begin)
+
+        for batch in (piece for whole in group.catalogs.get("raw-bits", ()) for piece in pieces(whole)):
             if not resets:
                 consume(batch)
                 continue

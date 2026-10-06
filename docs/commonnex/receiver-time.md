@@ -21,13 +21,49 @@ the new date; previously published rows are not moved. Closed files receive
 continuation through a new `partNN`, never an in-place Parquet append.
 
 Directory dates are placement context, not asserted measurement dates for
-untimed records. Readers preserve part/row order, not a sort of nullable GPST.
+untimed records. Readers preserve part/row order, not a sort of nullable GPST;
+the [arrival-order coordinate](#arrival-order-coordinate) states that order explicitly.
 Absolute-time consumers skip unusable times or break the affected calculation;
 they must not silently hold the preceding GPST forward.
 
+## Arrival-order coordinate
+
+RawBits, Events and receiver telemetry carry `anchor_gpst: GpstTimestamp?` and
+`frame_index: uint64`. Together they locate a record in the received stream:
+
+- `anchor_gpst` is the latest valid receiver navigation time that strictly
+  exceeded every earlier one. It is the same source as the navigation anchor
+  (UBX NAV-TIMEGPS; SBF PVTCartesian, PVTGeodetic, ReceiverTime, EndOfPVT) but
+  is never aged, invalidated or cleared. It is null only before the first
+  valid navigation time of an import or live session.
+- `frame_index` is the ordinal of the validated source frame that produced the
+  record, counted from zero at the frame that advanced `anchor_gpst`, or from
+  the start of the stream while it is null. Every frame of the selected
+  protocol counts, whether or not it yields a record.
+
+Ordering by `(anchor_gpst, frame_index)`, nulls first, reproduces acquisition
+order within a catalog and across these three catalogs, independently of file,
+part, day and import boundaries. Records from one frame share a coordinate;
+their catalog row order remains the tie-break. Navigation blocks repeating the
+current time, an invalid navigation time and a navigation time reversal do not
+restart the count, so the coordinate keeps increasing through them.
+
+This is an ordering coordinate, not a timestamp. A record's `anchor_gpst` may
+precede its own time, since a receiver commonly reports an epoch's measurements
+and messages before the navigation block of that time. It can equal
+`nav_epoch_gpst` but stays set when that association is null. Frame ordinals
+depend on the recorded message set: they identify positions within one
+recording path, not across different outputs of the same receiver. Rows
+preceding the first anchor of separate imports cannot be ordered against each
+other. A telemetry row carries the coordinate of the navigation block that
+opened its window, or of the first report when no such block exists.
+Observation rows carry their own measurement time and have no arrival coordinate.
+
 ## Freshness
 
-`epoch_period_s` is required. The association timeout is exactly
+`epoch_period_s` is required and denotes the nominal
+[navigation epoch period](setup-json.md#nominal-epoch-period), not the observation
+cadence. The association timeout is exactly
 `10 * epoch_period_s`; equality is accepted. A valid navigation anchor can be
 held while fresh. Explicit invalid navigation time disables it immediately.
 Age advances only through receiver time evidence: trusted GPST progress or

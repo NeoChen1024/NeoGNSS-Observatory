@@ -149,7 +149,8 @@ def reversal_message(error, segments):
     return (
         f"{error['axis']} GPST moved backwards at {location}: "
         f"{gpst_text(error['previous'])} -> {gpst_text(error['current'])}. "
-        "Possible overlap or timestamp disorder; inspect/re-stitch the inputs before importing."
+        "Possible overlap or timestamp disorder; inspect/re-stitch the inputs, "
+        "or pass --allow-time-reversal to record TIME_REVERSAL Events and continue."
     )
 
 
@@ -347,15 +348,33 @@ def list_parts(station):
     help="Native observation input to import into this station; RAWX requires 0.",
 )
 @click.option(
+    "--allow-time-reversal",
+    is_flag=True,
+    help="Record TIME_REVERSAL Events and keep importing in acquisition order instead of failing.",
+)
+@click.option(
     "--finalize-telemetry",
     is_flag=True,
-    help="Declare a true stream end and emit incomplete telemetry tails; otherwise retain them for continuation.",
+    help="Declare a true stream end: emit incomplete telemetry tails and an INCOMPLETE Event for a withheld "
+    "measurement group; otherwise retain them for continuation.",
 )
-def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_workers, source_antenna, recursive, finalize_telemetry):
+def run(
+    inputs,
+    station,
+    protocol,
+    rebuild,
+    resume_from,
+    chunk_mib,
+    decode_workers,
+    source_antenna,
+    recursive,
+    allow_time_reversal,
+    finalize_telemetry,
+):
     """Head-probe and time-sort INPUTS, then import one continuous recording path.
 
     Catalogs: observations (including MeasExtra/smoothing state), raw-bits,
-    completion/restart events and unified receiver telemetry,
+    completion/restart/cadence events and unified receiver telemetry,
     clock estimates and pulse timing. Unknown RawBits/telemetry time is retained
     as null; no time-waiting backlog. See the coverage table for adapter limits.
     No automatic overlap merging. Rebuild requires the complete replacement input.
@@ -390,7 +409,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
         if resume_from:
             state = json.loads(resume_from.read_text(encoding="utf-8"))
             if (
-                state.get("version") != 3
+                state.get("version") != 4
                 or state["protocol"] != protocol
                 or state["station"] != str(station)
                 or state["source_antenna"] != source_antenna
@@ -486,7 +505,13 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                 )
                 writers[key] = (
                     pq.ParquetWriter(
-                        temporary, schema, compression="zstd", compression_level=3, use_dictionary=dictionary_columns(schema)
+                        temporary,
+                        schema,
+                        compression="zstd",
+                        compression_level=3,
+                        use_dictionary=dictionary_columns(schema),
+                        # Per-epoch frame ordinals are short increasing runs.
+                        column_encoding={"frame_index": "DELTA_BINARY_PACKED"} if "frame_index" in schema.names else None,
                     ),
                     temporary,
                     target,
@@ -537,7 +562,7 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
             if snapshot["summary"]["cursor_day"] is None:
                 return
             continuation = {
-                "version": 3,
+                "version": 4,
                 "station": str(station),
                 "protocol": protocol,
                 "setup_id": setup["setup_id"],
@@ -636,10 +661,9 @@ def run(inputs, station, protocol, rebuild, resume_from, chunk_mib, decode_worke
                         try:
                             native_batches = reader.feed(data)
                         except RuntimeError as error:
-                            reversal = reader.time_error()
-                            if reversal:
-                                raise ValueError(reversal_message(reversal, segments)) from error
                             raise RuntimeError(f"{path}: {error}") from error
+                        if not allow_time_reversal and (reversal := reader.time_error()):
+                            raise ValueError(reversal_message(reversal, segments))
                         batches = batch_group(group_sequence, native_batches, include_empty=True).ordered_batches()
                         group_sequence += 1
                         summary = reader.summary()

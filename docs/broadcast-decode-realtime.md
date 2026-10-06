@@ -101,8 +101,10 @@ correction is performed.
 
 No historical snapshot query exists. A discontinuity clears incomplete assemblies
 and restarts scheduling; completed candidates remain subject to their temporal
-filters. Time reversal without a declared discontinuity is an error. Untimed
-restart Events are rejected rather than assigned a fabricated position.
+filters. Time reversal without a declared discontinuity is an error. An untimed
+restart Event is placed among RawBits by its
+[arrival-order coordinate](commonnex/receiver-time.md#arrival-order-coordinate),
+not assigned a fabricated time.
 
 ## Python API and bounds
 

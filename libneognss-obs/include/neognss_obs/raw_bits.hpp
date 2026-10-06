@@ -2,7 +2,7 @@
 #pragma once
 #include <cppgnss/stream.hpp>
 #include <optional>
-#include <string>
+#include <string_view>
 #include <vector>
 
 namespace neognss_obs {
@@ -11,15 +11,17 @@ namespace neognss_obs {
 inline constexpr bool bds_ppp_b2b_code_assigned(int64_t prn) {
     return (prn >= 1 && prn <= 5) || (prn >= 59 && prn <= 63);
 }
+// Enumerated names are views of string literals with static storage; the
+// decoder never builds them at run time.
 struct RawBitsCheck {
-    std::string origin, kind, scope, result, evidence, source_field;
+    std::string_view origin, kind, scope, result, evidence, source_field;
 };
 struct RawBits {
     // RINEX G/E/C/J/S satellite identity; family/format names are independent.
-    std::string system, family, format, unit = "message",
-                                        content = "navigation_bits";
+    std::string_view system, family, format, unit = "message",
+                                             content = "navigation_bits";
     uint16_t satellite = 0;
-    std::vector<std::string> signals;
+    std::vector<std::string_view> signals;
     uint32_t bit_length = 0;
     std::vector<uint8_t> body;
     std::vector<RawBitsCheck> checks;

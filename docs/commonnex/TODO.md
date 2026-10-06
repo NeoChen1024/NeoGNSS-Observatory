@@ -29,10 +29,6 @@ No RINEX/RTCM3 importer or DecodedNav catalog is planned.
 
 - [ ] Independently verify TIM-TP qErr polarity on appropriate hardware; the
       current mapping retains the documented external experiment's sign choice.
-- [ ] Implement agreed cadence findings and their typed payloads, with explicit
-      equal-time/conflict semantics. INTERVAL/STATE designs are not current output.
-- [ ] Implement and validate required context-aware replay for new Event kinds;
-      do not infer continuity from the absence of unsupported events.
 - [ ] Add CommonNEX PPP input and integrate Setup calibration where needed by
       remaining consumers. STEC already uses the selected ANTEX companion.
 - [ ] Join measurement-clock telemetry into realtime phase processing without

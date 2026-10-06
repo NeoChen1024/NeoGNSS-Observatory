@@ -27,13 +27,14 @@ assembly, not sensor interpolation. See [importer](importer.md) and
 
 ## Common and navigation-clock fields
 
-All fields below are nullable except `setup_id` and `collection_complete`.
+All fields below are nullable except `setup_id`, `frame_index` and `collection_complete`.
 All time types use DECIMAL(38,12) seconds; GPST origin is 1980-01-06.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | setup_id | string | Logical station |
 | gpst | GpstTimestamp? | Full navigation epoch time |
+| anchor_gpst, frame_index | GpstTimestamp?, uint64 | [Arrival-order coordinate](receiver-time.md#arrival-order-coordinate); `frame_index` is non-null |
 | receiver_uptime_s | Duration? | Source uptime associated with this window |
 | receiver_temperature_c | float32? | Receiver internal temperature |
 | cpu_load_percent | float32? | Source CPU utilization in percent |

@@ -41,19 +41,31 @@ uint32_t rtcm3_crc(std::span<const uint8_t> bytes) {
     return crc;
 }
 uint16_t sbf_crc(std::span<const uint8_t> bytes) {
+    // CRC-16/CCITT-FALSE with slicing-by-8: table[k][x] is the CRC of byte x
+    // followed by k zero bytes, so eight input bytes combine with one XOR each.
     static constexpr auto table = [] {
-        std::array<uint16_t, 256> values{};
-        for (unsigned i = 0; i < values.size(); ++i) {
+        std::array<std::array<uint16_t, 256>, 8> values{};
+        for (unsigned i = 0; i < 256; ++i) {
             uint16_t c = i << 8;
             for (int bit = 0; bit < 8; ++bit)
                 c = (c << 1) ^ ((c & 0x8000) ? 0x1021 : 0);
-            values[i] = c;
+            values[0][i] = c;
         }
+        for (unsigned k = 1; k < 8; ++k)
+            for (unsigned i = 0; i < 256; ++i)
+                values[k][i] =
+                    (values[k - 1][i] << 8) ^ values[0][values[k - 1][i] >> 8];
         return values;
     }();
     uint16_t crc = 0;
-    for (auto b : bytes)
-        crc = (crc << 8) ^ table[(crc >> 8) ^ b];
+    const uint8_t *p = bytes.data();
+    size_t n = bytes.size();
+    for (; n >= 8; n -= 8, p += 8)
+        crc = table[7][p[0] ^ (crc >> 8)] ^ table[6][p[1] ^ (crc & 0xff)] ^
+              table[5][p[2]] ^ table[4][p[3]] ^ table[3][p[4]] ^
+              table[2][p[5]] ^ table[1][p[6]] ^ table[0][p[7]];
+    for (; n; --n, ++p)
+        crc = (crc << 8) ^ table[0][(crc >> 8) ^ *p];
     return crc;
 }
 void StreamDecoder::feed(std::span<const uint8_t> data,

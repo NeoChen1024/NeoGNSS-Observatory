@@ -106,19 +106,24 @@ def validate_events(paths, setup_id):
                 restart = pc.fill_null(
                     pc.and_(pc.equal(selected["kind"], "RECEIVER_RESTART"), pc.equal(selected["scope"], "RECEIVER")), False
                 )
-                unsupported = selected.filter(pc.invert(pc.or_(completion, restart)))
+                # Cadence findings describe coverage; the processor applies its own gap policy.
+                cadence = pc.fill_null(
+                    pc.and_(
+                        pc.is_in(selected["kind"], pa.array(["OBSERVATION_GAP", "EPOCH_INTERVAL_SHORT", "REPEATED_TIMESTAMP"])),
+                        pc.equal(selected["scope"], "OBSERVATION"),
+                    ),
+                    False,
+                )
+                unsupported = selected.filter(pc.invert(pc.or_(pc.or_(completion, restart), cadence)))
                 if len(unsupported):
                     row = unsupported.slice(0, 1).to_pylist()[0]
                     raise ValueError(f"Unsupported STEC Event {row['scope']}/{row['kind']} at {row['gpst']}: {path}")
+                # INCOMPLETE marks a dropped measurement group: absent observations, not an input fault.
                 complete = selected.filter(completion)
                 if len(complete):
-                    valid = pc.and_(
-                        pc.equal(pc.struct_field(complete["payload"], ["epoch_completion", "completion"]), "COMPLETE"),
-                        pc.equal(complete["applicability"], "EPOCH"),
-                    )
-                    valid = pc.and_(valid, pc.is_valid(complete["gpst"]))
+                    valid = pc.and_(pc.equal(complete["applicability"], "EPOCH"), pc.is_valid(complete["gpst"]))
                     if not pc.all(pc.fill_null(valid, False)).as_py():
-                        raise ValueError(f"Incomplete CommonNEX observation context: {path}")
+                        raise ValueError(f"Invalid CommonNEX observation completion: {path}")
                 for row in selected.filter(restart).to_pylist():
                     payload = row["payload"] or {}
                     reason = payload.get("restart_reason")
@@ -126,7 +131,6 @@ def validate_events(paths, setup_id):
                     if (
                         row["applicability"] != "POINT"
                         or row["evidence"] != "INFERRED"
-                        or row["end_gpst"] is not None
                         or payload.get("epoch_completion") is not None
                         or reason not in ("UPTIME_DECREASE", "GPST_UPTIME_OFFSET_JUMP")
                         or uptime is None

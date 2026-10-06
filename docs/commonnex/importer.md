@@ -13,8 +13,8 @@ The importer produces `observations`, `raw-bits`, `events` and
 MeasExtra association, RawBits packing and validation limits; see
 [ParquetNEX](parquetnex.md) for persisted schemas and naming.
 
-Completion and receiver-restart Events are implemented; cadence Events, Meas3
-and overlap reconciliation are not. RINEX/RTCM3 input is intentionally excluded,
+Completion, receiver-restart, cadence and time-order [Events](events.md) are
+implemented; Meas3 and overlap reconciliation are not. RINEX/RTCM3 input is intentionally excluded,
 not a pending adapter. No decoded-navigation catalog is planned.
 
 Telemetry follows the common [receiver-telemetry contract](receiver-telemetry.md),
@@ -166,8 +166,12 @@ is unchanged. Observation time does not substitute for navigation context.
 Their shared high-water mark is used only to age navigation anchors; never
 interpret cross-axis differences as observation reversals. A strict
 decrease in observation or receiver navigation time stops import and reports the
-axis, previous/current GPST and source file/byte offset. Equal timestamps are accepted without a
-duplicate check. Head samples do not claim overlap detection or global validity.
+axis, previous/current GPST and source file/byte offset. This default protects
+against misordered or overlapping inputs. `--allow-time-reversal` instead keeps
+importing in acquisition order and records `TIME_REVERSAL` Events; rows then
+appear with decreasing time, and a reversal into an already published day adds
+a part to it. Equal timestamps are accepted without a duplicate check and
+recorded as `REPEATED_TIMESTAMP` for observation epochs. Head samples do not claim overlap detection or global validity.
 Inspect or re-stitch overlapping/disordered inputs rather than expecting the
 importer to trim or merge them. Failed runs retain already published daily parts;
 unpublished staging remains available for inspection and is not selected by readers.
@@ -183,7 +187,8 @@ The station uses `YYYY/MM/DD/` GPST directories. The latest receiver/observation
 context day receives `import-state.json`, a narrow continuation cursor. It records
 published parts, previously read input paths/sizes/positions, and raw ranges for
 tail replay. No SIS timestamp affects the directory or cursor location.
-The sidecar also preserves receiver-time/completion and pending telemetry state.
+The sidecar also preserves receiver-time/completion, arrival-coordinate, cadence-estimate
+and pending telemetry state.
 It is private operational state, not a science catalog or a portable generic
 decoder checkpoint. Resume validates its supported state format and import
 configuration; incompatible state fails instead of silently starting over.

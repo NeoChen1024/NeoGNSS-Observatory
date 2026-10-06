@@ -72,8 +72,10 @@ is an error. `receiver_antenna = "none"` explicitly permits uncorrected research
 processing, recorded in metadata. The optional extrapolation policy can enable
 L5 when only L1/L2 calibration exists. Satellite antenna phase corrections and
 phase wind-up are not applied in this STEC path. Receiver smoothing is reported,
-not undone. Observation completion Events must describe complete contexts;
-unsupported stream events are not silently ignored.
+not undone. Observation completion Events must be timed; `INCOMPLETE` groups and cadence
+findings describe absent or irregular observations and are left to the
+processor's own gap handling. Observation `TIME_REVERSAL` and other unsupported
+stream events are not silently ignored.
 
 ### Receiver restart Events
 

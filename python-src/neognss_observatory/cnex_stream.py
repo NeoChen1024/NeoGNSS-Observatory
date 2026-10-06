@@ -16,6 +16,7 @@ from types import MappingProxyType
 
 import click
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from . import _native
 
@@ -54,6 +55,28 @@ class CnexBatchGroup:
     def ordered_batches(self):
         """The stable catalog order used by the archive writer."""
         return tuple(b for name in CATALOGS for b in self.catalogs.get(name, ()))
+
+
+def untimed_restarts(events):
+    """Arrival coordinates of receiver restarts that carry no GPST, in arrival order."""
+    found = []
+    for batch in events:
+        selected = batch.filter(pc.and_(pc.equal(batch["kind"], "RECEIVER_RESTART"), pc.is_null(batch["gpst"])))
+        found.extend(zip(selected["anchor_gpst"].to_pylist(), selected["frame_index"].to_pylist()))
+    return sorted(found, key=lambda c: (c[0] is not None, c[0] or 0, c[1]))
+
+
+def arrival_position(batch, coordinate):
+    """First row received after COORDINATE, or the row count when every row precedes it."""
+    anchor, index = coordinate
+    later = pc.greater(batch["frame_index"], index)
+    if anchor is None:
+        after = pc.or_(pc.is_valid(batch["anchor_gpst"]), later)
+    else:
+        same = pc.fill_null(pc.equal(batch["anchor_gpst"], anchor), False)
+        after = pc.or_(pc.fill_null(pc.greater(batch["anchor_gpst"], anchor), False), pc.and_(same, later))
+    position = pc.index(after, True).as_py()
+    return batch.num_rows if position < 0 else position
 
 
 def batch_group(sequence, native_batches, *, include_empty=False):

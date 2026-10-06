@@ -46,7 +46,7 @@ are naming/semantic references, not an import or export mapping.
 | `antenna` | Required object for the single antenna; type, radome, serial, comment and optional calibration companion |
 | Installation | `antenna.arp_offset_neu_m` and `antenna.azimuth_deg` |
 | Tracking | Declared constellations and signals per constellation; receiver measurement rate where known |
-| `epoch_period_s` | Required decimal string: strictly positive Duration in seconds |
+| `epoch_period_s` | Required decimal string: nominal navigation epoch period, a strictly positive Duration in seconds |
 | `antenna.feed_line` | Optional object with free-form `type` and finite nonnegative `length_m` |
 | `vendor_config` | Optional filename of a configuration file beside `setup.json` |
 
@@ -201,16 +201,23 @@ or output presence. Do not extract settings by parsing free-text comments.
 
 ## Nominal epoch period
 
-Top-level `epoch_period_s` declares the nominal observation cadence expected
-for this Setup, in seconds. Its logical type is Core `Duration`, represented
-in JSON as a decimal string, not a JSON number. Examples are `"1.000000000000"`
-for 1 Hz, `"0.100000000000"` for 10 Hz and `"30.000000000000"` for one observation
-every 30 seconds. This field is required for every Setup, including RawBits-only
-stations: provide the configured nominal receiver epoch period even when no
-observations are exported. Missing/null values are rejected; do not infer a
-default from input timestamps. It is not a telemetry/message transmission
-interval, reference-epoch interval, or a guarantee of gapless observations.
-Recording-source decimation may differ and must not rewrite receiver cadence.
+Top-level `epoch_period_s` declares the nominal navigation epoch period of
+this Setup, in seconds: the configured interval between successive receiver
+navigation-time reports. For UBX this is the navigation solution interval
+(measurement period times navigation rate), which spaces NAV-TIMEGPS/NAV-EOE;
+for SBF it is the output interval of the synchronous PVT blocks. It is not the
+observation cadence: observations carry their own measurement time, and their
+output interval may differ from this period. It is also not a telemetry status
+interval or a guarantee of gapless output.
+
+The period scales the [receiver-time association](receiver-time.md) limits for
+RawBits, telemetry and restart evidence. Its logical type is Core `Duration`,
+represented in JSON as a decimal string, not a JSON number. Examples are
+`"1.000000000000"` for 1 Hz, `"0.100000000000"` for 10 Hz and
+`"30.000000000000"` for one navigation epoch every 30 seconds. This field is
+required for every Setup, including RawBits-only stations. Missing/null values
+are rejected; do not infer a default from input timestamps. Recording-source
+decimation may differ and must not rewrite the receiver's configured period.
 
 Parse the string directly as decimal without a binary64 intermediate. Writers
 emit ordinary decimal notation with exactly 12 fractional digits. Readers may
@@ -228,9 +235,8 @@ A true 30 Hz cadence has a period of 1/30 s, represented here as
 nominal approximation, not an exact rational timing representation. This avoids
 restricting the format to the rates of currently used receivers. Actual epoch
 timestamps remain authoritative: never generate, snap or accumulate timestamps
-from this metadata. CommonNEX defines a per-epoch interval tolerance of +/-20%
-in the [cadence classification rules](import-policy.md#planned-cadence-classification).
-This is a diagnostic threshold, not permission to round timestamps. Preserve an
+from this metadata. Observation [cadence classification](import-policy.md#cadence-classification)
+estimates its own period from the data and does not use this field. Preserve an
 imported source interval outside Setup as well when its precision or meaning
 cannot be represented here exactly.
 

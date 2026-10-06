@@ -17,18 +17,21 @@ from tqdm import tqdm
 
 from . import _native
 from .cnex_import import ORIGIN, day_directories, latest_parts
+from .cnex_stream import arrival_position, untimed_restarts
 from .research_output import staged_output, write_json
 
 
 def controls(catalogs):
-    """Delivery controls, not invented CommonNEX scientific records."""
+    """Timed delivery controls, not invented CommonNEX scientific records.
+
+    Untimed receiver restarts are placed by arrival coordinate instead; see untimed_restarts.
+    """
     result = set()
     for batch in catalogs.get("events", ()):
         for kind, scope, stamp in zip(batch["kind"].to_pylist(), batch["scope"].to_pylist(), batch["gpst"].to_pylist()):
             if kind == "RECEIVER_RESTART":
-                if stamp is None:
-                    raise ValueError("Untimed receiver restart cannot be ordered for SBAS processing")
-                result.add((stamp, True))
+                if stamp is not None:
+                    result.add((stamp, True))
             elif kind == "EPOCH_COMPLETION" and scope == "NAVIGATION" and stamp is not None:
                 result.add((stamp, False))
     for batch in catalogs.get("receiver-telemetry", ()):
@@ -44,8 +47,9 @@ class SbasGridProcessor:
         self.setup_id = setup_id
         self.progress = None
         self.closed = False
+        self.restarts = []
 
-    def process(self, raw_bits=(), progress_controls=()):
+    def process(self, raw_bits=(), progress_controls=(), restarts=()):
         if self.closed:
             raise RuntimeError("SBAS processor is closed")
         batches = (
@@ -56,6 +60,8 @@ class SbasGridProcessor:
         pending = iter(progress_controls)
         control = next(pending, None)
         output = defaultdict(list)
+        # A restart later than every row seen so far waits for following RawBits.
+        self.restarts.extend(restarts)
 
         def collect(values):
             for kind, value in values.items():
@@ -81,7 +87,19 @@ class SbasGridProcessor:
             if len(values):
                 self.progress = values[-1].as_py()
 
-        for batch in batches:
+        def pieces(batch):
+            begin = 0
+            while self.restarts and (stop := arrival_position(batch, self.restarts[0])) < batch.num_rows:
+                if stop > begin:
+                    yield batch.slice(begin, stop - begin)
+                self.native.discontinuity()
+                self.progress = None
+                self.restarts.pop(0)
+                begin = stop
+            if begin < batch.num_rows or not begin:
+                yield batch.slice(begin)
+
+        for batch in (piece for whole in batches for piece in pieces(whole)):
             # Controls are sparse epoch-level operations, not per-frame callbacks.
             stamps = batch["nav_epoch_gpst"].to_pylist()
             known = [(i, t) for i, t in enumerate(stamps) if t is not None]
@@ -106,7 +124,9 @@ class SbasGridProcessor:
             for batch in batches:
                 if "setup_id" in batch.schema.names and pc.any(pc.not_equal(batch["setup_id"], self.setup_id)).as_py():
                     raise ValueError("Mixed SBAS Setup")
-        result = self.process(group.catalogs.get("raw-bits", ()), controls(group.catalogs))
+        result = self.process(
+            group.catalogs.get("raw-bits", ()), controls(group.catalogs), untimed_restarts(group.catalogs.get("events", ()))
+        )
         if group.notice and group.notice.startswith("discontinuity:"):
             self.native.discontinuity()
             self.progress = None
@@ -127,7 +147,10 @@ def station_batches(root):
     setup_id = json.loads((root / "setup.json").read_text())["setup_id"]
     for day in day_directories(root):
         catalogs = defaultdict(list)
-        for name, columns in [("events", ["setup_id", "gpst", "kind", "scope"]), ("receiver-telemetry", ["setup_id", "gpst"])]:
+        for name, columns in [
+            ("events", ["setup_id", "gpst", "kind", "scope", "anchor_gpst", "frame_index"]),
+            ("receiver-telemetry", ["setup_id", "gpst"]),
+        ]:
             for path in latest_parts(day, name):
                 with pq.ParquetFile(path) as source:
                     for batch in source.iter_batches(columns=columns, batch_size=65536):
@@ -135,6 +158,7 @@ def station_batches(root):
                             raise ValueError(f"Mixed SBAS control Setup: {path}")
                         catalogs[name].append(batch)
         pending = controls(catalogs)
+        restarts = untimed_restarts(catalogs["events"])
         del catalogs
         times = [t for t, _ in pending]
         offset = 0
@@ -143,10 +167,10 @@ def station_batches(root):
                 for batch in source.iter_batches(batch_size=65536):
                     known = pc.drop_null(batch["nav_epoch_gpst"])
                     end = bisect.bisect_right(times, known[-1].as_py(), offset) if len(known) else offset
-                    yield batch, pending[offset:end]
-                    offset = end
-        if offset < len(pending):
-            yield (), pending[offset:]
+                    yield batch, pending[offset:end], restarts
+                    offset, restarts = end, ()
+        if offset < len(pending) or restarts:
+            yield (), pending[offset:], restarts
 
 
 class SnapshotSink:
@@ -222,8 +246,8 @@ def cli(input_dir, output, snapshot_interval, correction_age, mask_age):
         sink = SnapshotSink(output, snapshot_interval, correction_age, mask_age)
         try:
             with tqdm(desc="SBAS RawBits", unit="row", unit_scale=True) as progress:
-                for batch, events in station_batches(input_dir):
-                    sink.add(processor.process(batch, events))
+                for batch, events, restarts in station_batches(input_dir):
+                    sink.add(processor.process(batch, events, restarts))
                     if isinstance(batch, pa.RecordBatch):
                         progress.update(batch.num_rows)
             processor.finish()

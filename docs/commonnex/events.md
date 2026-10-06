@@ -1,89 +1,110 @@
 # CommonNEX events and scoped context
 
-UBX/SBF completion and receiver restart evidence are implemented. Planned
-cadence kinds and reserved applicability rules are explicitly marked below.
+Events record boundaries, discontinuities and cadence findings for UBX/SBF input.
 [Overview](overview.md) | [Import policy](import-policy.md)
 
 ## Purpose
 
-Events describe boundaries and discontinuities. Observation and RawBits carry their own times; Events are not
-epoch lookup tables. No science row must reference an event ID. Setup
-metadata references remain shared descriptive context.
+Observation and RawBits carry their own times; Events are not epoch lookup
+tables, and no science row must reference an event ID. Setup metadata
+references remain shared descriptive context.
 
 Measurement and navigation scopes are independent even at equal timestamps.
 Protocol completion is not discontinuity, proof of all signals being present,
 or an instruction to reset a solver. Signal-local slip/lock/quality indicators
 remain on Observation rows.
 
-## Implemented and planned event kinds
+## Event kinds
 
-| Kind | Status and meaning |
-| --- | --- |
-| `OBSERVATION_GAP` | Planned: Adjacent measurement interval exceeds 1.2 times nominal period |
-| `EPOCH_INTERVAL_SHORT` | Planned: Positive measurement interval below 0.8 times nominal period |
-| `TIME_REVERSAL` | Planned: Time decreases in established acquisition order |
-| `REPEATED_TIMESTAMP` | Planned: Distinct epochs have equal time; not duplicate proof |
-| `RECEIVER_RESTART` | Supported restart evidence, not mere logger reconnection |
-| `EPOCH_COMPLETION` | Complete/incomplete/unknown closure of an observation or navigation epoch, including epochs with no retained science rows |
+| Kind | Scope | Meaning |
+| --- | --- | --- |
+| `EPOCH_COMPLETION` | `OBSERVATION`, `NAVIGATION` | Closure of an observation or navigation epoch, including epochs with no retained science rows |
+| `RECEIVER_RESTART` | `RECEIVER` | Supported restart evidence, not mere logger reconnection |
+| `OBSERVATION_GAP` | `OBSERVATION` | Interval between successive closed observation epochs above 1.2 times the estimated period |
+| `EPOCH_INTERVAL_SHORT` | `OBSERVATION` | Positive interval below 0.8 times the estimated period |
+| `REPEATED_TIMESTAMP` | `OBSERVATION` | Successive closed observation epochs have equal time; not duplicate proof |
+| `TIME_REVERSAL` | `OBSERVATION`, `NAVIGATION` | Time decreases in acquisition order |
 
-Only completion and restart are emitted today. Time reversal currently fails
-import instead of emitting a TIME_REVERSAL Event. Cadence kinds and their
-payloads below are design targets, not implemented columns.
+The cadence estimate and its tolerance are defined in
+[import policy](import-policy.md#cadence-classification). The batch importer
+treats a time reversal as an input error unless explicitly allowed; see
+[importer](importer.md#head-only-ordering-and-time-reversal).
 
-## Shared fields and applicability
+## Fields
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `setup_id` | string | Affected logical station |
 | `kind` | enum | Kind above |
-| `scope` | enum | `STREAM`, `OBSERVATION`, `NAVIGATION` or `RECEIVER` |
-| `gpst` | GpstTimestamp? | Event location, target epoch time, or state/interval start; restart evidence may be untimed |
-| `receiver_uptime_s` | Duration? | Reported uptime for receiver restart evidence; null for completion |
-| `applicability` | enum | `POINT`, `EPOCH`, `INTERVAL` or `STATE` |
-| `end_gpst` | GpstTimestamp? | Exclusive interval/state end, if explicitly supplied |
-| `evidence` | enum | `REPORTED` for current completion; `INFERRED` for current restart |
-| `payload` | struct | Nullable `epoch_completion` struct and `restart_reason` string; see below |
+| `scope` | enum | `OBSERVATION`, `NAVIGATION` or `RECEIVER` |
+| `gpst` | GpstTimestamp? | Event location or target epoch time; see the per-kind rules below |
+| `applicability` | enum | `EPOCH` for completion, otherwise `POINT` |
+| `evidence` | enum | `REPORTED` or `INFERRED` |
+| `payload` | struct | Nullable `epoch_completion` and `cadence` structs and `restart_reason` string |
+| `receiver_uptime_s` | Duration? | Reported uptime for receiver restart evidence; otherwise null |
+| `anchor_gpst`, `frame_index` | GpstTimestamp?, uint64 | [Arrival-order coordinate](receiver-time.md#arrival-order-coordinate) of the source frame that produced the Event |
 
 `GpstTimestamp`, `TimeDelta` and `Duration` use `DECIMAL(38,12)` seconds.
-No event ID or epoch foreign key is required. Multiple events may share time.
-Implemented completion Events require non-null GPST; receiver restart Events
-permit null GPST. Other event kinds must define their time constraints before
-implementation; nullable storage is not permission to omit required times.
+No event ID or epoch foreign key is required. Multiple events may share time,
+and several Events produced by one source frame share its arrival coordinate.
 `EPOCH` applies only to its declared epoch context, never implicitly forward.
-`INTERVAL` is `[gpst,end_gpst)` with a required end later than the start.
-`INTERVAL` and `STATE` are reserved applicability designs; current output uses
-`EPOCH` for completion and `POINT` for restart. `STATE` starts inclusively and lasts until explicit end or a superseding
-declaration in the same scope. A date, file boundary or absence of a new event
-does not end it.
-`POINT` records an occurrence, not an enduring state.
+`POINT` records an occurrence, not an enduring state. Exactly one payload
+member is non-null for each kind.
 
 Equal timestamps cannot distinguish conflicting/repeated acquisition contexts.
 Do not resolve ambiguous applicable events by file order or last-write-wins.
-Expose ambiguity and require explicit source selection or exclusion; exact
-source/conflict selectors are a remaining schema task, not permission to guess.
 
-## Kind-specific payloads
+## Kind-specific rules
 
-Planned interval/discontinuity payloads contain `previous_gpst: GpstTimestamp?`,
-`next_gpst: GpstTimestamp?`, `interval_s: TimeDelta?`, and
-`expected_period_s: Duration?`. These are direct coordinates, not references.
-For cadence/reversal events, `gpst=next_gpst`; previous/next describe acquisition
-order even when time reverses. The interval is evidence, not an assertion of
-exact missing sample times/count. Restart time is the first justified evidence,
-not an invented exact reboot instant. RawBits-only events never inherit
-measurement-cadence thresholds for asynchronous navigation messages.
+### Epoch completion
 
-`EPOCH_COMPLETION` uses `applicability=EPOCH`, with `completion` equal to
-`COMPLETE`, `INCOMPLETE` or `UNKNOWN`, and `completion_basis` equal to
-`PROTOCOL_BOUNDARY`, `RECORD_STRUCTURE`, `INCOMPLETE_TAIL` or `UNKNOWN`.
-Current import emits `COMPLETE` with `RECORD_STRUCTURE` (RAWX) or
-`PROTOCOL_BOUNDARY` (EndOfMeas/matched NAV-EOE). Other completion values are
-reserved; incomplete input is currently reported through importer state/counts,
-not an emitted incomplete measurement Event.
-These fields are stored in `payload.epoch_completion`; for restart that member
-is null and `payload.restart_reason` is populated instead.
-Its scope identifies observation versus navigation; closure does not tie their
-timestamps together. A source-local boundary alone is not merged completion.
+`payload.epoch_completion` holds `completion` and `completion_basis`:
+
+| Completion | Basis | Scope | `gpst` | Evidence | Condition |
+| --- | --- | --- | --- | --- | --- |
+| `COMPLETE` | `RECORD_STRUCTURE` | `OBSERVATION` | Epoch time | `REPORTED` | A structurally complete UBX RXM-RAWX |
+| `COMPLETE` | `PROTOCOL_BOUNDARY` | `OBSERVATION` | Epoch time | `REPORTED` | SBF measurement group closed by its matching EndOfMeas |
+| `COMPLETE` | `PROTOCOL_BOUNDARY` | `NAVIGATION` | Epoch time | `REPORTED` | UBX NAV-EOE matching a valid NAV-TIMEGPS |
+| `INCOMPLETE` | `PROTOCOL_BOUNDARY` | `OBSERVATION` | Group time | `INFERRED` | SBF measurement group superseded by another epoch without its EndOfMeas; its rows are not emitted |
+| `INCOMPLETE` | `INCOMPLETE_TAIL` | `OBSERVATION` | Group time | `INFERRED` | SBF measurement group still open at a declared stream end or discontinuity |
+| `UNKNOWN` | `PROTOCOL_BOUNDARY` | `NAVIGATION` | null | `REPORTED` | UBX NAV-EOE without a matching valid NAV-TIMEGPS: the closed epoch cannot be identified |
+
+Every closed observation epoch produces one `COMPLETE` Event, so the newest
+one bounds the observations delivered so far. `INCOMPLETE` marks absent
+observations and never advances that bound. A measurement group whose own time
+is invalid produces no Event; it is reported through importer counts.
+`INCOMPLETE_TAIL` requires an explicit end: ordinary end of input retains the
+open group for continuation instead. Completion scope identifies observation
+versus navigation; closure does not tie their timestamps together.
+
+### Cadence and time order
+
+`OBSERVATION_GAP`, `EPOCH_INTERVAL_SHORT`, `REPEATED_TIMESTAMP` and
+`TIME_REVERSAL` use `evidence=INFERRED` and store `payload.cadence`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `previous_gpst` | GpstTimestamp | Preceding time on the same axis, in acquisition order |
+| `interval_s` | TimeDelta | `gpst - previous_gpst`; zero for a repeat, negative for a reversal |
+| `expected_period_s` | Duration? | Period estimate used for classification; null while it is not yet available |
+
+`gpst` is the later record in acquisition order, which also assigns the Event's
+GPST day. These are direct coordinates, not references. An interval is
+evidence, not an assertion of exact missing sample times or counts.
+Observation-scope Events compare successive closed observation epochs and
+precede the `COMPLETE` Event of the epoch at `gpst`. A navigation-scope
+`TIME_REVERSAL` compares successive receiver navigation times and carries a
+null `expected_period_s`; asynchronous navigation messages have no cadence
+classification.
+
+### Receiver restart
+
+`RECEIVER_RESTART` uses `evidence=INFERRED` and a nullable `gpst`: restart time
+is the first justified evidence, not an invented exact reboot instant.
+`receiver_uptime_s` retains the new uptime; `payload.restart_reason` is
+`UPTIME_DECREASE` or `GPST_UPTIME_OFFSET_JUMP`. An untimed restart follows the
+[placement policy](receiver-time.md) of receiver telemetry and is located among
+RawBits and telemetry rows by its arrival coordinate.
 
 Clock-corrected observation input is out of scope; there is no clock-correction
 application-state Event. Raw receiver adjustment evidence is independently
@@ -92,37 +113,23 @@ Do not infer a restart, gap or loss of lock merely from a clock adjustment.
 
 ## Reading and persistence
 
-Receiver restart Events use `kind=RECEIVER_RESTART`, `scope=RECEIVER`,
-`applicability=POINT`, `evidence=INFERRED`, and a nullable `gpst`.
-`receiver_uptime_s` retains the new uptime; `payload.restart_reason` is
-`UPTIME_DECREASE` or `GPST_UPTIME_OFFSET_JUMP`. The completion payload is null.
-These untimed Events follow the same [placement policy](receiver-time.md) as
-receiver telemetry; they do not invent a GPST or require an epoch reference.
-
-Consumers needing discontinuity interpretation load the relevant Events context before
-using observations. Read earlier partitions as necessary to obtain a still-valid
-state: yesterday alone is not a guaranteed bound. A reader may scan the compact
-event history, but the format does not require loading every event into memory.
-Direct/live adapters provide the same required state or explicitly UNKNOWN;
-absence of context must not be mistaken for proof of continuity.
+Consumers needing discontinuity interpretation load the relevant Events before
+using observations, reading earlier partitions as necessary: yesterday alone is
+not a guaranteed bound. Direct/live adapters provide the same Events; absence
+of context must not be mistaken for proof of continuity. A consumer that
+cannot process a kind it encounters fails explicitly rather than ignoring it.
 
 ParquetNEX stores `r00-events-part00.parquet` and subsequent parts/revisions per
 station/GPST day, following [ParquetNEX naming](parquetnex.md#daily-revisions).
-Assign by `gpst`:
-an interval comparison belongs to the next available epoch's day even if its
-previous coordinate is from another day; persistent state begins in its start
-day and need not be copied every midnight. Select the latest Events revision
-and all its parts for each required day, including earlier context partitions.
-Read only after all related science/Events writes finish; revision numbers need
-not match between catalogs. Tail completion may add a part without revising
-published events. Rebuild only day/catalog scopes whose existing content changes. Counter renumbering
-does not force later revisions; changed boundary/state interpretation may.
+Assign by `gpst`; untimed Events use the receiver-time placement policy. Select
+the latest Events revision and all its parts for each required day. Read only
+after all related science/Events writes finish; revision numbers need not match
+between catalogs. Tail completion may add a part without revising published
+events. Rebuild only day/catalog scopes whose existing content changes.
 
-The initial importer does not automatically reconcile overlapping sources;
-do not claim unique merged-stream continuity for such inputs. Preserve real reversal evidence; source arrival order
-is not necessarily receiver acquisition order. File rollover and handover are
-not discontinuities. No events file is necessary when no events/context exist.
-Capability/coverage metadata distinguishes unavailable detection from no detected
-event; neither is a universal continuity guarantee or prerequisite QA stamp.
-
-Remaining cadence/context work is tracked in [TODO](TODO.md).
+The importer does not reconcile overlapping sources; do not claim unique
+merged-stream continuity for such inputs. Source arrival order is not
+necessarily receiver acquisition order. File rollover and handover are not
+discontinuities. No events file is necessary when no events exist. Absence of
+a cadence Event before the period estimate is available is not evidence of
+regular sampling.

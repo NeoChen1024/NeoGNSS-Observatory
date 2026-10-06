@@ -67,7 +67,9 @@ Midnight and file/batch boundaries do not reset scientific state. Explicit
 discontinuity and receiver restart do. At a timed restart, an already-reached
 snapshot boundary is emitted before the reset. A reset inside a window discards
 that segment's unfinished statistics; the next window is marked partial.
-Untimed restart Events are rejected because they cannot be ordered safely.
+An untimed restart Event is placed among RawBits by its
+[arrival-order coordinate](commonnex/receiver-time.md#arrival-order-coordinate)
+and resets without advancing to a snapshot boundary, since it has no time.
 EOF emits no future or off-grid snapshot; the last unfinished window is not
 published. There is no persisted processor checkpoint or append/resume workflow
 in this command yet. Replay preceding CommonNEX context when rebuilding outputs.

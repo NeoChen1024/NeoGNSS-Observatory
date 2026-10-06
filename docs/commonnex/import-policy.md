@@ -21,8 +21,8 @@ distinct even when bodies and times match.
 
 ## Overlap and late data
 
-Head probing orders files; normal reading rejects observation/navigation time
-reversal. It does not deduplicate, reconcile overlaps or guarantee unique rows
+Head probing orders files; the batch importer stops on observation/navigation
+time reversal unless explicitly allowed. It does not deduplicate, reconcile overlaps or guarantee unique rows
 at equal timestamps. See [input ordering](importer.md#head-only-ordering-and-time-reversal).
 
 If reconciliation is explicitly implemented later, first-imported valid
@@ -37,55 +37,58 @@ Acquisition/FTP and concurrent readers during publication are outside the
 batch importer. Continuation mechanics belong to [importer](importer.md#tail-continuation-and-reconstruction),
 not the scientific schema.
 
-## Planned cadence classification
+## Cadence classification
 
-For the required positive nominal observation period P (`epoch_period_s`), compare
-successive distinct measurement-epoch GPST timestamps within the same station.
-Use exact decimal timestamp differences and P in seconds without rounding
-observations. The standard per-epoch tolerance is +/-20%:
+The importer classifies the interval between successive closed observation
+epochs, in acquisition order, and records findings as
+[Events](events.md#cadence-and-time-order). The sequence is the one that
+produces `COMPLETE` Events, so an epoch without retained rows still counts as
+an epoch. RawBits, telemetry arrivals, companion blocks and per-satellite rows
+are not classified.
+
+The nominal period P is estimated from the data, not declared: it is the lower
+median of the most recent positive intervals, up to 30 of them. Classification
+starts once five intervals are available; before that no gap or short-interval
+Event is produced. Every positive interval enters the window after it has been
+classified, including one found to be a gap, so a genuine cadence change is
+adopted while isolated outliers do not move the estimate. Setup's
+`epoch_period_s` is the navigation epoch period and takes no part in this.
+
+Using exact decimal differences, with dt the interval and a tolerance of +/-20%:
 
 | Interval dt | Classification |
 | --- | --- |
-| dt < 0 | Time reversal |
-| dt = 0 | Repeated timestamp requiring explicit identity/time interpretation |
-| 0 < dt < 0.8 P | Too-short interval: timing/cadence anomaly, not a gap |
-| 0.8 P <= dt <= 1.2 P | Within the nominal cadence tolerance |
-| dt > 1.2 P | Observation cadence gap |
+| dt < 0 | `TIME_REVERSAL` |
+| dt = 0 | `REPEATED_TIMESTAMP` |
+| 0 < dt < 0.8 P | `EPOCH_INTERVAL_SHORT` |
+| 0.8 P <= dt <= 1.2 P | Within tolerance; no Event |
+| dt > 1.2 P | `OBSERVATION_GAP` |
 
 The endpoints are inclusive: for P = 1000 ms, 800 through 1200 ms is acceptable.
-"20% below the period" means below 80% of P, not below 20% of P. A gap is a
-coverage finding, not proof of receiver failure or an exact missing-epoch count.
-Too-short intervals may reflect a wrong declared period or timestamp problems;
-do not assert a specific cause from this check alone. Setup requires an explicit
-positive nominal period; missing or unknown cadence is not silently defaulted.
+Each Event stores the P it was classified against. A gap is a coverage finding,
+not proof of receiver failure or an exact missing-epoch count; a short interval
+is a timing anomaly, not a gap, and no cause is asserted. Reversal and repeat
+findings do not depend on P and are produced from the first interval.
 
-Apply this to logical observation epochs, not per-satellite rows, companion
-blocks, RawBits or telemetry arrivals. Reconcile proven logging duplicates before
-classifying the merged station; conflict alternatives are not extra normal
-epochs. Preserve evidence of time reversals rather than hiding them by sorting.
-Physical file, batch and GPST-day boundaries do not restart the comparison.
-Explicit new continuity contexts are handled separately.
+The estimate is part of the continuation state: file, batch and GPST-day
+boundaries, and receiver restarts, do not restart it. It follows the cadence
+actually present in the imported recording, so a deliberately decimated
+recording is classified against its own interval. Because the estimate depends
+on preceding input, an import that starts elsewhere in a recording can classify
+the first few intervals differently.
 
-A deliberately decimated Recording Source can have a different declared output
-cadence. Source-local checks use that declared cadence; merged-stream coverage
-against Setup's P may still show gaps. Label the scope and period used instead
-of silently changing the Setup or blaming the receiver for decimation.
-
-Retain observations, timestamps and anomaly findings. Positive out-of-range intervals
-are not a reason to reject the entire import, snap epochs, fabricate samples or
-automatically reset processing state. This shared rule does not mandate another
-full QA pass in every consumer; solver reset/timeout policies remain separate.
-Live absence beyond 1.2 P can be provisional; final interval classification uses
-observation time, not network arrival latency.
-The current ordered-input importer rejects time reversals as stated above;
-cadence-gap/too-short-interval Events remain unimplemented.
+Observations, timestamps and findings are retained. Out-of-range intervals are
+not a reason to reject the import, snap epochs, fabricate samples or reset
+processing state; solver reset/timeout policies remain separate. A reversal is
+recorded with both times in acquisition order and is never hidden by sorting;
+the batch importer additionally stops on it unless told otherwise.
 
 ## Consumer continuity
 
 Protocol completion is not proof of gapless signals. Observation and navigation
 completion are independent; consumers apply [Events](events.md) by their scope,
-not by transport batch order. Current completion/restart records are distinct
-from the planned cadence findings above.
+not by transport batch order. Completion and restart records are distinct
+from the cadence findings above.
 
 Storage and computation are separately incremental. Consumers may require
 earlier records or their own checkpoints; a daily partition is not guaranteed

@@ -44,6 +44,7 @@ force all signals into a GPS subframe length, or infer layout from length alone.
 | `nav_epoch_gpst` | `GpstTimestamp?` | Associated navigation-context time in DECIMAL(38,12) GPST seconds; null without a usable anchor |
 | `receiver_uptime_s` | `Duration?` | Available freshly associated receiver uptime |
 | `uptime_basis` | enum? | ASSOCIATED, or null without uptime |
+| `anchor_gpst`, `frame_index` | `GpstTimestamp?`, `uint64` | [Arrival-order coordinate](receiver-time.md#arrival-order-coordinate); an ordering key, not reception time |
 | `satellite_system`, `satellite_number` | `string`, `uint16` | Required normalized identity of the broadcasting satellite |
 | `bitstream_source` | `list<string>` | Common signal identifiers for known contributing broadcast signals; empty if unknown |
 | `signal_composition` | enum | `single`, `combined`, or `unknown`; does not imply an ordering of contributing signals |

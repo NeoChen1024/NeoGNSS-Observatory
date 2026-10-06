@@ -34,8 +34,8 @@ including RINEX NAV, SP3 and bias products, as separate calculation dependencies
 | [RawBits](raw-bits.md) | Record schema, checks and occurrence semantics |
 | [RawBits formats](raw-bits-formats.md) | Signal vocabulary, legal family/format pairs and canonical bit layouts |
 | [Receiver telemetry](receiver-telemetry.md) | Common status, clock and pulse records |
-| [Events](events.md) | Implemented completion/restart and explicitly planned cadence contracts |
-| [Receiver time](receiver-time.md) | Missing time, anchor freshness, uptime and restart association |
+| [Events](events.md) | Completion, restart, cadence and time-order findings |
+| [Receiver time](receiver-time.md) | Missing time, arrival order, anchor freshness, uptime and restart association |
 | [Setup JSON](setup-json.md) | Station metadata and calibration/configuration companions |
 | [Receiver profiles](receiver-profiles.md) | Which receiver messages to enable |
 | [Receiver mappings](receiver-mappings.md) | UBX/SBF normalization, packing and validation coverage |
