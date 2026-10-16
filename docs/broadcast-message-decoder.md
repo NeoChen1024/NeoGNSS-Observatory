@@ -1,6 +1,6 @@
 # Broadcast message decoding and assembly
 
-Selected design and remaining roadmap. GPS/QZSS LNAV, QZSS CNAV,
+Selected design and remaining roadmap. GPS/QZSS LNAV and CNAV,
 Galileo I/NAV/F/NAV/C/NAV, BeiDou and SBAS L1 decoding is
 available through [the realtime decoder and Python API](broadcast-decode-realtime.md).
 That guide owns current coverage and concrete fields; proposals below are not
@@ -284,7 +284,7 @@ behavior, not silent loss of completed MessageOutput records.
 
 ## Remaining work
 
-The [QZSS CNAV contract](broadcast-qzss-cnav.md) owns its implemented field,
+The [GPS and QZSS CNAV contract](broadcast-cnav.md) owns its implemented field,
 assembly and snapshot rules. CNAV-2 remains unsupported pending receiver-sample
 verification; it is not an alias of the 300-bit CNAV decoder.
 The [Galileo contract](broadcast-galileo.md) owns navigation, SAR/ISM and HAS
@@ -294,9 +294,6 @@ Implemented decoding and delivery are described in the
 [API guide](broadcast-decode-realtime.md) and family contracts. BeiDou payload
 and backend extensions are owned by its [remaining scope](broadcast-beidou.md#remaining-scope).
 
-- [ ] Decode GPS CNAV (`GPS_CNAV`, L2C and L5) message types 10, 11 and 30-37
-  using IS-GPS-200 section 30 and IS-GPS-705, with GPS reference constants and
-  separate L2C and L5 source assemblies. RawBits already retain these messages.
 - [ ] Complete the LNAV scientific field/schema contract and independently
   verify check acceptance, time resolution, health/fit applicability and
   assembly limits. Existing field extraction is not a missing decoder task.

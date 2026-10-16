@@ -52,8 +52,6 @@ models internally so that orbit, clock, attitude and antenna corrections remain
 consistent within one solution. The [design draft](satellite-geometry.md) owns
 the selected layers, outputs and selection rules.
 
-- [ ] Decode GPS CNAV (L2C/L5) ephemeris, clock and ISC, sharing the 300-bit
-  CNAV assembly with QZSS; see the [decoder checklist](broadcast-message-decoder.md#remaining-work).
 - [ ] Interpolate SP3 orbits and precise clocks across adjacent product files.
   Report gaps, product edges, sentinel values and maneuver flags as unavailable
   rather than extrapolating or filling them.

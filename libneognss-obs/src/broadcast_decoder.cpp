@@ -145,10 +145,12 @@ std::shared_ptr<CnexBatch> batch(const std::vector<Row> &rows) {
         auto t = type(sample);
         if (std::holds_alternative<std::monostate>(sample) &&
             (name == "eccentricity" || name == "i0_rad" || name == "delay_m" ||
-             name == "vtec_tecu" || name == "mean_vtec_tecu"))
+             name == "vtec_tecu" || name == "mean_vtec_tecu" ||
+             name == "delta_eccentricity"))
             t = NANOARROW_TYPE_DOUBLE;
         if (std::holds_alternative<std::monostate>(sample) &&
-            name == "ephemeris_status_flag")
+            (name == "ephemeris_status_flag" || name == "l2c_phasing" ||
+             name == "within_fit_interval"))
             t = NANOARROW_TYPE_BOOL;
         if (std::holds_alternative<std::monostate>(sample) &&
             t == NANOARROW_TYPE_DOUBLE)
@@ -227,7 +229,7 @@ struct BroadcastMessageDecoder::State {
     Tick interval;
     std::optional<Tick> progress, next;
     std::map<std::string, Assembly> ephemeris;
-    QzsCnavDecoder cnav;
+    CnavDecoder cnav;
     GalileoDecoder galileo;
     BeidouDecoder beidou;
     std::map<std::pair<std::string, std::string>, std::vector<Candidate>> cache;
@@ -755,15 +757,16 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
             const bool bds = bds_legacy || fam == "BDS_PPP_B2B" ||
                              fam == "BDS_BCNAV1" || fam == "BDS_BCNAV2" ||
                              fam == "BDS_BCNAV3";
-            if (fam != "GPS_LNAV" && fam != "QZS_LNAV" && fam != "QZS_CNAV" &&
-                fam != "SBAS_L1" && !gal && !bds) {
+            if (fam != "GPS_LNAV" && fam != "QZS_LNAV" && fam != "GPS_CNAV" &&
+                fam != "QZS_CNAV" && fam != "SBAS_L1" && !gal && !bds) {
                 ++s.counts["unsupported_families"];
                 continue;
             }
             auto sys = root.child("satellite_system").str(row);
             auto sat = root.child("satellite_number").integer(row);
             const bool sbas = fam == "SBAS_L1";
-            const bool cnav = fam == "QZS_CNAV";
+            const bool cnav = fam == "GPS_CNAV" || fam == "QZS_CNAV";
+            const bool gps = fam == "GPS_LNAV" || fam == "GPS_CNAV";
             const auto bds_format = bds_legacy            ? "D1D2_300_V1"
                                     : fam == "BDS_BCNAV1" ? "BCNAV1_1800_V1"
                                     : fam == "BDS_BCNAV2" ? "BCNAV2_576_V1"
@@ -778,11 +781,11 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
             const size_t gal_length = fam == "GAL_INAV"   ? 228
                                       : fam == "GAL_FNAV" ? 238
                                                           : 486;
-            if (sys != (bds                 ? "C"
-                        : gal               ? "E"
-                        : sbas              ? "S"
-                        : fam == "GPS_LNAV" ? "G"
-                                            : "J") ||
+            if (sys != (bds    ? "C"
+                        : gal  ? "E"
+                        : sbas ? "S"
+                        : gps  ? "G"
+                               : "J") ||
                 sat < 1 || sat > 255 ||
                 root.child("body_format").str(row) != (bds    ? bds_format
                                                        : gal  ? gal_format
@@ -914,13 +917,15 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
                 continue;
             }
             if (cnav) {
-                bool l2 = std::find(signals.begin(), signals.end(),
-                                    "QZS_L2C") != signals.end();
-                bool l5 = std::find(signals.begin(), signals.end(),
-                                    "QZS_L5_I") != signals.end();
+                bool l2 =
+                    std::find(signals.begin(), signals.end(),
+                              gps ? "GPS_L2C" : "QZS_L2C") != signals.end();
+                bool l5 =
+                    std::find(signals.begin(), signals.end(),
+                              gps ? "GPS_L5_I" : "QZS_L5_I") != signals.end();
                 for (auto &entry : s.cnav.decode(
                          {bytes.data.as_uint8, size_t(bytes.size_bytes)}, key,
-                         sat, l2, l5, t, s.counts)) {
+                         gps, sat, l2, l5, t, s.counts)) {
                     auto r = base;
                     r.insert(entry.fields.begin(), entry.fields.end());
                     s.emit(entry.kind, r);

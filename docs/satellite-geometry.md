@@ -61,8 +61,8 @@ rate and the relativistic constant `F = -2 sqrt(mu) / c^2`. There is no shared
 default. GPS and QZSS use the IS-GPS-200 values; Galileo uses the Galileo OS SIS
 ICD values; BeiDou uses CGCS2000 values. Modern-model reference semi-major axes
 and node-rate references are family constants already listed in the
-[QZSS CNAV](broadcast-qzss-cnav.md) and [BeiDou](broadcast-beidou.md#orbit-and-clock)
-contracts; GPS CNAV follows IS-GPS-200 section 30. Each constant is cited at
+[GPS and QZSS CNAV](broadcast-cnav.md) and [BeiDou](broadcast-beidou.md#orbit-and-clock)
+contracts. Each constant is cited at
 its definition in code.
 
 The clock polynomial is `af0 + af1 dt + af2 dt^2` from `toc`. The periodic
@@ -82,7 +82,7 @@ A query carries an evaluation time and an availability cutoff, normally the
 reception time. Selection considers candidates received strictly before the
 cutoff, keeps those applicable at the evaluation time and chooses the latest
 received. Applicability rules are shared with decoder snapshots rather than
-reimplemented: GPS fit interval and IODC, QZSS CNAV windows, Galileo age windows
+reimplemented: GPS fit interval and IODC, GPS and QZSS CNAV windows, Galileo age windows
 and the equivalent BeiDou rules. Health follows each family's own fields:
 Galileo I/NAV and F/NAV signal health are evaluated separately and one family's
 report does not mask the other's; BeiDou uses SatH1 or the B-CNAV health field;

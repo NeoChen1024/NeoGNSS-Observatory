@@ -11,8 +11,9 @@ struct CnavOutput {
     std::string discriminator;
 };
 
-// QZSS CNAV parameter decoding and source-local, fresh three-part assemblies.
-class QzsCnavDecoder {
+// GPS and QZSS CNAV parameter decoding and source-local, fresh three-part
+// assemblies.
+class CnavDecoder {
     struct Assembly {
         std::map<int, Row> parts;
         std::optional<Tick> start;
@@ -22,8 +23,9 @@ class QzsCnavDecoder {
   public:
     void clear() { assemblies_.clear(); }
     std::vector<CnavOutput> decode(std::span<const uint8_t> body,
-                                   const std::string &source, int64_t satellite,
-                                   bool l2, bool l5, std::optional<Tick> time,
+                                   const std::string &source, bool gps,
+                                   int64_t satellite, bool l2, bool l5,
+                                   std::optional<Tick> time,
                                    std::map<std::string, uint64_t> &counts);
 };
 // Returns false for time-ineligible candidates, without selecting a source.
