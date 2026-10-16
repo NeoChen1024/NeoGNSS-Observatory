@@ -294,6 +294,9 @@ Implemented decoding and delivery are described in the
 [API guide](broadcast-decode-realtime.md) and family contracts. BeiDou payload
 and backend extensions are owned by its [remaining scope](broadcast-beidou.md#remaining-scope).
 
+- [ ] Decode GPS CNAV (`GPS_CNAV`, L2C and L5) message types 10, 11 and 30-37
+  using IS-GPS-200 section 30 and IS-GPS-705, with GPS reference constants and
+  separate L2C and L5 source assemblies. RawBits already retain these messages.
 - [ ] Complete the LNAV scientific field/schema contract and independently
   verify check acceptance, time resolution, health/fit applicability and
   assembly limits. Existing field extraction is not a missing decoder task.

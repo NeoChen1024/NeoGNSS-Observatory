@@ -42,6 +42,39 @@ broadcast geometry and receiver-exported phase, without absolute calibration.
 - [ ] Investigate independent absolute calibration and time-varying receiver
   bias models separately from the existing GIM-constrained estimates.
 
+## Project-owned satellite orbit and clock evaluation
+
+Satellite geometry outside a positioning solver, including offline and
+realtime STEC and broadcast navigation adapters, currently uses RTKLIB-EX
+`eph2pos`/`peph2pos` and its SP3/clock readers. Replace these uses with a C++
+evaluator in `libneognss-obs`. A positioning backend keeps its own satellite
+models internally so that orbit, clock, attitude and antenna corrections remain
+consistent within one solution. The [design draft](satellite-geometry.md) owns
+the selected layers, outputs and selection rules.
+
+- [ ] Decode GPS CNAV (L2C/L5) ephemeris, clock and ISC, sharing the 300-bit
+  CNAV assembly with QZSS; see the [decoder checklist](broadcast-message-decoder.md#remaining-work).
+- [ ] Interpolate SP3 orbits and precise clocks across adjacent product files.
+  Report gaps, product edges, sentinel values and maneuver flags as unavailable
+  rather than extrapolating or filling them.
+- [ ] Add the shared light-time helper and migrate offline STEC to SP3-only
+  geometry with health from the station's decoded RawBits, removing its CLK and
+  RINEX navigation requirements.
+- [ ] Evaluate legacy broadcast parameters from the existing typed decoder
+  records for GPS/QZSS LNAV, Galileo I/NAV and F/NAV and BeiDou D1/D2, including
+  BeiDou GEO handling, per-system constants and relativistic clock correction.
+  Compute time differences in exact GPST ticks before converting to binary64.
+- [ ] Evaluate modern GPS/QZSS CNAV and BeiDou B-CNAV1/2/3 parameters.
+- [ ] Replace `BroadcastNavigation` with decoder output, the broadcast
+  ephemeris store and the evaluator, sharing applicability rules with decoder
+  snapshots; migrate realtime STEC and expose batched Python evaluation.
+- [ ] Compare broadcast results with MGEX final SP3/clock products by system and
+  orbit type, after accounting for antenna phase center versus center of mass
+  and broadcast clock datums. Check interpolation by leave-one-out against
+  omitted product nodes. Use an implementation with independent lineage, such
+  as G-Nut/GREAT or gLAB, as secondary evidence; RTKLIB-derived code is not
+  independent.
+
 ## PPP Float extensions
 
 [GPS static forward Float PPP](ppp.md) already consumes raw UBX/SBF without a

@@ -20,6 +20,8 @@ only when they affect present interpretation or processing.
 
 - [Broadcast message decoder](broadcast-message-decoder.md): CommonNEX RawBits
   decoding/assembly API, navigation-family coverage and pending field contracts.
+- [Satellite orbit and clock evaluation](satellite-geometry.md): broadcast and
+  precise-product geometry layer, selection rules and batch interfaces.
 - [Ginan shim](ginan-shim.md): single-context native backend design,
   GIM/bias calibration investigation and implementation checklist.
 - [CommonNEX and ParquetNEX](commonnex/overview.md): current pre-Alpha record
