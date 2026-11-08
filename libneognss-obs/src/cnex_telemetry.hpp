@@ -27,15 +27,15 @@ void telemetry_field(ArrowSchema *s, TelemetryField f, bool nullable = true) {
 }
 void telemetry_struct(ArrowSchema *s, const char *name,
                       std::initializer_list<TelemetryField> fields) {
-    check(ArrowSchemaSetTypeStruct(s, fields.size()));
-    check(ArrowSchemaSetName(s, name));
+    arrow_check(ArrowSchemaSetTypeStruct(s, fields.size()));
+    arrow_check(ArrowSchemaSetName(s, name));
     size_t i = 0;
     for (auto f : fields)
         telemetry_field(s->children[i++], f);
 }
 std::shared_ptr<Batch> telemetry_schema() {
     auto b = std::make_shared<Batch>();
-    check(
+    arrow_check(
         ArrowSchemaSetTypeStruct(&b->schema, std::size(telemetry_fields) + 2));
     size_t i = 0;
     for (auto f : telemetry_fields)
@@ -180,62 +180,62 @@ template <class T> void optional_integer(ArrowArray *a, std::optional<T> v) {
     if (v)
         integer(a, int64_t(*v));
     else
-        check(ArrowArrayAppendNull(a, 1));
+        arrow_check(ArrowArrayAppendNull(a, 1));
 }
 void optional_number(ArrowArray *a, std::optional<double> v) {
     if (v)
         number(a, *v);
     else
-        check(ArrowArrayAppendNull(a, 1));
+        arrow_check(ArrowArrayAppendNull(a, 1));
 }
 void optional_str(ArrowArray *a, std::optional<std::string_view> v) {
     if (v)
-        str(a, *v);
+        append_string(a, *v);
     else
-        check(ArrowArrayAppendNull(a, 1));
+        arrow_check(ArrowArrayAppendNull(a, 1));
 }
 void telemetry_append(Batch &b, const TelemetryRow &row,
                       const std::string &id) {
     auto c = b.array.children;
-    str(c[0], id);
-    optional_decimal(c[1], row.gpst);
-    optional_decimal(c[2], row.anchor_gpst);
+    append_string(c[0], id);
+    append_seconds(c[1], row.gpst);
+    append_seconds(c[2], row.anchor_gpst);
     integer(c[3], int64_t(row.frame_index));
-    optional_decimal(c[4], row.receiver_uptime_s);
+    append_seconds(c[4], row.receiver_uptime_s);
     optional_number(c[5], row.receiver_temperature_c);
     optional_number(c[6], row.cpu_load_percent);
-    optional_decimal(c[7], row.clock_bias_s);
+    append_seconds(c[7], row.clock_bias_s);
     optional_integer(c[8], row.clock_frequency_offset);
-    optional_decimal(c[9], row.time_accuracy_s);
+    append_seconds(c[9], row.time_accuracy_s);
     optional_integer(c[10], row.frequency_accuracy);
     optional_str(c[11], row.clock_reference_time_scale);
     integer(c[12], row.collection_complete);
     integer(c[13], row.archive_day);
     auto m = c[14]->children[0];
     for (const auto &item : row.measurement_clock) {
-        decimal(m->children[0], item.gpst);
+        append_seconds(m->children[0], item.gpst);
         optional_integer(m->children[1], item.adjustment_reported);
         optional_integer(m->children[2], item.cumulative_adjustment_ms);
         optional_integer(m->children[3], item.cumulative_adjustment_modulus_ms);
-        check(ArrowArrayFinishElement(m));
+        arrow_check(ArrowArrayFinishElement(m));
     }
-    check(ArrowArrayFinishElement(c[14]));
+    arrow_check(ArrowArrayFinishElement(c[14]));
     auto p = c[15]->children[0];
     for (const auto &item : row.pulse_timing) {
-        optional_decimal(p->children[0], item.gpst);
-        str(p->children[1], item.reference_time_scale);
-        optional_decimal(p->children[2], item.quantization_error_s);
+        append_seconds(p->children[0], item.gpst);
+        append_string(p->children[1], item.reference_time_scale);
+        append_seconds(p->children[2], item.quantization_error_s);
         optional_integer(p->children[3], item.quantization_error_valid);
         optional_integer(p->children[4], item.locked);
         optional_str(p->children[5], item.raim_status);
         optional_integer(p->children[6], item.utc_standard);
         optional_integer(p->children[7], item.utc_available);
-        optional_decimal(p->children[8], item.sync_age_s);
+        append_seconds(p->children[8], item.sync_age_s);
         optional_integer(p->children[9], item.sync_age_saturated);
-        check(ArrowArrayFinishElement(p));
+        arrow_check(ArrowArrayFinishElement(p));
     }
-    check(ArrowArrayFinishElement(c[15]));
-    check(ArrowArrayFinishElement(&b.array));
+    arrow_check(ArrowArrayFinishElement(c[15]));
+    arrow_check(ArrowArrayFinishElement(&b.array));
 }
 
 // Checkpoint serialization. Keys follow the ParquetNEX column names.

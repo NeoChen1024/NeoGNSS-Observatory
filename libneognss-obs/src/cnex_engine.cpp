@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "arrow_batch.hpp"
 #include "cnex_build.hpp"
 #include "cnex_decode.hpp"
 #include "receiver_time.hpp"
@@ -25,11 +26,6 @@ namespace neognss_obs::cnex_detail {
 using Json = nlohmann::json;
 using Tick = boost::int128::int128;
 constexpr int64_t ps = 1000000000000LL;
-void check(int result) {
-    if (result)
-        throw std::runtime_error("Arrow construction failed: " +
-                                 std::to_string(result));
-}
 Json time_parts(Tick time) {
     return Json::array({int64_t(time / ps), int64_t(time % ps)});
 }
@@ -103,22 +99,14 @@ struct Probe {
         return d;
     }
 };
-void str(ArrowArray *a, std::string_view s) {
-    check(ArrowArrayAppendString(a, {s.data(), int64_t(s.size())}));
-}
 void number(ArrowArray *a, double v) {
     if (std::isfinite(v))
-        check(ArrowArrayAppendDouble(a, v));
+        arrow_check(ArrowArrayAppendDouble(a, v));
     else
-        check(ArrowArrayAppendNull(a, 1));
+        arrow_check(ArrowArrayAppendNull(a, 1));
 }
-void integer(ArrowArray *a, int64_t v) { check(ArrowArrayAppendInt(a, v)); }
-void decimal(ArrowArray *a, Tick v) {
-    ArrowDecimal d;
-    ArrowDecimalInit(&d, 128, 38, 12);
-    d.words[d.low_word_index] = static_cast<uint64_t>(v);
-    d.words[d.high_word_index] = static_cast<uint64_t>(v >> 64);
-    check(ArrowArrayAppendDecimal(a, &d));
+void integer(ArrowArray *a, int64_t v) {
+    arrow_check(ArrowArrayAppendInt(a, v));
 }
 struct Batch : CnexBatch {
     struct Capacity {
@@ -140,9 +128,10 @@ struct Batch : CnexBatch {
         // string/binary data. This changes capacity only, not length or
         // validity.
         if (a.n_children == 0 && hint.rows)
-            check(ArrowArrayReserve(&a, hint.rows));
+            arrow_check(ArrowArrayReserve(&a, hint.rows));
         if (hint.data_bytes)
-            check(ArrowBufferReserve(ArrowArrayBuffer(&a, 2), hint.data_bytes));
+            arrow_check(
+                ArrowBufferReserve(ArrowArrayBuffer(&a, 2), hint.data_bytes));
         for (int64_t i = 0;
              i < a.n_children && i < int64_t(hint.children.size()); ++i)
             reserve(*a.children[i], hint.children[i]);
@@ -152,30 +141,30 @@ struct Batch : CnexBatch {
     Batch &operator=(const Batch &) = delete;
     void init() {
         ArrowError error{};
-        check(ArrowArrayInitFromSchema(&array, &schema, &error));
-        check(ArrowArrayStartAppending(&array));
+        arrow_check(ArrowArrayInitFromSchema(&array, &schema, &error));
+        arrow_check(ArrowArrayStartAppending(&array));
     }
     void finish() {
         ArrowError error{};
-        check(ArrowArrayFinishBuildingDefault(&array, &error));
+        arrow_check(ArrowArrayFinishBuildingDefault(&array, &error));
     }
 };
 void field(ArrowSchema *s, const char *name, ArrowType type,
            bool nullable = true) {
-    check(ArrowSchemaSetType(s, type));
-    check(ArrowSchemaSetName(s, name));
+    arrow_check(ArrowSchemaSetType(s, type));
+    arrow_check(ArrowSchemaSetName(s, name));
     if (!nullable)
         s->flags &= ~ARROW_FLAG_NULLABLE;
 }
 void decfield(ArrowSchema *s, const char *name, bool nullable = false) {
-    check(ArrowSchemaSetTypeDecimal(s, NANOARROW_TYPE_DECIMAL128, 38, 12));
-    check(ArrowSchemaSetName(s, name));
+    set_seconds_type(s);
+    arrow_check(ArrowSchemaSetName(s, name));
     if (!nullable)
         s->flags &= ~ARROW_FLAG_NULLABLE;
 }
 std::shared_ptr<Batch> observations() {
     auto b = std::make_shared<Batch>();
-    check(ArrowSchemaSetTypeStruct(&b->schema, 12));
+    arrow_check(ArrowSchemaSetTypeStruct(&b->schema, 12));
     auto c = b->schema.children;
     field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
     decfield(c[1], "gpst");
@@ -187,8 +176,8 @@ std::shared_ptr<Batch> observations() {
     for (int i = 0; i < 4; ++i)
         field(c[i + 5], names[i], NANOARROW_TYPE_DOUBLE);
     auto q = c[9];
-    check(ArrowSchemaSetTypeStruct(q, 8));
-    check(ArrowSchemaSetName(q, "quality"));
+    arrow_check(ArrowSchemaSetTypeStruct(q, 8));
+    arrow_check(ArrowSchemaSetName(q, "quality"));
     field(q->children[0], "code_valid", NANOARROW_TYPE_BOOL);
     field(q->children[1], "phase_valid", NANOARROW_TYPE_BOOL);
     const char *sigma[] = {"code_stddev_m", "phase_stddev_cycles",
@@ -201,8 +190,8 @@ std::shared_ptr<Batch> observations() {
         field(q->children[3 + 2 * i], bound[i], NANOARROW_TYPE_BOOL);
     }
     q = c[10];
-    check(ArrowSchemaSetTypeStruct(q, 6));
-    check(ArrowSchemaSetName(q, "tracking"));
+    arrow_check(ArrowSchemaSetTypeStruct(q, 6));
+    arrow_check(ArrowSchemaSetName(q, "tracking"));
     field(q->children[0], "half_cycle_ambiguity", NANOARROW_TYPE_BOOL);
     field(q->children[1], "half_cycle_subtracted", NANOARROW_TYPE_BOOL);
     decfield(q->children[2], "lock_duration_s", true);
@@ -210,8 +199,8 @@ std::shared_ptr<Batch> observations() {
     field(q->children[4], "continuity_counter", NANOARROW_TYPE_UINT32);
     field(q->children[5], "continuity_counter_modulus", NANOARROW_TYPE_UINT32);
     q = c[11];
-    check(ArrowSchemaSetTypeStruct(q, 4));
-    check(ArrowSchemaSetName(q, "receiver_corrections"));
+    arrow_check(ArrowSchemaSetTypeStruct(q, 4));
+    arrow_check(ArrowSchemaSetName(q, "receiver_corrections"));
     field(q->children[0], "code_multipath_m", NANOARROW_TYPE_DOUBLE);
     field(q->children[1], "code_smoothing_m", NANOARROW_TYPE_DOUBLE);
     field(q->children[2], "phase_multipath_cycles", NANOARROW_TYPE_DOUBLE);
@@ -226,7 +215,7 @@ void finish_struct(ArrowArray &array, int64_t count) {
             throw std::runtime_error("Struct column length mismatch");
     auto bitmap = ArrowArrayValidityBitmap(&array);
     if (bitmap->buffer.data)
-        check(ArrowBitmapAppend(bitmap, 1, count));
+        arrow_check(ArrowBitmapAppend(bitmap, 1, count));
     array.length = length;
 }
 void append_details(Batch &b,
@@ -237,7 +226,7 @@ void append_details(Batch &b,
         if (value.has_value())
             integer(array, *value);
         else
-            check(ArrowArrayAppendNull(array, 1));
+            arrow_check(ArrowArrayAppendNull(array, 1));
     };
     auto q = c[9];
     for (auto m : rows) {
@@ -259,9 +248,9 @@ void append_details(Batch &b,
         integer(q->children[0], m->half_ambiguity);
         flag(q->children[1], m->half_subtracted);
         if (m->lock_ms)
-            decimal(q->children[2], Tick(*m->lock_ms) * 1000000000);
+            append_seconds(q->children[2], Tick(*m->lock_ms) * 1000000000);
         else
-            check(ArrowArrayAppendNull(q->children[2], 1));
+            arrow_check(ArrowArrayAppendNull(q->children[2], 1));
         flag(q->children[3], m->lock_ms
                                  ? std::optional<bool>(m->lock_lower_bound)
                                  : std::nullopt);
@@ -269,8 +258,8 @@ void append_details(Batch &b,
             integer(q->children[4], *m->continuity_counter);
             integer(q->children[5], 256);
         } else {
-            check(ArrowArrayAppendNull(q->children[4], 1));
-            check(ArrowArrayAppendNull(q->children[5], 1));
+            arrow_check(ArrowArrayAppendNull(q->children[4], 1));
+            arrow_check(ArrowArrayAppendNull(q->children[5], 1));
         }
     }
     finish_struct(*q, count);
@@ -281,15 +270,15 @@ void append_details(Batch &b,
             number(x->children[1], m->code_smoothing_m);
             number(x->children[2], m->phase_multipath_cycles);
             flag(x->children[3], m->code_smoothing_applied);
-            check(ArrowArrayFinishElement(x));
+            arrow_check(ArrowArrayFinishElement(x));
         } else {
             // Reserve the bool child before nanoarrow's bulk-null fill.
             auto buffer = ArrowArrayBuffer(x->children[3], 1);
             auto bytes = (x->children[3]->length + 1 + 7) / 8;
             if (bytes > buffer->size_bytes)
-                check(ArrowBufferAppendFill(buffer, 0,
-                                            bytes - buffer->size_bytes));
-            check(ArrowArrayAppendNull(x, 1));
+                arrow_check(ArrowBufferAppendFill(buffer, 0,
+                                                  bytes - buffer->size_bytes));
+            arrow_check(ArrowArrayAppendNull(x, 1));
         }
     }
 }
@@ -300,15 +289,15 @@ void append_epoch(Batch &b,
     // Populate the wide scalar columns consecutively; reuse the same epoch
     // context and retain per-observable null/quality handling in the details.
     for (size_t i = 0; i < rows.size(); ++i)
-        str(c[0], setup_id);
+        append_string(c[0], setup_id);
     for (size_t i = 0; i < rows.size(); ++i)
-        decimal(c[1], t);
+        append_seconds(c[1], t);
     for (auto m : rows)
-        str(c[2], m->system);
+        append_string(c[2], m->system);
     for (auto m : rows)
         integer(c[3], m->satellite);
     for (auto m : rows)
-        str(c[4], m->signal);
+        append_string(c[4], m->signal);
     for (auto m : rows)
         number(c[5], m->code);
     for (auto m : rows)
@@ -324,7 +313,7 @@ void append_epoch(Batch &b,
 }
 std::shared_ptr<Batch> events() {
     auto b = std::make_shared<Batch>();
-    check(ArrowSchemaSetTypeStruct(&b->schema, 11));
+    arrow_check(ArrowSchemaSetTypeStruct(&b->schema, 11));
     auto c = b->schema.children;
     field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
     field(c[1], "kind", NANOARROW_TYPE_STRING, false);
@@ -332,17 +321,17 @@ std::shared_ptr<Batch> events() {
     decfield(c[3], "gpst", true);
     field(c[4], "applicability", NANOARROW_TYPE_STRING, false);
     field(c[5], "evidence", NANOARROW_TYPE_STRING, false);
-    check(ArrowSchemaSetTypeStruct(c[6], 3));
-    check(ArrowSchemaSetName(c[6], "payload"));
+    arrow_check(ArrowSchemaSetTypeStruct(c[6], 3));
+    arrow_check(ArrowSchemaSetName(c[6], "payload"));
     auto q = c[6]->children[0];
-    check(ArrowSchemaSetTypeStruct(q, 2));
-    check(ArrowSchemaSetName(q, "epoch_completion"));
+    arrow_check(ArrowSchemaSetTypeStruct(q, 2));
+    arrow_check(ArrowSchemaSetName(q, "epoch_completion"));
     field(q->children[0], "completion", NANOARROW_TYPE_STRING, false);
     field(q->children[1], "completion_basis", NANOARROW_TYPE_STRING, false);
     field(c[6]->children[1], "restart_reason", NANOARROW_TYPE_STRING);
     q = c[6]->children[2];
-    check(ArrowSchemaSetTypeStruct(q, 3));
-    check(ArrowSchemaSetName(q, "cadence"));
+    arrow_check(ArrowSchemaSetTypeStruct(q, 3));
+    arrow_check(ArrowSchemaSetName(q, "cadence"));
     decfield(q->children[0], "previous_gpst");
     decfield(q->children[1], "interval_s");
     decfield(q->children[2], "expected_period_s", true);
@@ -371,41 +360,40 @@ struct EventRow {
     std::optional<CadenceEvidence> cadence;
     std::optional<Tick> uptime;
 };
-void optional_decimal(ArrowArray *a, std::optional<Tick> t);
 void append_event(Batch &b, const std::string &id, const EventRow &row,
                   const Position &position, int64_t archive_day) {
     auto c = b.array.children;
-    str(c[0], id);
-    str(c[1], row.kind);
-    str(c[2], row.scope);
-    optional_decimal(c[3], row.gpst);
-    str(c[4], row.applicability);
-    str(c[5], row.evidence);
+    append_string(c[0], id);
+    append_string(c[1], row.kind);
+    append_string(c[2], row.scope);
+    append_seconds(c[3], row.gpst);
+    append_string(c[4], row.applicability);
+    append_string(c[5], row.evidence);
     auto q = c[6]->children[0];
     if (row.completion) {
-        str(q->children[0], row.completion);
-        str(q->children[1], row.completion_basis);
-        check(ArrowArrayFinishElement(q));
+        append_string(q->children[0], row.completion);
+        append_string(q->children[1], row.completion_basis);
+        arrow_check(ArrowArrayFinishElement(q));
     } else
-        check(ArrowArrayAppendNull(q, 1));
+        arrow_check(ArrowArrayAppendNull(q, 1));
     if (row.restart_reason)
-        str(c[6]->children[1], row.restart_reason);
+        append_string(c[6]->children[1], row.restart_reason);
     else
-        check(ArrowArrayAppendNull(c[6]->children[1], 1));
+        arrow_check(ArrowArrayAppendNull(c[6]->children[1], 1));
     q = c[6]->children[2];
     if (row.cadence) {
-        decimal(q->children[0], row.cadence->previous);
-        decimal(q->children[1], row.cadence->interval);
-        optional_decimal(q->children[2], row.cadence->expected);
-        check(ArrowArrayFinishElement(q));
+        append_seconds(q->children[0], row.cadence->previous);
+        append_seconds(q->children[1], row.cadence->interval);
+        append_seconds(q->children[2], row.cadence->expected);
+        arrow_check(ArrowArrayFinishElement(q));
     } else
-        check(ArrowArrayAppendNull(q, 1));
-    check(ArrowArrayFinishElement(c[6]));
-    optional_decimal(c[7], row.uptime);
-    optional_decimal(c[8], position.anchor);
-    check(ArrowArrayAppendUInt(c[9], position.index));
+        arrow_check(ArrowArrayAppendNull(q, 1));
+    arrow_check(ArrowArrayFinishElement(c[6]));
+    append_seconds(c[7], row.uptime);
+    append_seconds(c[8], position.anchor);
+    arrow_check(ArrowArrayAppendUInt(c[9], position.index));
     integer(c[10], row.gpst ? neognss_obs::gpst_day(*row.gpst) : archive_day);
-    check(ArrowArrayFinishElement(&b.array));
+    arrow_check(ArrowArrayFinishElement(&b.array));
 }
 // Nominal observation interval estimated from recent closed epochs.
 struct Cadence {
@@ -429,7 +417,7 @@ struct Cadence {
 };
 std::shared_ptr<Batch> raw_bits() {
     auto b = std::make_shared<Batch>();
-    check(ArrowSchemaSetTypeStruct(&b->schema, 21));
+    arrow_check(ArrowSchemaSetTypeStruct(&b->schema, 21));
     auto c = b->schema.children;
     field(c[0], "setup_id", NANOARROW_TYPE_STRING, false);
     decfield(c[1], "nav_epoch_gpst", true);
@@ -448,16 +436,16 @@ std::shared_ptr<Batch> raw_bits() {
     field(c[12], "completeness", NANOARROW_TYPE_STRING, false);
     field(c[13], "checks", NANOARROW_TYPE_LIST, false);
     auto q = c[13]->children[0];
-    check(ArrowSchemaSetTypeStruct(q, 6));
-    check(ArrowSchemaSetName(q, "item"));
+    arrow_check(ArrowSchemaSetTypeStruct(q, 6));
+    arrow_check(ArrowSchemaSetName(q, "item"));
     q->flags &= ~ARROW_FLAG_NULLABLE;
     const char *names[] = {"origin", "kind",     "scope",
                            "result", "evidence", "source_field"};
     for (int i = 0; i < 6; ++i)
         field(q->children[i], names[i], NANOARROW_TYPE_STRING, i == 5);
     field(c[14], "receiver_channel", NANOARROW_TYPE_UINT16);
-    check(ArrowSchemaSetTypeStruct(c[15], 2));
-    check(ArrowSchemaSetName(c[15], "source_diagnostics"));
+    arrow_check(ArrowSchemaSetTypeStruct(c[15], 2));
+    arrow_check(ArrowSchemaSetName(c[15], "source_diagnostics"));
     field(c[15]->children[0], "sbf_viterbi_count", NANOARROW_TYPE_UINT8);
     field(c[15]->children[1], "sbf_rs_corrected_symbols", NANOARROW_TYPE_UINT8);
     decfield(c[16], "receiver_uptime_s", true);
@@ -472,78 +460,72 @@ void append_bits(Batch &b, std::optional<Tick> t, const std::string &setup_id,
                  const neognss_obs::RawBits &bits, std::optional<Tick> uptime,
                  const Position &position, int64_t archive_day) {
     auto c = b.array.children;
-    str(c[0], setup_id);
+    append_string(c[0], setup_id);
     if (t)
-        decimal(c[1], *t);
+        append_seconds(c[1], *t);
     else
-        check(ArrowArrayAppendNull(c[1], 1));
-    str(c[2], bits.system);
+        arrow_check(ArrowArrayAppendNull(c[1], 1));
+    append_string(c[2], bits.system);
     integer(c[3], bits.satellite);
     for (const auto &signal : bits.signals)
-        str(c[4]->children[0], signal);
-    check(ArrowArrayFinishElement(c[4]));
-    str(c[5], bits.signals.empty()       ? "unknown"
-              : bits.signals.size() == 1 ? "single"
-                                         : "combined");
-    str(c[6], bits.family);
-    str(c[7], bits.format);
-    str(c[8], bits.content);
+        append_string(c[4]->children[0], signal);
+    arrow_check(ArrowArrayFinishElement(c[4]));
+    append_string(c[5], bits.signals.empty()       ? "unknown"
+                        : bits.signals.size() == 1 ? "single"
+                                                   : "combined");
+    append_string(c[6], bits.family);
+    append_string(c[7], bits.format);
+    append_string(c[8], bits.content);
     integer(c[9], bits.bit_length);
     ArrowBufferView view{};
     view.data.as_uint8 = bits.body.data();
     view.size_bytes = bits.body.size();
-    check(ArrowArrayAppendBytes(c[10], view));
-    str(c[11], bits.unit);
-    str(c[12], "complete");
+    arrow_check(ArrowArrayAppendBytes(c[10], view));
+    append_string(c[11], bits.unit);
+    append_string(c[12], "complete");
     for (const auto &item : bits.checks) {
         auto q = c[13]->children[0];
-        str(q->children[0], item.origin);
-        str(q->children[1], item.kind);
-        str(q->children[2], item.scope);
-        str(q->children[3], item.result);
-        str(q->children[4], item.evidence);
+        append_string(q->children[0], item.origin);
+        append_string(q->children[1], item.kind);
+        append_string(q->children[2], item.scope);
+        append_string(q->children[3], item.result);
+        append_string(q->children[4], item.evidence);
         if (!item.source_field.empty())
-            str(q->children[5], item.source_field);
+            append_string(q->children[5], item.source_field);
         else
-            check(ArrowArrayAppendNull(q->children[5], 1));
-        check(ArrowArrayFinishElement(q));
+            arrow_check(ArrowArrayAppendNull(q->children[5], 1));
+        arrow_check(ArrowArrayFinishElement(q));
     }
-    check(ArrowArrayFinishElement(c[13]));
+    arrow_check(ArrowArrayFinishElement(c[13]));
     auto optional_integer = [](ArrowArray *a, auto v) {
         if (v)
             integer(a, *v);
         else
-            check(ArrowArrayAppendNull(a, 1));
+            arrow_check(ArrowArrayAppendNull(a, 1));
     };
     optional_integer(c[14], bits.receiver_channel);
     optional_integer(c[15]->children[0], bits.viterbi_count);
     optional_integer(c[15]->children[1], bits.rs_corrected_symbols);
-    check(ArrowArrayFinishElement(c[15]));
+    arrow_check(ArrowArrayFinishElement(c[15]));
     if (uptime) {
-        decimal(c[16], *uptime);
-        str(c[17], "ASSOCIATED");
+        append_seconds(c[16], *uptime);
+        append_string(c[17], "ASSOCIATED");
     } else {
-        check(ArrowArrayAppendNull(c[16], 1));
-        check(ArrowArrayAppendNull(c[17], 1));
+        arrow_check(ArrowArrayAppendNull(c[16], 1));
+        arrow_check(ArrowArrayAppendNull(c[17], 1));
     }
     if (position.anchor)
-        decimal(c[18], *position.anchor);
+        append_seconds(c[18], *position.anchor);
     else
-        check(ArrowArrayAppendNull(c[18], 1));
-    check(ArrowArrayAppendUInt(c[19], position.index));
+        arrow_check(ArrowArrayAppendNull(c[18], 1));
+    arrow_check(ArrowArrayAppendUInt(c[19], position.index));
     integer(c[20], t ? neognss_obs::gpst_day(*t) : archive_day);
-    check(ArrowArrayFinishElement(&b.array));
+    arrow_check(ArrowArrayFinishElement(&b.array));
 }
 std::optional<Tick> scaled(double value, int64_t scale) {
     if (!std::isfinite(value) || value == -2e10)
         return {};
     return neognss_obs::binary_scaled(value, scale);
-}
-void optional_decimal(ArrowArray *a, std::optional<Tick> t) {
-    if (t)
-        decimal(a, *t);
-    else
-        check(ArrowArrayAppendNull(a, 1));
 }
 #include "cnex_telemetry.hpp"
 

@@ -81,4 +81,32 @@ struct Column {
     }
 };
 
+// Writer side of the same encodings. Nanoarrow build calls report
+// allocation/append failure through their status.
+inline void arrow_check(int status) {
+    if (status)
+        throw std::runtime_error("Arrow construction failed: " +
+                                 std::to_string(status));
+}
+inline void set_seconds_type(ArrowSchema *s) {
+    arrow_check(
+        ArrowSchemaSetTypeDecimal(s, NANOARROW_TYPE_DECIMAL128, 38, 12));
+}
+// Exact picoseconds as decimal128(38,12) seconds.
+inline void append_seconds(ArrowArray *a, GpstTicks ps) {
+    ArrowDecimal d;
+    ArrowDecimalInit(&d, 128, 38, 12);
+    d.words[d.low_word_index] = static_cast<uint64_t>(ps);
+    d.words[d.high_word_index] = static_cast<uint64_t>(ps >> 64);
+    arrow_check(ArrowArrayAppendDecimal(a, &d));
+}
+inline void append_seconds(ArrowArray *a, std::optional<GpstTicks> ps) {
+    if (ps)
+        append_seconds(a, *ps);
+    else
+        arrow_check(ArrowArrayAppendNull(a, 1));
+}
+inline void append_string(ArrowArray *a, std::string_view s) {
+    arrow_check(ArrowArrayAppendString(a, {s.data(), int64_t(s.size())}));
+}
 } // namespace neognss_obs

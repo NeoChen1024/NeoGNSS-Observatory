@@ -20,10 +20,6 @@
 namespace neognss_obs {
 namespace broadcast_detail {
 
-void ok(int e) {
-    if (e)
-        throw std::runtime_error("Broadcast Arrow allocation/append failed");
-}
 ArrowType type(const Value &v) {
     switch (v.index()) {
     case 1:
@@ -59,29 +55,31 @@ Value value(const Scalar &s) {
 void field_schema(ArrowSchema *s, const Value &sample) {
     auto t = type(sample);
     if (t == NANOARROW_TYPE_DECIMAL128)
-        ok(ArrowSchemaSetTypeDecimal(s, t, 38, 12));
+        set_seconds_type(s);
     else
-        ok(ArrowSchemaSetType(s, t));
+        arrow_check(ArrowSchemaSetType(s, t));
     if (auto records = std::get_if<Records>(&sample)) {
         auto child = s->children[0];
-        ok(ArrowSchemaSetTypeStruct(child, int64_t(records->prototype.size())));
+        arrow_check(ArrowSchemaSetTypeStruct(
+            child, int64_t(records->prototype.size())));
         int64_t i = 0;
         for (const auto &[name, v] : records->prototype) {
             field_schema(child->children[i], value(v));
-            ok(ArrowSchemaSetName(child->children[i++], name.c_str()));
+            arrow_check(ArrowSchemaSetName(child->children[i++], name.c_str()));
         }
     } else if (auto record = std::get_if<Record>(&sample)) {
-        ok(ArrowSchemaSetTypeStruct(s, int64_t(record->prototype.size())));
+        arrow_check(
+            ArrowSchemaSetTypeStruct(s, int64_t(record->prototype.size())));
         int64_t i = 0;
         for (const auto &[name, v] : record->prototype) {
             field_schema(s->children[i], value(v));
-            ok(ArrowSchemaSetName(s->children[i++], name.c_str()));
+            arrow_check(ArrowSchemaSetName(s->children[i++], name.c_str()));
         }
     } else if (t == NANOARROW_TYPE_LIST) {
-        ok(ArrowSchemaSetType(s->children[0],
-                              sample.index() == 8   ? NANOARROW_TYPE_STRING
-                              : sample.index() == 9 ? NANOARROW_TYPE_DOUBLE
-                                                    : NANOARROW_TYPE_INT64));
+        arrow_check(ArrowSchemaSetType(
+            s->children[0], sample.index() == 8   ? NANOARROW_TYPE_STRING
+                            : sample.index() == 9 ? NANOARROW_TYPE_DOUBLE
+                                                  : NANOARROW_TYPE_INT64));
     }
 }
 void append(ArrowArray *a, const Value &v) {
@@ -91,33 +89,29 @@ void append(ArrowArray *a, const Value &v) {
             if constexpr (std::is_same_v<T, std::monostate> ||
                           std::is_same_v<T, Null<double>> ||
                           std::is_same_v<T, Null<bool>>)
-                ok(ArrowArrayAppendNull(a, 1));
+                arrow_check(ArrowArrayAppendNull(a, 1));
             else if constexpr (std::is_same_v<T, int64_t> ||
                                std::is_same_v<T, bool>)
-                ok(ArrowArrayAppendInt(a, x));
+                arrow_check(ArrowArrayAppendInt(a, x));
             else if constexpr (std::is_same_v<T, double>)
-                ok(ArrowArrayAppendDouble(a, x));
+                arrow_check(ArrowArrayAppendDouble(a, x));
             else if constexpr (std::is_same_v<T, std::string>)
-                ok(ArrowArrayAppendString(a, {x.data(), int64_t(x.size())}));
-            else if constexpr (std::is_same_v<T, Tick>) {
-                ArrowDecimal d;
-                ArrowDecimalInit(&d, 128, 38, 12);
-                d.words[d.low_word_index] = uint64_t(x);
-                d.words[d.high_word_index] = uint64_t(x >> 64);
-                ok(ArrowArrayAppendDecimal(a, &d));
-            } else if constexpr (std::is_same_v<T, Bytes>) {
+                append_string(a, x);
+            else if constexpr (std::is_same_v<T, Tick>)
+                append_seconds(a, x);
+            else if constexpr (std::is_same_v<T, Bytes>) {
                 ArrowBufferView b{};
                 b.data.as_uint8 = x.data();
                 b.size_bytes = int64_t(x.size());
-                ok(ArrowArrayAppendBytes(a, b));
+                arrow_check(ArrowArrayAppendBytes(a, b));
             } else if constexpr (std::is_same_v<T, Record>) {
                 if (!x.row) {
-                    ok(ArrowArrayAppendNull(a, 1));
+                    arrow_check(ArrowArrayAppendNull(a, 1));
                 } else {
                     int64_t i = 0;
                     for (const auto &[name, prototype] : x.prototype)
                         append(a->children[i++], value(x.row->at(name)));
-                    ok(ArrowArrayFinishElement(a));
+                    arrow_check(ArrowArrayFinishElement(a));
                 }
             } else if constexpr (std::is_same_v<T, Records>) {
                 for (const auto &row : x.rows) {
@@ -125,13 +119,13 @@ void append(ArrowArray *a, const Value &v) {
                     for (const auto &[name, prototype] : x.prototype)
                         append(a->children[0]->children[i++],
                                value(row.at(name)));
-                    ok(ArrowArrayFinishElement(a->children[0]));
+                    arrow_check(ArrowArrayFinishElement(a->children[0]));
                 }
-                ok(ArrowArrayFinishElement(a));
+                arrow_check(ArrowArrayFinishElement(a));
             } else {
                 for (const auto &entry : x)
                     append(a->children[0], Value(entry));
-                ok(ArrowArrayFinishElement(a));
+                arrow_check(ArrowArrayFinishElement(a));
             }
         },
         v);
@@ -139,7 +133,8 @@ void append(ArrowArray *a, const Value &v) {
 std::shared_ptr<CnexBatch> batch(const std::vector<Row> &rows) {
     auto out = std::make_shared<CnexBatch>();
     ArrowSchemaInit(&out->schema);
-    ok(ArrowSchemaSetTypeStruct(&out->schema, int64_t(rows.front().size())));
+    arrow_check(
+        ArrowSchemaSetTypeStruct(&out->schema, int64_t(rows.front().size())));
     int64_t index = 0;
     for (const auto &[name, unused] : rows.front()) {
         Value sample;
@@ -151,18 +146,18 @@ std::shared_ptr<CnexBatch> batch(const std::vector<Row> &rows) {
         }
         auto s = out->schema.children[index++];
         field_schema(s, sample);
-        ok(ArrowSchemaSetName(s, name.c_str()));
+        arrow_check(ArrowSchemaSetName(s, name.c_str()));
     }
-    ok(ArrowArrayInitFromSchema(&out->array, &out->schema, nullptr));
-    ok(ArrowArrayStartAppending(&out->array));
+    arrow_check(ArrowArrayInitFromSchema(&out->array, &out->schema, nullptr));
+    arrow_check(ArrowArrayStartAppending(&out->array));
     for (const auto &r : rows) {
         index = 0;
         for (const auto &[name, v] : r)
             append(out->array.children[index++], v);
-        ok(ArrowArrayFinishElement(&out->array));
+        arrow_check(ArrowArrayFinishElement(&out->array));
     }
     ArrowError e{};
-    ok(ArrowArrayFinishBuildingDefault(&out->array, &e));
+    arrow_check(ArrowArrayFinishBuildingDefault(&out->array, &e));
     return out;
 }
 Tick seconds(int64_t s) { return Tick(s) * ps; }
