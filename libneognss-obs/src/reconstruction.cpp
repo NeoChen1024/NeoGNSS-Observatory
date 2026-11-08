@@ -129,22 +129,8 @@ SegmentPlanner::SegmentPlanner(const Json &joins, int64_t timeout)
 }
 SegmentPlanner::~SegmentPlanner() = default;
 void SegmentPlanner::feed(const Json &source, std::span<const uint8_t> index) {
-    if (index.size() < 48 ||
-        std::string_view(reinterpret_cast<const char *>(index.data()), 8) !=
-            "UBXIDX04" ||
-        (index.size() - 48) % 56)
-        throw std::runtime_error("Expected UBXIDX04 epoch index");
     const std::string path = source.at("path");
-    for (size_t pos = 48; pos < index.size(); pos += 56) {
-        ArchiveEpoch e{UBX::read_le<uint64_t>(index, pos),
-                       UBX::read_le<uint64_t>(index, pos + 8),
-                       UBX::read_le<int64_t>(index, pos + 16),
-                       UBX::read_le<int64_t>(index, pos + 24),
-                       UBX::read_le<uint64_t>(index, pos + 32),
-                       UBX::read_le<uint32_t>(index, pos + 40),
-                       UBX::read_le<uint32_t>(index, pos + 44),
-                       UBX::read_le<uint32_t>(index, pos + 48),
-                       UBX::read_le<int32_t>(index, pos + 52)};
+    read_archive_index(index, [&](ArchiveEpoch e) {
         if (auto it = state_->overrides.find({path, e.begin});
             it != state_->overrides.end())
             e.gpst_ms = it->second;
@@ -153,20 +139,20 @@ void SegmentPlanner::feed(const Json &source, std::span<const uint8_t> index) {
                                       {"source", path},
                                       {"begin", e.begin},
                                       {"end", e.end}});
-            continue;
+            return;
         }
         if (e.begin < source.at("begin").get<uint64_t>() ||
             e.end > source.at("end").get<uint64_t>())
-            continue;
+            return;
         if (e.gpst_ms == unknown_gpst) {
             state_->quarantine(path, e, "unknown_time");
-            continue;
+            return;
         }
         if (!state_->group.empty() &&
             e.gpst_ms != state_->group.front().second.gpst_ms)
             state_->flush();
         state_->group.emplace_back(path, e);
-    }
+    });
 }
 Json SegmentPlanner::finish() {
     state_->flush();

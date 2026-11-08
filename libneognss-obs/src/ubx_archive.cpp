@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cppgnss/stream.hpp>
 #include <cppgnss/ubx_nav.hpp>
 #include <neognss_obs/ubx_archive.hpp>
+#include <openssl/evp.h>
+#include <string_view>
 
 namespace neognss_obs {
 using namespace UBX;
@@ -93,8 +96,7 @@ void EpochAssembler::finish(
 }
 void EpochAssembler::accept(
     const cppgnss::FrameView &frame,
-    const std::function<void(const ArchiveEpoch &)> &emit,
-    const std::function<void()> &on_frame) {
+    const std::function<void(const ArchiveEpoch &)> &emit) {
     const auto p = frame.payload;
     const uint8_t cls = frame.id() >> 8, id = frame.id() & 255;
     const auto pos = frame.offset;
@@ -155,8 +157,6 @@ void EpochAssembler::accept(
             epoch_.fingerprint *= 1099511628211ull;
         }
     }
-    if (on_frame)
-        on_frame();
     if (cls == 1 && id == 0x61 && p.size() == 4)
         finish(archive_eoe, emit);
 }
@@ -164,69 +164,89 @@ void scan_archive(std::span<const uint8_t> b,
                   const std::function<void(const ArchiveEpoch &)> &emit) {
     EpochAssembler assembler(true);
     size_t pos = 0, noise = 0;
+    const auto lost = [&](size_t end) {
+        if (noise < end) {
+            ArchiveEpoch e;
+            e.begin = noise;
+            e.end = end;
+            e.flags = archive_noise;
+            emit(e);
+        }
+    };
     while (pos < b.size()) {
-        if (pos + 8 <= b.size() && b[pos] == 0x24 && b[pos + 1] == 0x40) {
-            const size_t size = read_le<uint16_t>(b, pos + 6);
-            if (size >= 8 && size % 4 == 0 && size <= b.size() - pos &&
-                cppgnss::sbf_crc(b.subspan(pos + 4, size - 4)) ==
-                    read_le<uint16_t>(b, pos + 2)) {
-                assembler.finish(archive_partial, emit);
-                if (noise < pos) {
-                    ArchiveEpoch lost;
-                    lost.begin = noise;
-                    lost.end = pos;
-                    lost.flags = archive_noise;
-                    emit(lost);
-                }
-                ArchiveEpoch foreign;
-                foreign.begin = pos;
-                foreign.end = pos + size;
-                foreign.flags = archive_noise | archive_foreign_protocol;
-                emit(foreign);
-                pos += size;
-                noise = pos;
-                continue;
-            }
-        }
-        bool valid = false;
-        size_t length = 0;
-        if (pos + 8 <= b.size() && b[pos] == 0xb5 && b[pos + 1] == 0x62) {
-            length = read_le<uint16_t>(b, pos + 4) + 8;
-            if (length <= b.size() - pos) {
-                uint8_t a = 0, c = 0;
-                for (size_t i = pos + 2; i < pos + length - 2; ++i) {
-                    a += b[i];
-                    c += a;
-                }
-                valid = a == b[pos + length - 2] && c == b[pos + length - 1];
-            }
-        }
-        if (!valid) {
+        // The whole archive is present, so an incomplete candidate is noise.
+        // NMEA and RTCM3 frames are noise too; SBF frames are recorded as
+        // separate foreign-protocol spans.
+        const auto m = cppgnss::match_frame(b.subspan(pos), pos);
+        const bool ubx = m.status == cppgnss::FrameMatch::frame &&
+                         m.view.protocol() == cppgnss::Protocol::ubx;
+        const bool sbf = m.status == cppgnss::FrameMatch::frame &&
+                         m.view.protocol() == cppgnss::Protocol::sbf;
+        if (!ubx)
             assembler.finish(archive_partial, emit);
-            ++pos;
+        if (!ubx && !sbf) {
+            pos += std::max<size_t>(m.length, 1);
             continue;
         }
-        if (noise < pos) {
-            ArchiveEpoch lost;
-            lost.begin = noise;
-            lost.end = pos;
-            lost.flags = archive_noise;
-            emit(lost);
-        }
-        assembler.accept(
-            {cppgnss::UbxHeader{uint16_t((b[pos + 2] << 8) | b[pos + 3])}, pos,
-             b.subspan(pos, length), b.subspan(pos + 6, length - 8)},
-            emit);
-        pos += length;
+        lost(pos);
+        if (sbf) {
+            ArchiveEpoch foreign;
+            foreign.begin = pos;
+            foreign.end = pos + m.length;
+            foreign.flags = archive_noise | archive_foreign_protocol;
+            emit(foreign);
+        } else
+            assembler.accept(m.view, emit);
+        pos += m.length;
         noise = pos;
     }
     assembler.finish(archive_partial, emit);
-    if (noise < b.size()) {
-        ArchiveEpoch lost;
-        lost.begin = noise;
-        lost.end = b.size();
-        lost.flags = archive_noise;
-        emit(lost);
-    }
+    lost(b.size());
+}
+std::vector<uint8_t> archive_index(std::span<const uint8_t> bytes) {
+    std::vector<uint8_t> out{'U', 'B', 'X', 'I', 'D', 'X', '0', '4'};
+    unsigned char digest[32];
+    unsigned length = 0;
+    if (EVP_Digest(bytes.data(), bytes.size(), digest, &length, EVP_sha256(),
+                   nullptr) != 1 ||
+        length != 32)
+        throw std::runtime_error("Archive SHA256 failed");
+    out.insert(out.end(), digest, digest + 32);
+    const auto append = [&]<class T>(T value) {
+        value = little_to_native(value);
+        const auto *p = reinterpret_cast<const uint8_t *>(&value);
+        out.insert(out.end(), p, p + sizeof value);
+    };
+    append(uint64_t(bytes.size()));
+    scan_archive(bytes, [&](const ArchiveEpoch &e) {
+        append(e.begin);
+        append(e.end);
+        append(e.gpst_ms);
+        append(e.tow_ms);
+        append(e.fingerprint);
+        append(e.flags);
+        append(e.frames);
+        append(e.nav_frames);
+        append(e.gps_week);
+    });
+    return out;
+}
+void read_archive_index(std::span<const uint8_t> index,
+                        const std::function<void(ArchiveEpoch)> &visit) {
+    if (index.size() < archive_header_size ||
+        std::string_view(reinterpret_cast<const char *>(index.data()), 8) !=
+            "UBXIDX04" ||
+        (index.size() - archive_header_size) % archive_record_size)
+        throw std::runtime_error("Expected UBXIDX04 epoch index");
+    for (size_t pos = archive_header_size; pos < index.size();
+         pos += archive_record_size)
+        visit({read_le<uint64_t>(index, pos), read_le<uint64_t>(index, pos + 8),
+               read_le<int64_t>(index, pos + 16),
+               read_le<int64_t>(index, pos + 24),
+               read_le<uint64_t>(index, pos + 32),
+               read_le<uint32_t>(index, pos + 40),
+               read_le<uint32_t>(index, pos + 44),
+               read_le<uint32_t>(index, pos + 48),
+               read_le<int32_t>(index, pos + 52)});
 }
 } // namespace neognss_obs

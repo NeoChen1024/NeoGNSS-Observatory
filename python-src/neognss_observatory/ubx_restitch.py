@@ -20,7 +20,8 @@ from . import _native
 from .protocol import ProtocolWarnings, require_ubx
 from .research_output import write_json
 
-RECORD = struct.Struct("<QQqqQIIIi")
+RECORD = struct.Struct(_native.archive_record_format)
+HEADER = _native.archive_header_size
 UNKNOWN = -(1 << 63)
 EOE, PVT, INFERRED, NO_NAV, PARTIAL, NOISE, CONFLICT = (1, 2, 4, 8, 16, 32, 64)
 RAWX = 128
@@ -77,14 +78,14 @@ class Epoch:
 @contextmanager
 def read_index(path):
     with path.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
-        if mapped[:8] != b"UBXIDX04" or (len(mapped) - 48) % RECORD.size:
+        if mapped[:8] != b"UBXIDX04" or (len(mapped) - HEADER) % RECORD.size:
             raise ValueError(f"Expected a millisecond UBXIDX04 index; rebuild the indexer and inventory: {path}")
         yield mapped
 
 
 def epochs(path):
     with read_index(path) as mapped:
-        for offset in range(48, len(mapped), RECORD.size):
+        for offset in range(HEADER, len(mapped), RECORD.size):
             yield Epoch(*RECORD.unpack_from(mapped, offset))
 
 

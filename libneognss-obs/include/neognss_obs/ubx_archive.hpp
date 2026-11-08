@@ -4,6 +4,7 @@
 #include <cppgnss/ubx_def.hpp>
 #include <functional>
 #include <limits>
+#include <vector>
 
 namespace neognss_obs {
 constexpr int64_t unknown_gpst = std::numeric_limits<int64_t>::min();
@@ -33,8 +34,7 @@ class EpochAssembler {
     explicit EpochAssembler(bool fingerprint = false)
         : fingerprint_(fingerprint) {}
     void accept(const cppgnss::FrameView &,
-                const std::function<void(const ArchiveEpoch &)> &,
-                const std::function<void()> &on_frame = {});
+                const std::function<void(const ArchiveEpoch &)> &);
     void finish(uint32_t, const std::function<void(const ArchiveEpoch &)> &);
 
   private:
@@ -43,6 +43,15 @@ class EpochAssembler {
     int64_t anchor_tow_ = -1, anchor_gpst_ = unknown_gpst,
             rawx_gpst_ = unknown_gpst;
 };
+// UBXIDX04 index: "UBXIDX04", the source SHA-256, the source size as a
+// little-endian uint64, then one little-endian record per ArchiveEpoch in
+// field order (Python struct format archive_record_format).
+constexpr size_t archive_header_size = 48, archive_record_size = 56;
+inline constexpr char archive_record_format[] = "<QQqqQIIIi";
+std::vector<uint8_t> archive_index(std::span<const uint8_t>);
+// Validates the index header and size; visits records in order.
+void read_archive_index(std::span<const uint8_t> index,
+                        const std::function<void(ArchiveEpoch)> &visit);
 // Input is borrowed. Emits an exhaustive, nonoverlapping partition of bytes.
 // Valid-frame runs are grouped by EOE; missing EOE falls back to known
 // timestamp transitions. Untimed messages retain order and have no claimed

@@ -5,6 +5,7 @@
 #include <map>
 #include <mutex>
 #include <neognss_obs/processing.hpp>
+#include <neognss_obs/ubx_archive.hpp>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -183,16 +184,22 @@ PYBIND11_MODULE(_native, m) {
              [](Scan &s, py::buffer data) {
                  auto info = data.request();
                  auto b = view(info);
-                 return run(s, [&](auto &p) { return p.feed(b); });
+                 py::gil_scoped_release release;
+                 s.run([&](auto &p) { p.feed(b); });
              })
         .def("finish",
-             [](Scan &s) { return run(s, [](auto &p) { return p.finish(); }); })
+             [](Scan &s) {
+                 py::gil_scoped_release release;
+                 s.run([](auto &p) { p.finish(); });
+             })
         .def("summary", [](Scan &s) {
             return run(s, [](auto &p) { return p.summary(); });
         });
     m.doc() =
         "Batched native GNSS processing; file/Parquet I/O belongs to Python.";
     m.attr("archive_schema") = "UBXIDX04-native-3-timegps-range";
+    m.attr("archive_header_size") = neognss_obs::archive_header_size;
+    m.attr("archive_record_format") = neognss_obs::archive_record_format;
     m.def("archive_index", [](py::buffer data) {
         auto info = data.request();
         auto input = view(info);
@@ -203,21 +210,6 @@ PYBIND11_MODULE(_native, m) {
         }
         return py::bytes(reinterpret_cast<const char *>(result.data()),
                          result.size());
-    });
-    m.def("igp_coordinates", [] {
-        py::dict out;
-        for (unsigned b = 0; b <= 10; ++b)
-            for (unsigned p = 1; p <= 201; ++p)
-                if (auto c = neognss_obs::SBAS::igp_coordinate(b, p))
-                    out[py::make_tuple(b, p)] =
-                        py::make_tuple(c->first, c->second);
-        return out;
-    });
-    m.def("sbf_schemas", [] {
-        py::list out;
-        for (auto &s : cppgnss::SBF::schemas())
-            out.append(py::make_tuple(s.id, s.name, !s.fields.empty()));
-        return out;
     });
     using Planner = Guarded<neognss_obs::SegmentPlanner>;
     py::class_<Planner>(m, "SegmentPlanner")

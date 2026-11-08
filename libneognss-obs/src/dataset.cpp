@@ -55,7 +55,7 @@ struct DatasetScan::State {
     }
     void accept(const cppgnss::FrameView &f) {
         if (protocol == cppgnss::Protocol::ubx) {
-            epochs.accept(f, [&](const ArchiveEpoch &e) { epoch(e); }, [] {});
+            epochs.accept(f, [&](const ArchiveEpoch &e) { epoch(e); });
         } else {
             // SBF schemas define whether a block actually carries TOW/WNc.
             const auto block =
@@ -87,8 +87,7 @@ struct DatasetScan::State {
             // These are epoch-level blocks; repeated raw-navigation blocks at
             // one TOW can belong to different satellites and are not
             // duplicates.
-            if ((f.id() == 4027 || f.id() == 4007) &&
-                !sbf_epoch_blocks.insert(f.id()).second)
+            if (!sbf_epoch_blocks.insert(f.id()).second)
                 count("duplicate_epoch_blocks");
             if (previous && now - *previous > gap_ms)
                 count("gaps");
@@ -105,12 +104,11 @@ DatasetScan::DatasetScan(const std::string &protocol, double gap_timeout) {
                                      std::llround(gap_timeout * 1000));
 }
 DatasetScan::~DatasetScan() = default;
-Json DatasetScan::feed(std::span<const uint8_t> bytes) {
+void DatasetScan::feed(std::span<const uint8_t> bytes) {
     state_->reader.feed(
         bytes, [&](const cppgnss::FrameView &f) { state_->accept(f); });
-    return Json::array();
 }
-Json DatasetScan::finish() {
+void DatasetScan::finish() {
     try {
         state_->reader.finish();
     } catch (const std::runtime_error &) {
@@ -118,7 +116,6 @@ Json DatasetScan::finish() {
     }
     state_->epochs.finish(archive_partial,
                           [&](const ArchiveEpoch &e) { state_->epoch(e); });
-    return Json::array();
 }
 Json DatasetScan::summary() const {
     const auto &s = *state_;

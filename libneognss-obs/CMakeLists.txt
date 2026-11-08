@@ -5,7 +5,7 @@ set_target_properties(nanoarrow_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/json/include/nlohmann/json.hpp")
     message(FATAL_ERROR "Initialize contrib/json: git submodule update --init contrib/json")
 endif()
-add_library(neognss_obs src/ubx_archive.cpp src/reconstruction.cpp src/processing.cpp src/grid.cpp src/dataset.cpp src/ppp.cpp src/stec.cpp
+add_library(neognss_obs src/ubx_archive.cpp src/reconstruction.cpp src/grid.cpp src/dataset.cpp src/ppp.cpp src/stec.cpp
     src/sbas.cpp src/raw_bits.cpp src/measurements.cpp src/observations.cpp)
 add_library(neognss_obs::neognss_obs ALIAS neognss_obs)
 find_package(Threads REQUIRED)

@@ -44,6 +44,17 @@ struct FrameView {
     uint16_t id() const;
     uint8_t revision() const { return std::get<SbfHeader>(header).revision; }
 };
+// Framing decision for the bytes at the start of a buffer: one sync/length/
+// checksum rule for every reader. `length` bytes are consumed: a whole frame,
+// one noise byte (no sync), or an invalid candidate (one byte, or a whole
+// RTCM3 frame of reserved length 7). An incomplete candidate needs more bytes
+// and consumes none; whether more bytes can arrive is the caller's decision.
+struct FrameMatch {
+    enum Status : uint8_t { frame, noise, invalid, incomplete } status;
+    size_t length = 0;
+    FrameView view{}; // Valid only for `frame`; spans borrow the input.
+};
+FrameMatch match_frame(std::span<const uint8_t> bytes, uint64_t offset);
 // Frame spans are borrowed until the callback returns. Chunk/file boundaries
 // have no framing significance. The caller chooses when to finish a stream.
 // If the callback throws, that exception propagates and the decoder is
@@ -70,5 +81,8 @@ class StreamDecoder {
     bool failed_ = false;
 };
 uint16_t sbf_crc(std::span<const uint8_t>);
-uint32_t rtcm3_crc(std::span<const uint8_t>);
+// CRC-24Q (RTCM3, SBAS and GNSS navigation messages; zero initial value) over
+// MSB-first bits [begin, end) of `bytes`. A message followed by its own parity
+// yields zero.
+uint32_t crc24q(std::span<const uint8_t> bytes, size_t begin, size_t end);
 } // namespace cppgnss
