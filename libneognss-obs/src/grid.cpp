@@ -303,7 +303,6 @@ SbasGridProcessor::Output SbasGridProcessor::feed(ArrowSchema *schema,
                 continue;
             }
             const auto body = rows.body(i, identity.layout.bit_length);
-            auto names = rows.signals(i);
             auto decoded = SBAS::parse_l1(body);
             if (decoded.status != SBAS::Status::decoded) {
                 ++s.counts["rejected_content"];
@@ -312,6 +311,8 @@ SbasGridProcessor::Output SbasGridProcessor::feed(ArrowSchema *schema,
             if (decoded.message->type != 0 && decoded.message->type != 18 &&
                 decoded.message->type != 26)
                 continue;
+            // Only rows that reach a source key need named contributors.
+            auto names = rows.signals(i);
             std::sort(names.begin(), names.end());
             auto &source = bounded(s.sources,
                                    std::to_string(identity.satellite) +
