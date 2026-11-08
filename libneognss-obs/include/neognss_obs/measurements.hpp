@@ -2,6 +2,7 @@
 #pragma once
 #include <cmath>
 #include <cppgnss/stream.hpp>
+#include <neognss_obs/gpst.hpp>
 #include <optional>
 #include <string>
 
@@ -41,6 +42,12 @@ struct Measurements {
 // Generated typed decoding followed by physical normalization: RAWX v1 and
 // MeasEpoch revisions 0/1. Completion policy belongs to the caller.
 std::optional<Measurements> decode_measurements(const cppgnss::FrameView &);
+// Exact GPST picoseconds of a decoded measurement epoch: integer TOW ms, or the
+// binary64 RAWX rcvTow rounded half to even. Week 0 (a receiver without time),
+// 65535 (do not use) or TOW outside the week have no GPST: nullopt.
+std::optional<GpstTicks> measurement_gpst(const Measurements &);
+// measurement_gpst for callers that require a time; throws std::runtime_error.
+GpstTicks measurement_time(const Measurements &);
 // MeasExtra rows carry epoch-local channel/signal keys, not satellite identity.
 std::optional<Measurements>
 decode_measurement_extras(const cppgnss::FrameView &);

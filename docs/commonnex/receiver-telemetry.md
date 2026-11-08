@@ -8,8 +8,11 @@ measurement-clock/pulse reports. Source mappings are defined in
 
 One row collects a navigation epoch's receiver reports. A new PVT epoch
 publishes the preceding window with `collection_complete=true`. This indicates
-window closure, not that every report or signal was present. Chunk, ordinary
-file, midnight and live-delivery boundaries never finalize this state.
+window closure, not that every report or signal was present. SBF PVT blocks
+with do-not-use TOW/WNc cannot identify their epoch; each enabled PVT block type
+occurs once per epoch, so its repetition opens the next window, whose `gpst`
+stays null. Source-stamped reports are never merged into such a window. Chunk,
+ordinary file, midnight and live-delivery boundaries never finalize this state.
 
 Scalar duplicates with identical values merge; conflicting values raise.
 No status/temperature forward fill occurs. Lists retain every occurrence in

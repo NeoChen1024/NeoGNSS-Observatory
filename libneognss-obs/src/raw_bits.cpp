@@ -512,12 +512,6 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         r.format = "INAV_228_V1";
         length = 228;
         r.unit = "page";
-        if (!sbf) {
-            if (b.size() < 242)
-                return {RawBitsStatus::malformed, {}};
-            b.inav_pair = true;
-            b.resize(228);
-        }
         // Packing is defined by the receiver, not potentially corrupt page
         // discriminator bits. Preserve the supplied pair even when checks fail.
     } else if (r.family == "GAL_FNAV") {
@@ -577,8 +571,9 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         return {RawBitsStatus::malformed, {}};
     if (r.family.substr(0, r.family.find('_')) != r.system)
         return {RawBitsStatus::unsupported, {}};
-    if (b.size() < length)
-        return {RawBitsStatus::malformed, {}};
+    // The word count above bounds every view below; Bits throws only for
+    // internal offset errors.
+    b.inav_pair = !sbf && r.format == "INAV_228_V1";
     b.resize(length);
     pack(r, b);
     integrity(r, b);
@@ -627,10 +622,6 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
 }
 } // namespace
 RawBitsResult decode_raw_bits(const cppgnss::FrameView &frame) {
-    try {
-        return decode(frame);
-    } catch (const std::out_of_range &) {
-        return {RawBitsStatus::malformed, {}};
-    }
+    return decode(frame);
 }
 } // namespace neognss_obs

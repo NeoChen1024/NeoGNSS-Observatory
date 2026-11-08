@@ -622,6 +622,31 @@ def run(
         # Bound outstanding work, including the active write, to two input
         # chunks. Arrow buffers are shared, not serialized across the thread.
         pending_writes = deque()
+
+        def tail_inputs(summary):
+            """Input byte ranges from the reader's resume offset that a continuation replays."""
+            tail = []
+            offset = summary["resume_offset"]
+            consumed = summary["source_bytes"]
+            for tail_path, tail_start, tail_size in segments:
+                length = tail_size - tail_start
+                if consumed <= 0:
+                    break
+                if offset < length:
+                    tail.append(
+                        {
+                            "path": str(tail_path),
+                            "offset": tail_start + offset,
+                            "size": tail_size,
+                            "stored_size": stored_sizes[str(tail_path)],
+                        }
+                    )
+                    offset = 0
+                else:
+                    offset -= length
+                consumed -= length
+            return tail
+
         with (
             ThreadPoolExecutor(max_workers=4, thread_name_prefix="cnex-catalog") as catalog_pool,
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="cnex-parquet") as writer_pool,
@@ -655,31 +680,11 @@ def run(
                             "offset": size - remaining,
                             "stored_size": stored_sizes[str(path)],
                         }
-                        tail = []
-                        offset = summary["resume_offset"]
-                        consumed = summary["source_bytes"]
-                        for tail_path, tail_start, tail_size in segments:
-                            length = tail_size - tail_start
-                            if consumed <= 0:
-                                break
-                            if offset < length:
-                                tail.append(
-                                    {
-                                        "path": str(tail_path),
-                                        "offset": tail_start + offset,
-                                        "size": tail_size,
-                                        "stored_size": stored_sizes[str(tail_path)],
-                                    }
-                                )
-                                offset = 0
-                            else:
-                                offset -= length
-                            consumed -= length
                         snapshot = {
                             "summary": summary,
                             "checkpoint": reader.checkpoint(),
                             "inputs": list(processed.values()),
-                            "tail": tail,
+                            "tail": tail_inputs(summary),
                         }
                         pending_writes.append(writer_pool.submit(write_batches, batches, snapshot))
                         if summary["skipped_protocol_frames"] and not warned_foreign:
@@ -694,9 +699,11 @@ def run(
             for future in pending_writes:
                 future.result()
             if finalize_telemetry:
+                # A declared end no longer replays the withheld measurement group.
                 batches = catalog_batches(reader.finish_telemetry())
                 snapshot["summary"] = reader.summary()
                 snapshot["checkpoint"] = reader.checkpoint()
+                snapshot["tail"] = tail_inputs(snapshot["summary"])
                 write_batches(batches, snapshot)
         summary = reader.summary()
         if not started:

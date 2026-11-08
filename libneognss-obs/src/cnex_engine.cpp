@@ -31,34 +31,6 @@ void check(int result) {
         throw std::runtime_error("Arrow construction failed: " +
                                  std::to_string(result));
 }
-Tick time_of(const neognss_obs::Measurements &e) {
-    if (e.week == 65535 || !std::isfinite(e.tow_seconds) || e.tow_seconds < 0 ||
-        e.tow_seconds >= 604800)
-        throw std::runtime_error("Invalid measurement week/TOW");
-    Tick tow = 0;
-    if (e.tow_ms)
-        tow = Tick(*e.tow_ms) * 1000000000;
-    else {
-        // Exact binary64 rational -> integer picoseconds, ties to even.
-        auto bits = std::bit_cast<uint64_t>(e.tow_seconds);
-        int exponent = int((bits >> 52) & 2047);
-        uint64_t mantissa = bits & ((uint64_t(1) << 52) - 1);
-        if (exponent)
-            mantissa |= uint64_t(1) << 52;
-        int shift = (exponent ? exponent - 1023 : -1022) - 52;
-        Tick n = Tick(mantissa) * ps;
-        if (shift >= 0)
-            tow = n << shift;
-        else if (-shift < 127) {
-            int k = -shift;
-            tow = n >> k;
-            Tick rem = n - (tow << k), half = Tick(1) << (k - 1);
-            if (rem > half || (rem == half && (tow & 1) != 0))
-                ++tow;
-        }
-    }
-    return Tick(e.week) * 604800 * ps + tow;
-}
 Json time_parts(Tick time) {
     return Json::array({int64_t(time / ps), int64_t(time % ps)});
 }
@@ -104,7 +76,7 @@ struct Probe {
                 return;
             try {
                 if (auto e = neognss_obs::decode_measurements(f))
-                    observation = time_of(*e);
+                    observation = neognss_obs::measurement_time(*e);
                 if (!navigation) {
                     if (auto ms = timegps(f))
                         navigation =
@@ -626,7 +598,12 @@ struct Reader {
     Position position;
     uint64_t next_frame_index = 0;
     Cadence cadence;
-    std::optional<uint64_t> reported_tail;
+    // Set by finalize: the withheld measurement group ends with INCOMPLETE_TAIL
+    // and is no longer a continuation tail.
+    bool declared_end = false;
+    // A withheld group is replayed by a continuation unless an end was
+    // declared.
+    bool replay_pending() const { return pending && !declared_end; }
     // Record the first reversal for diagnostics; the caller decides whether
     // reversed input is acceptable. Returns the preceding time on reversal.
     std::optional<Tick> advance_axis(Tick now, const std::string &axis,
@@ -652,7 +629,7 @@ struct Reader {
         EventRow row{"EPOCH_COMPLETION", "OBSERVATION", "EPOCH", "INFERRED",
                      std::nullopt};
         try {
-            row.gpst = time_of(*pending);
+            row.gpst = neognss_obs::measurement_time(*pending);
         } catch (const std::runtime_error &) {
             return; // Untimeable groups remain importer counts only.
         }
@@ -937,7 +914,7 @@ struct Reader {
             return;
         if (measurements) {
             try {
-                timeline.advance(time_of(*measurements));
+                timeline.advance(neognss_obs::measurement_time(*measurements));
             } catch (const std::runtime_error &) { /* Invalid time is counted by
                                                       observation import. */
             }
@@ -1111,6 +1088,8 @@ struct Reader {
         std::unique_lock lock(mutex, std::try_to_lock);
         if (!lock.owns_lock())
             throw std::runtime_error("Concurrent importer use");
+        if (declared_end && !data.empty())
+            throw std::logic_error("Input after a declared CommonNEX end");
         auto out = observations();
         auto ev = events();
         auto raw = raw_bits();
@@ -1164,7 +1143,7 @@ struct Reader {
         auto emit = [&](neognss_obs::Measurements &e) {
             Tick t;
             try {
-                t = time_of(e);
+                t = neognss_obs::measurement_time(e);
             } catch (const std::runtime_error &) {
                 ++untimed;
                 return;
@@ -1229,9 +1208,14 @@ struct Reader {
                 // The assembler explicitly paired MON-SYS with this PVT
                 // cycle; never compare it against the previous NAV anchor.
                 auto reason = timeline.report_uptime(uptime, sample, true);
+                // This TIMEGPS already belongs to the new context: keep its
+                // anchor and its pending NAV-EOE closure across the restart.
+                auto closure = std::pair{closure_ms, closure_time};
                 restart(reason, sample, uptime, *ev);
-                if (reason != neognss_obs::ReceiverTime::Restart::none)
+                if (reason != neognss_obs::ReceiverTime::Restart::none) {
                     timeline.set_navigation(sample);
+                    std::tie(closure_ms, closure_time) = closure;
+                }
             }
             status(f, *ev);
             estimates_frame(f);
@@ -1267,7 +1251,7 @@ struct Reader {
             if (e) {
                 std::optional<Tick> time;
                 try {
-                    time = time_of(*e);
+                    time = neognss_obs::measurement_time(*e);
                 } catch (const std::runtime_error &) {
                     // Existing invalid-time handling below remains
                     // authoritative.
@@ -1359,10 +1343,11 @@ struct Reader {
         out->finish();
         if (finalize_telemetry) {
             // A declared end leaves the withheld measurement group incomplete.
-            if (pending && has_measurements && reported_tail != pending_start) {
+            if (pending && has_measurements && !declared_end) {
+                ++incomplete;
                 incomplete_event(*ev, "INCOMPLETE_TAIL");
-                reported_tail = pending_start;
             }
+            declared_end = true;
             telemetry.finish();
         }
         ev->finish();
@@ -1407,7 +1392,8 @@ struct Reader {
         for (auto interval : cadence.window)
             intervals.push_back(time_parts(interval));
         state["cadence_window"] = intervals;
-        auto offset = pending ? pending_start : decoder.pending_offset();
+        auto offset =
+            replay_pending() ? pending_start : decoder.pending_offset();
         state["skip_bytes"] = decoder.pending_offset() - offset;
         return state;
     }
@@ -1417,21 +1403,21 @@ struct Reader {
             throw std::runtime_error("Concurrent importer use");
         if (decoder.bytes)
             throw std::runtime_error("Restore before feeding input");
-        nav_ms = (state["nav_ms"].is_null() ? std::optional<int64_t>{}
-                                            : state["nav_ms"].get<int64_t>());
-        nav_conflict = state["nav_conflict"].get<bool>();
-        closure_ms = (state["closure_ms"].is_null()
-                          ? std::optional<int64_t>{}
-                          : state["closure_ms"].get<int64_t>());
-        if (!state.contains("time_policy") ||
-            state["time_policy"].get<int>() != 6)
+        if (state.at("time_policy").get<int>() != 6)
             throw std::runtime_error(
                 "Old receiver-time checkpoint; rebuild import");
+        nav_ms =
+            (state.at("nav_ms").is_null() ? std::optional<int64_t>{}
+                                          : state.at("nav_ms").get<int64_t>());
+        nav_conflict = state.at("nav_conflict").get<bool>();
+        closure_ms = (state.at("closure_ms").is_null()
+                          ? std::optional<int64_t>{}
+                          : state.at("closure_ms").get<int64_t>());
         telemetry.restore(state.at("telemetry"));
         auto load_time = [&](const char *key) -> std::optional<Tick> {
-            if (state[key].is_null())
+            if (state.at(key).is_null())
                 return {};
-            auto t = state[key].get<std::pair<int64_t, int64_t>>();
+            auto t = state.at(key).get<std::pair<int64_t, int64_t>>();
             if (t.second <= -ps || t.second >= ps)
                 throw std::runtime_error("Invalid checkpoint time fraction");
             return Tick(t.first) * ps + t.second;
@@ -1443,14 +1429,14 @@ struct Reader {
         timeline.anchor_uptime = load_time("anchor_uptime");
         timeline.uptime_gpst = load_time("uptime_gpst");
         timeline.paired_offset = load_time("paired_offset");
-        timeline.archive_day = state["archive_day"].get<int64_t>();
-        new_navigation = state["new_navigation"].get<bool>();
-        nav_skip_before = state["skip_bytes"].get<uint64_t>();
+        timeline.archive_day = state.at("archive_day").get<int64_t>();
+        new_navigation = state.at("new_navigation").get<bool>();
+        nav_skip_before = state.at("skip_bytes").get<uint64_t>();
         position.anchor = load_time("order_anchor");
-        next_frame_index = state["next_frame_index"].get<uint64_t>();
+        next_frame_index = state.at("next_frame_index").get<uint64_t>();
         cadence.last = load_time("cadence_last");
         cadence.window.clear();
-        for (const auto &value : state["cadence_window"]) {
+        for (const auto &value : state.at("cadence_window")) {
             auto seconds = value[0].get<int64_t>(),
                  fraction = value[1].get<int64_t>();
             if (seconds < 0 || fraction < 0 || fraction >= ps ||
@@ -1458,7 +1444,7 @@ struct Reader {
                 throw std::runtime_error("Invalid checkpoint cadence interval");
             cadence.window.push_back(Tick(seconds) * ps + fraction);
         }
-        for (const auto &[axis, value] : state["last_times"].items()) {
+        for (const auto &[axis, value] : state.at("last_times").items()) {
             auto seconds = value[0].get<int64_t>(),
                  fraction = value[1].get<int64_t>();
             if (seconds < 0 || fraction < 0 || fraction >= ps)
@@ -1483,17 +1469,17 @@ struct Reader {
         d["incomplete_epochs"] = incomplete;
         d["pending_epoch"] = bool(pending);
         d["pending_frame_bytes"] = decoder.pending_bytes();
-        d["resume_offset"] = pending ? pending_start : decoder.pending_offset();
+        d["resume_offset"] =
+            replay_pending() ? pending_start : decoder.pending_offset();
         std::optional<int64_t> safe_day, cursor_day;
         for (const auto &[axis, time] : last_times) {
             auto day = int64_t(time / ps / 86400);
             safe_day = safe_day ? std::min(*safe_day, day) : day;
             cursor_day = cursor_day ? std::max(*cursor_day, day) : day;
         }
-        if (pending && safe_day && pending->week < 65535 && pending->tow_ms &&
-            *pending->tow_ms < 604800000)
-            *safe_day =
-                std::min(*safe_day, int64_t(time_of(*pending) / ps / 86400));
+        if (replay_pending() && safe_day)
+            if (auto t = neognss_obs::measurement_gpst(*pending))
+                *safe_day = std::min(*safe_day, int64_t(*t / ps / 86400));
         if (auto day = telemetry.safe_day())
             safe_day = safe_day ? std::min(*safe_day, *day) : day;
         d["telemetry_partial_rows"] = telemetry.partial_rows;

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include <array>
-#include <boost/int128/int128.hpp>
 #include <cstdint>
 #include <memory>
+#include <neognss_obs/gpst.hpp>
 #include <optional>
 #include <span>
 #include <string>
@@ -14,8 +14,6 @@ struct ArrowArray;
 // Satellite geometry outside positioning solvers. See
 // docs/satellite-geometry.md for model, selection and product rules.
 namespace neognss_obs {
-// Exact GPST picoseconds since 1980-01-06T00:00:00.
-using GpstTicks = boost::int128::int128;
 
 enum class SatelliteSystem : char {
     Gps = 'G',

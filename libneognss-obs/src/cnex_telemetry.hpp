@@ -339,7 +339,10 @@ TelemetryRow telemetry_row(const Json &r) {
     row.archive_day = r.at("_archive_day").get<int64_t>();
     for (const auto &item : r.at("measurement_clock")) {
         TelemetryClockItem c;
-        c.gpst = *telemetry_tick(item.at("gpst"));
+        auto gpst = telemetry_tick(item.at("gpst"));
+        if (!gpst)
+            throw std::runtime_error("Measurement-clock item without GPST");
+        c.gpst = *gpst;
         c.adjustment_reported =
             telemetry_value<bool>(item.at("adjustment_reported"));
         c.cumulative_adjustment_ms =
@@ -373,7 +376,11 @@ struct TelemetryAssembler {
     TelemetryRow current, before;
     std::map<int64_t, TelemetryRow> future;
     std::vector<TelemetryRow> ready;
+    // Open window: key is its PVT time in ms; an SBF window opened by PVT
+    // blocks with do-not-use time has no key and records the trigger block
+    // types already seen (bit 1: 4006, bit 2: 4007).
     std::optional<int64_t> key;
+    uint8_t untimed = 0;
     int64_t archive_day = 0;
     uint64_t partial_rows = 0, updates = 0;
     bool ubx = false;
@@ -393,41 +400,58 @@ struct TelemetryAssembler {
         row.present = true;
         return row;
     }
-    void publish(bool complete) {
-        if (!current.present)
+    void publish(TelemetryRow &row, bool complete) {
+        if (!row.present)
             return;
-        touch(current);
-        current.collection_complete = complete;
-        current.archive_day = archive_day;
+        touch(row);
+        row.collection_complete = complete;
+        row.archive_day = archive_day;
         if (!complete)
             ++partial_rows;
-        ready.push_back(std::move(current));
-        current = TelemetryRow{};
+        ready.push_back(std::move(row));
+        row = TelemetryRow{};
     }
+    void publish(bool complete) { publish(current, complete); }
     void frame(const cppgnss::FrameView &f, std::optional<Tick> navigation,
                int64_t day) {
         ubx = f.protocol() == cppgnss::Protocol::ubx;
         bool trigger =
             ubx ? f.id() == 0x0107 : (f.id() == 4006 || f.id() == 4007);
         if (trigger && f.payload.size() >= (ubx ? 4u : 6u)) {
-            int64_t next = UBX::read_le<uint32_t>(f.payload, 0);
-            if (!ubx)
-                next +=
-                    int64_t(UBX::read_le<uint16_t>(f.payload, 4)) * 604800000;
-            if (!key || *key != next) {
+            std::optional<int64_t> next = UBX::read_le<uint32_t>(f.payload, 0);
+            uint8_t block = 0;
+            if (!ubx) {
+                auto week = UBX::read_le<uint16_t>(f.payload, 4);
+                if (*next >= 604800000 || week == 65535) {
+                    // Do-not-use time cannot identify the epoch; each enabled
+                    // PVT block type occurs once per epoch instead.
+                    next.reset();
+                    block = f.id() == 4006 ? 1 : 2;
+                } else {
+                    *next += int64_t(week) * 604800000;
+                }
+            }
+            if (next ? untimed || !key || *key != *next
+                     : key || !untimed || (untimed & block)) {
                 // Earlier source-stamped reports belong to the closing window;
-                // same-time pre-PVT reports belong to the new window.
+                // same-time pre-PVT reports belong to the new window. An
+                // untimed window cannot own them: each stays a partial row.
                 for (auto it = future.begin();
-                     it != future.end() && it->first < next;) {
-                    telemetry_merge(current, it->second);
+                     it != future.end() && (!next || it->first < *next);) {
+                    if (untimed)
+                        publish(it->second, false);
+                    else
+                        telemetry_merge(current, it->second);
                     it = future.erase(it);
                 }
-                publish(key.has_value());
+                publish(key || untimed);
                 key = next;
+                untimed = block;
                 archive_day = day;
                 telemetry_merge(current, before);
                 before = TelemetryRow{};
-                if (auto it = future.find(next); it != future.end()) {
+                if (auto it = next ? future.find(*next) : future.end();
+                    it != future.end()) {
                     telemetry_merge(current, it->second);
                     future.erase(it);
                 }
@@ -436,6 +460,8 @@ struct TelemetryAssembler {
                 current.gpst.reset();
                 current.anchor_gpst = order_anchor;
                 current.frame_index = order_index;
+            } else {
+                untimed |= block;
             }
         }
         if (key && navigation && (ubx ? f.id() == 0x0120 : trigger)) {
@@ -480,7 +506,7 @@ struct TelemetryAssembler {
             return;
         Tick t;
         try {
-            t = time_of(e);
+            t = neognss_obs::measurement_time(e);
         } catch (const std::runtime_error &) {
             return;
         }
@@ -525,12 +551,11 @@ struct TelemetryAssembler {
             before = TelemetryRow{};
             publish(false);
         }
-        for (auto &[t, r] : future) {
-            current = std::move(r);
-            publish(false);
-        }
+        for (auto &[t, r] : future)
+            publish(r, false);
         future.clear();
         key.reset();
+        untimed = 0;
     }
     // Resource bound: pending windows and list items, not serialized size.
     void bound() {
@@ -556,6 +581,7 @@ struct TelemetryAssembler {
                 {"before", telemetry_json(before)},
                 {"future", groups},
                 {"key", key ? Json(*key) : Json(nullptr)},
+                {"untimed_triggers", untimed},
                 {"archive_day", archive_day},
                 {"ubx", ubx},
                 {"partial_rows", partial_rows}};
@@ -568,6 +594,8 @@ struct TelemetryAssembler {
             future[item[0].get<int64_t>()] = telemetry_row(item[1]);
         key = v.at("key").is_null() ? std::optional<int64_t>{}
                                     : v.at("key").get<int64_t>();
+        // Checkpoints written before untimed windows existed have none open.
+        untimed = v.value("untimed_triggers", uint8_t{0});
         archive_day = v.at("archive_day");
         ubx = v.at("ubx");
         partial_rows = v.at("partial_rows");

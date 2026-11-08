@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
-#include <boost/int128/int128.hpp>
 #include <cstdint>
 #include <limits>
 #include <nanoarrow/nanoarrow.h>
+#include <neognss_obs/gpst.hpp>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -32,7 +32,7 @@ struct ArrowBatchView {
 // Row indices are passed through to nanoarrow, which applies this view's
 // offset.
 struct Column {
-    using Tick = boost::int128::int128; // picoseconds
+    using Tick = GpstTicks;
     ArrowArrayView *v;
     const ArrowSchema *s;
     Column child(const char *name) const {
@@ -81,14 +81,4 @@ struct Column {
     }
 };
 
-// Picoseconds to int64 nanoseconds, rounded half to even.
-inline int64_t nearest_ns(Column::Tick ps) {
-    Column::Tick ns = ps / 1000, remainder = ps % 1000;
-    if (remainder > 500 || (remainder == 500 && (ns & 1) != 0))
-        ++ns;
-    if (ns > std::numeric_limits<int64_t>::max() ||
-        ns < std::numeric_limits<int64_t>::min())
-        throw std::runtime_error("Time outside int64 nanoseconds");
-    return int64_t(ns);
-}
 } // namespace neognss_obs

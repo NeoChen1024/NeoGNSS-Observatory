@@ -11,16 +11,9 @@ decode_gps_observations(const cppgnss::FrameView &frame) {
     if (!decoded)
         return {};
     const auto &raw = *decoded;
-    if (raw.week == 0 || raw.week == 65535 || !std::isfinite(raw.tow_seconds) ||
-        raw.tow_seconds < 0 || raw.tow_seconds >= 604800)
-        throw std::runtime_error("Invalid observation week/TOW");
     ObservationEpoch epoch;
-    // This numerical-engine adapter retains its nanosecond time interface;
-    // CommonNEX constructs picosecond timestamps independently from native
-    // time.
-    epoch.gpst_ns = int64_t(raw.week) * 604800000000000LL +
-                    (raw.tow_ms ? int64_t(*raw.tow_ms) * 1000000
-                                : std::llround(raw.tow_seconds * 1e9));
+    // The numerical engine keeps a nanosecond interface over the exact time.
+    epoch.gpst_ns = nearest_ns(measurement_time(raw));
     epoch.clock_reset = raw.adjustment_reported.value_or(false);
     epoch.unselected_signals = raw.unsupported + raw.excluded;
     for (const auto &m : raw.rows) {

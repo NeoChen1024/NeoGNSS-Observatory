@@ -17,6 +17,11 @@ infer the source time scale from the constellation of each observation:
 | UBX RawBits anchor | Valid NAV-TIMEGPS week/iTOW/fTOW, preserving the full reported precision; no requirement that SFRBX precede EOE |
 | SBF RawBits anchor | Valid synchronous navigation block WNc/TOW; never RawNavBits SIS timestamp |
 
+A measurement epoch with week 0 (a receiver without time), week 65535 (do not
+use) or TOW outside the week has no GPST: CommonNEX counts it as untimed and the
+PPP adapter rejects it. Both use the same exact conversion; PPP rounds the
+picoseconds half to even to its nanosecond interface.
+
 The GPS-only RINEX processing restriction below describes the existing solver
 input paths, not a finished general CommonNEX RINEX time-conversion adapter.
 Satellite identity does not change the receiver observation epoch's scale:
