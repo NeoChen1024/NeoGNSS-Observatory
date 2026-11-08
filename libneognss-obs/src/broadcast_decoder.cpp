@@ -5,6 +5,7 @@
 #include "broadcast_cnav.hpp"
 #include "broadcast_fields.hpp"
 #include "broadcast_galileo.hpp"
+#include "raw_bits_batch.hpp"
 #include <algorithm>
 #include <array>
 #include <boost/int128/int128.hpp>
@@ -44,7 +45,11 @@ ArrowType type(const Value &v) {
         return NANOARROW_TYPE_LIST;
     case 11:
         return NANOARROW_TYPE_STRUCT;
-    default:
+    case 12:
+        return NANOARROW_TYPE_DOUBLE;
+    case 13:
+        return NANOARROW_TYPE_BOOL;
+    default: // Tick or an untyped (time) null
         return NANOARROW_TYPE_DECIMAL128;
     }
 }
@@ -83,7 +88,9 @@ void append(ArrowArray *a, const Value &v) {
     std::visit(
         [&](const auto &x) {
             using T = std::decay_t<decltype(x)>;
-            if constexpr (std::is_same_v<T, std::monostate>)
+            if constexpr (std::is_same_v<T, std::monostate> ||
+                          std::is_same_v<T, Null<double>> ||
+                          std::is_same_v<T, Null<bool>>)
                 ok(ArrowArrayAppendNull(a, 1));
             else if constexpr (std::is_same_v<T, int64_t> ||
                                std::is_same_v<T, bool>)
@@ -143,22 +150,6 @@ std::shared_ptr<CnexBatch> batch(const std::vector<Row> &rows) {
             }
         }
         auto s = out->schema.children[index++];
-        auto t = type(sample);
-        if (std::holds_alternative<std::monostate>(sample) &&
-            (name == "eccentricity" || name == "i0_rad" || name == "delay_m" ||
-             name == "vtec_tecu" || name == "mean_vtec_tecu" ||
-             name == "delta_eccentricity"))
-            t = NANOARROW_TYPE_DOUBLE;
-        if (std::holds_alternative<std::monostate>(sample) &&
-            (name == "ephemeris_status_flag" || name == "l2c_phasing" ||
-             name == "within_fit_interval"))
-            t = NANOARROW_TYPE_BOOL;
-        if (std::holds_alternative<std::monostate>(sample) &&
-            t == NANOARROW_TYPE_DOUBLE)
-            sample = 0.0;
-        if (std::holds_alternative<std::monostate>(sample) &&
-            t == NANOARROW_TYPE_BOOL)
-            sample = false;
         field_schema(s, sample);
         ok(ArrowSchemaSetName(s, name.c_str()));
     }
@@ -175,30 +166,11 @@ std::shared_ptr<CnexBatch> batch(const std::vector<Row> &rows) {
     return out;
 }
 Tick seconds(int64_t s) { return Tick(s) * ps; }
-Value tv(std::optional<Tick> t) { return t ? Value(*t) : Value{}; }
-int64_t integer(const Row &r, const char *k) {
-    return std::get<int64_t>(r.at(k));
-}
-// Resolve truncated weeks against reception context, never the host clock.
-Tick reference(Tick now, int64_t week, int modulo, int64_t tow) {
-    auto w = int64_t(now / seconds(604800));
-    auto full = w + (week - w % modulo);
-    if (full - w > modulo / 2)
-        full -= modulo;
-    if (w - full > modulo / 2)
-        full += modulo;
-    return seconds(full * 604800 + tow);
-}
 } // namespace broadcast_detail
 using namespace broadcast_detail;
 
 struct BroadcastMessageDecoder::State {
-    struct Assembly {
-        std::map<int, Row> parts;
-        std::optional<Tick> start;
-    };
     struct Candidate {
-        std::string kind, key;
         Row row;
         Tick received, first;
         uint64_t order;
@@ -206,11 +178,13 @@ struct BroadcastMessageDecoder::State {
     std::string setup;
     Tick interval;
     std::optional<Tick> progress, next;
-    std::map<std::string, Assembly> ephemeris;
+    std::map<std::string, PartAssembly> ephemeris;
     CnavDecoder cnav;
     GalileoDecoder galileo;
     BeidouDecoder beidou;
-    std::map<std::pair<std::string, std::string>, std::vector<Candidate>> cache;
+    // (kind, source-local key) -> distinct parameter candidates.
+    using CacheKey = std::pair<std::string, std::string>;
+    std::map<CacheKey, std::vector<Candidate>> cache;
     size_t candidate_count = 0;
     uint64_t candidate_order = 0;
     std::optional<Tick> pruned_at;
@@ -220,9 +194,10 @@ struct BroadcastMessageDecoder::State {
         auto i = cache.find({kind, key});
         return i == cache.end() ? empty : i->second;
     }
-    void invalidate_has() {
+    // Drops every candidate group whose (kind, key) matches.
+    template <class Match> void invalidate(Match match) {
         std::erase_if(cache, [&](const auto &entry) {
-            if (!entry.first.first.starts_with("gal_has_"))
+            if (!match(entry.first.first, entry.first.second))
                 return false;
             candidate_count -= entry.second.size();
             return true;
@@ -232,16 +207,17 @@ struct BroadcastMessageDecoder::State {
         if (pruned_at && t >= *pruned_at && t - *pruned_at < seconds(60))
             return;
         pruned_at = t;
-        for (auto &[key, group] : cache) {
+        for (auto &[identity, group] : cache) {
+            const auto &kind = identity.first;
             auto old = group.size();
             std::erase_if(group, [&](const auto &c) {
                 return t - c.received > seconds(7 * 86400) ||
-                       (c.kind.starts_with("cnav_") &&
-                        cnav_expired(c.row, c.kind, t)) ||
-                       (c.kind.starts_with("gal_") &&
-                        galileo_expired(c.row, c.kind, t)) ||
-                       (c.kind.starts_with("bds_") &&
-                        beidou_expired(c.row, c.kind, t));
+                       (kind.starts_with("cnav_") &&
+                        cnav_expired(c.row, kind, t)) ||
+                       (kind.starts_with("gal_") &&
+                        galileo_expired(c.row, kind, t)) ||
+                       (kind.starts_with("bds_") &&
+                        beidou_expired(c.row, kind, t));
             });
             candidate_count -= old - group.size();
         }
@@ -291,7 +267,7 @@ struct BroadcastMessageDecoder::State {
             }
         if (candidate_count >= 131072)
             throw std::runtime_error("Broadcast candidate capacity exceeded");
-        group.push_back({kind, key, r, *t, *t, candidate_order++});
+        group.push_back({r, *t, *t, candidate_order++});
         ++candidate_count;
     }
     void advance(Tick t) {
@@ -307,14 +283,16 @@ struct BroadcastMessageDecoder::State {
                 {"statistics_scope", std::string("DECODER_LIFETIME")},
                 {"decoded_messages", int64_t(counts["decoded_messages"])}};
             emit("snapshot", std::move(summary));
-            std::vector<const Candidate *> ordered;
+            std::vector<std::pair<const CacheKey *, const Candidate *>> ordered;
             ordered.reserve(candidate_count);
             for (const auto &[identity, group] : cache)
                 for (const auto &c : group)
-                    ordered.push_back(&c);
-            std::sort(ordered.begin(), ordered.end(),
-                      [](auto a, auto b) { return a->order < b->order; });
-            for (const auto *candidate : ordered) {
+                    ordered.push_back({&identity, &c});
+            std::sort(ordered.begin(), ordered.end(), [](auto a, auto b) {
+                return a.second->order < b.second->order;
+            });
+            for (const auto &[identity, candidate] : ordered) {
+                const auto &[kind, key] = *identity;
                 const auto &c = *candidate;
                 if (c.received >= *next ||
                     *next - c.received > seconds(7 * 86400))
@@ -323,19 +301,18 @@ struct BroadcastMessageDecoder::State {
                 r["snapshot_gpst"] = *next;
                 r["first_received_gpst"] = c.first;
                 r["applicability"] = std::string("UNKNOWN");
-                if (c.kind.starts_with("gal_") &&
-                    !galileo_snapshot(r, c.kind, *next))
+                if (kind.starts_with("gal_") &&
+                    !galileo_snapshot(r, kind, *next))
                     continue;
-                if (c.kind.starts_with("bds_") &&
-                    !beidou_snapshot(r, c.kind, *next))
+                if (kind.starts_with("bds_") &&
+                    !beidou_snapshot(r, kind, *next))
                     continue;
-                if (c.kind == "cnav_eop") {
+                if (kind == "cnav_eop") {
                     // QPNT 5.13.2: EOP week comes from UTC only when both
                     // reference TOW and prediction TOW match,
                     // source-locally.
-                    for (const auto &utc : entries("cnav_utc", c.key)) {
-                        if (utc.kind != "cnav_utc" || utc.key != c.key ||
-                            utc.received >= *next ||
+                    for (const auto &utc : entries("cnav_utc", key)) {
+                        if (utc.received >= *next ||
                             utc.row.at("tot_s") != r.at("teop_s") ||
                             utc.row.at("top_s") != r.at("top_s") ||
                             std::holds_alternative<std::monostate>(
@@ -351,18 +328,15 @@ struct BroadcastMessageDecoder::State {
                         r["reference_gpst"] = utc.row.at("reference_gpst");
                     }
                 }
-                if (c.kind.starts_with("cnav_") &&
-                    !cnav_snapshot(r, c.kind, *next))
+                if (kind.starts_with("cnav_") && !cnav_snapshot(r, kind, *next))
                     continue;
-                if (c.kind == "almanac_entry") {
+                if (kind == "almanac_entry") {
                     r["reference_gpst"] = Value{};
-                    auto prefix = c.key.substr(0, c.key.rfind(':'));
+                    auto prefix = key.substr(0, key.rfind(':'));
                     for (const auto &epoch :
                          entries("almanac_epoch", prefix + ":51"))
-                        if (epoch.kind == "almanac_epoch" &&
-                            epoch.key == prefix + ":51" &&
-                            epoch.row.at("toa_s") == r.at("toa_s") &&
-                            epoch.received <= *next &&
+                        if (epoch.row.at("toa_s") == r.at("toa_s") &&
+                            epoch.received < *next &&
                             !std::holds_alternative<std::monostate>(
                                 epoch.row.at("reference_gpst"))) {
                             if (!std::holds_alternative<std::monostate>(
@@ -376,7 +350,7 @@ struct BroadcastMessageDecoder::State {
                                 epoch.row.at("reference_gpst");
                         }
                 }
-                if (c.kind == "ephemeris") {
+                if (kind == "ephemeris") {
                     if (std::holds_alternative<std::monostate>(
                             r.at("toe_gpst")))
                         continue;
@@ -410,7 +384,7 @@ struct BroadcastMessageDecoder::State {
                         continue;
                     r["applicability"] = std::string("ORBIT_CLOCK_FIT");
                 }
-                emit("snapshot_" + c.kind, std::move(r));
+                emit("snapshot_" + kind, std::move(r));
             }
             *next += interval;
         }
@@ -443,7 +417,7 @@ struct BroadcastMessageDecoder::State {
             u("week_raw", 48, 10);
             u("code_on_l2_raw", 58, 2);
             fields["ephemeris_status_flag"] =
-                q ? Value(bool(b.u(59, 1))) : Value{};
+                q ? Value(bool(b.u(59, 1))) : Value(Null<bool>{});
             u("ura_index", 60, 4);
             u("health_raw", 64, 6);
             fields["iodc"] = int64_t((b.u(70, 2) << 8) | b.u(168, 8));
@@ -486,29 +460,21 @@ struct BroadcastMessageDecoder::State {
             ++counts["decoded_messages"];
             if (!t || std::get<bool>(base.at("alert")))
                 return;
-            auto &a = ephemeris[key];
-            if (a.start && *t - *a.start > seconds(90)) {
-                a = {};
-                ++counts["assembly_timeout"];
-            }
-            const auto issue = integer(fields, sf == 1   ? "iodc"
-                                               : sf == 2 ? "iode_sf2"
-                                                         : "iode_sf3") &
-                               255;
-            for (const auto &[part, old] : a.parts) {
-                auto other = integer(old, part == 1   ? "iodc"
-                                          : part == 2 ? "iode_sf2"
-                                                      : "iode_sf3") &
-                             255;
-                if (issue != other || (part == sf && old != fields)) {
-                    a = {};
-                    ++counts["assembly_changed"];
-                    break;
-                }
-            }
-            if (!a.start)
-                a.start = t;
-            a.parts[sf] = fields;
+            auto &a = bounded(ephemeris, key, 1024,
+                              "Broadcast source assembly capacity exceeded");
+            const auto issue = [](int part, const Row &x) {
+                return integer(x, part == 1   ? "iodc"
+                                  : part == 2 ? "iode_sf2"
+                                              : "iode_sf3") &
+                       255;
+            };
+            a.add(
+                *t, seconds(90), sf, fields,
+                [&](int part, const Row &old) {
+                    return issue(part, old) != issue(sf, fields) ||
+                           (part == sf && old != fields);
+                },
+                counts, "");
             if (a.parts.size() == 3) {
                 Row full = base;
                 full.erase("subframe_id");
@@ -518,6 +484,8 @@ struct BroadcastMessageDecoder::State {
                 const auto week = integer(full, "week_raw");
                 auto toe = int64_t(std::get<Tick>(full.at("toe_s")) / ps),
                      toc = int64_t(std::get<Tick>(full.at("toc_s")) / ps);
+                // LNAV policy: toe/toc in the transmitted week, then folded
+                // once to within half a week of reception.
                 auto wr = reference(*t, week, 1024, 0);
                 auto resolve = [&](int64_t sec) {
                     auto x = wr + seconds(sec);
@@ -566,12 +534,12 @@ struct BroadcastMessageDecoder::State {
             fields["eccentricity"] =
                 mapped
                     ? Value(b.f(56, 16, -21, false) + (q && id <= 5 ? 0.06 : 0))
-                    : Value{};
+                    : Value(Null<double>{});
             fields["i0_rad"] = mapped
                                    ? Value((b.f(80, 16, -19) +
                                             (q ? (id <= 5 ? 0.25 : 0) : 0.3)) *
                                            pi)
-                                   : Value{};
+                                   : Value(Null<double>{});
             fields["toa_s"] = seconds(int64_t(b.u(72, 8)) * 4096);
             f("omega_dot_rad_s", 96, 16, -38, true, pi);
             u("health_raw", 112, 8);
@@ -594,7 +562,7 @@ struct BroadcastMessageDecoder::State {
             fields["health_by_slot"] = h;
             fields["reference_gpst"] =
                 t ? Value(reference(*t, int64_t(b.u(64, 8)), 256,
-                                    int64_t(b.u(56, 8)) * 4096))
+                                    seconds(int64_t(b.u(56, 8)) * 4096)))
                   : Value{};
         } else if (id == 63 && !q && sf == 4) {
             kind = "configuration_health";
@@ -701,187 +669,96 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
         throw std::runtime_error(
             "Broadcast decoder failed; construct a new instance");
     try {
-        ArrowBatchView owner(schema, array);
-        Column root{&owner.value, schema};
-        auto family = root.child("message_family"), body = root.child("body"),
-             time = root.child("nav_epoch_gpst"), checks = root.child("checks"),
-             sources = root.child("bitstream_source");
-        if (body.v->storage_type != NANOARROW_TYPE_BINARY ||
-            checks.v->storage_type != NANOARROW_TYPE_LIST ||
-            sources.v->storage_type != NANOARROW_TYPE_LIST)
-            throw std::runtime_error("Invalid RawBits body/lists");
-        Column check{checks.v->children[0], checks.s->children[0]},
-            source{sources.v->children[0], sources.s->children[0]};
-        auto result = check.child("result");
+        RawBitsBatch rows(schema, array);
         s.counts["output_in_call"] = 0;
-        for (int64_t i = 0; i < array->length; ++i) {
-            auto row = i + owner.value.offset;
-            if (root.child("setup_id").str(row) != s.setup)
+        for (int64_t i = 0; i < rows.size(); ++i) {
+            if (rows.setup(i) != s.setup)
                 throw std::runtime_error("Mixed broadcast Setup");
-            auto t = time.seconds_ps(row);
+            auto t = rows.time(i);
             if (t)
                 s.advance(*t);
-            auto fam = family.str(row);
+            const std::string fam(rows.family(i));
             const bool gal =
                 fam == "GAL_INAV" || fam == "GAL_FNAV" || fam == "GAL_CNAV";
-            const bool bds_legacy = fam == "BDS_D1" || fam == "BDS_D2";
-            const bool bds = bds_legacy || fam == "BDS_PPP_B2B" ||
-                             fam == "BDS_BCNAV1" || fam == "BDS_BCNAV2" ||
-                             fam == "BDS_BCNAV3";
-            if (fam != "GPS_LNAV" && fam != "QZS_LNAV" && fam != "GPS_CNAV" &&
-                fam != "QZS_CNAV" && fam != "SBAS_L1" && !gal && !bds) {
-                ++s.counts["unsupported_families"];
-                continue;
-            }
-            auto sys = root.child("satellite_system").str(row);
-            auto sat = root.child("satellite_number").integer(row);
+            const bool bds = fam == "BDS_D1" || fam == "BDS_D2" ||
+                             fam == "BDS_PPP_B2B" || fam == "BDS_BCNAV1" ||
+                             fam == "BDS_BCNAV2" || fam == "BDS_BCNAV3";
             const bool sbas = fam == "SBAS_L1";
             const bool cnav = fam == "GPS_CNAV" || fam == "QZS_CNAV";
             const bool gps = fam == "GPS_LNAV" || fam == "GPS_CNAV";
-            const auto bds_format = bds_legacy            ? "D1D2_300_V1"
-                                    : fam == "BDS_BCNAV1" ? "BCNAV1_1800_V1"
-                                    : fam == "BDS_BCNAV2" ? "BCNAV2_576_V1"
-                                                          : "B2B_984_V1";
-            const size_t bds_length = bds_legacy            ? 300
-                                      : fam == "BDS_BCNAV1" ? 1800
-                                      : fam == "BDS_BCNAV2" ? 576
-                                                            : 984;
-            const auto gal_format = fam == "GAL_INAV"   ? "INAV_228_V1"
-                                    : fam == "GAL_FNAV" ? "FNAV_238_V1"
-                                                        : "CNAV_PAGE_486_V1";
-            const size_t gal_length = fam == "GAL_INAV"   ? 228
-                                      : fam == "GAL_FNAV" ? 238
-                                                          : 486;
-            if (sys != (bds    ? "C"
-                        : gal  ? "E"
-                        : sbas ? "S"
-                        : gps  ? "G"
-                               : "J") ||
-                sat < 1 || sat > 255 ||
-                root.child("body_format").str(row) != (bds    ? bds_format
-                                                       : gal  ? gal_format
-                                                       : sbas ? "SBAS_L1_250_V1"
-                                                       : cnav
-                                                           ? "CNAV_300_V1"
-                                                           : "LNAV_300_V1") ||
-                root.child("content_kind").str(row) !=
-                    (bds && !bds_legacy ? "binary_symbols"
-                                        : "navigation_bits") ||
-                root.child("bit_length").integer(row) != (bds    ? bds_length
-                                                          : gal  ? gal_length
-                                                          : sbas ? 250
-                                                                 : 300) ||
-                root.child("completeness").str(row) != "complete")
-                throw std::runtime_error("Invalid broadcast identity/layout");
-            bool pass = false, fail = false;
-            if (!checks.null(row))
-                for (auto j = ArrowArrayViewListChildOffset(
-                         checks.v, row + checks.v->offset);
-                     j < ArrowArrayViewListChildOffset(
-                             checks.v, row + checks.v->offset + 1);
-                     ++j) {
-                    auto r = result.str(j + check.v->offset);
-                    pass |= r == "pass";
-                    fail |= r == "fail";
-                }
-            if (!pass || fail) {
+            if (!gal && !bds && !sbas && !cnav && fam != "GPS_LNAV" &&
+                fam != "QZS_LNAV") {
+                ++s.counts["unsupported_families"];
+                continue;
+            }
+            const auto identity = rows.identity(i);
+            const std::string sys(identity.system);
+            const auto sat = identity.satellite;
+            if (!rows.accepted(i)) {
                 ++s.counts["rejected_checks"];
                 continue;
             }
-            if (body.null(row) || sources.null(row))
-                throw std::runtime_error("Null LNAV body/source");
-            std::vector<std::string> signals;
-            for (auto j = ArrowArrayViewListChildOffset(
-                     sources.v, row + sources.v->offset);
-                 j < ArrowArrayViewListChildOffset(sources.v,
-                                                   row + sources.v->offset + 1);
-                 ++j)
-                signals.push_back(source.str(j));
-            if (signals.empty())
-                throw std::runtime_error("Empty bitstream source");
-            auto bytes = ArrowArrayViewGetBytesUnsafe(body.v, row);
+            const auto body = rows.body(i, identity.layout.bit_length);
+            const auto signals = rows.signals(i);
+            Row base{{"setup_id", s.setup},
+                     {"satellite_system", sys},
+                     {"broadcasting_satellite", sat},
+                     {"message_family", fam},
+                     {"bitstream_source", signals},
+                     {"nav_epoch_gpst", time_value(t)}};
             if (sbas) {
                 const auto profile = sat == 22 ? SBAS::L1Profile::southpan_open
                                                : SBAS::L1Profile::standard;
-                auto decoded = SBAS::parse_l1(
-                    {bytes.data.as_uint8, size_t(bytes.size_bytes)}, profile);
+                auto decoded = SBAS::parse_l1(body, profile);
                 ++s.counts[std::string("sbas_") +
                            SBAS::status_name(decoded.status)];
                 if (decoded.status != SBAS::Status::decoded)
                     continue;
                 auto [kind, fields] = sbas_fields(*decoded.message);
-                Row base{
-                    {"setup_id", s.setup},           {"satellite_system", sys},
-                    {"broadcasting_satellite", sat}, {"message_family", fam},
-                    {"bitstream_source", signals},   {"nav_epoch_gpst", tv(t)}};
                 base.insert(fields.begin(), fields.end());
                 ++s.counts["accepted_frames"];
                 ++s.counts["decoded_messages"];
                 s.emit(kind, std::move(base));
                 continue;
             }
-            auto ordered = signals;
-            std::sort(ordered.begin(), ordered.end());
-            std::string key = sys + std::to_string(sat);
-            for (const auto &v : ordered)
-                key += "/" + v;
-            if (s.ephemeris.size() > 1024)
-                throw std::runtime_error(
-                    "Broadcast source assembly capacity exceeded");
-            Row base{
-                {"setup_id", s.setup},           {"satellite_system", sys},
-                {"broadcasting_satellite", sat}, {"message_family", fam},
-                {"bitstream_source", signals},   {"nav_epoch_gpst", tv(t)}};
+            const auto key =
+                sys + std::to_string(sat) + contributor_key(signals);
             ++s.counts["accepted_frames"];
             if (bds) {
-                if (bytes.size_bytes != int64_t((bds_length + 7) / 8) ||
-                    (bds_length % 8 &&
-                     (bytes.data.as_uint8[bytes.size_bytes - 1] &
-                      ((1u << (8 - bds_length % 8)) - 1))))
-                    throw std::runtime_error("Invalid BeiDou body size");
-                for (auto &entry : s.beidou.decode(
-                         {bytes.data.as_uint8, size_t(bytes.size_bytes)}, fam,
-                         key + "/" + fam, sat, t, s.counts)) {
+                const auto source = key + "/" + fam;
+                for (auto &entry :
+                     s.beidou.decode(body, fam, source, sat, t, s.counts)) {
                     auto r = base;
                     r.insert(entry.fields.begin(), entry.fields.end());
                     s.emit(entry.kind, r);
                     if (entry.kind == "bds_pppb2b_status" &&
-                        !std::get<bool>(r.at("service_available"))) {
-                        std::erase_if(s.cache, [&](const auto &cached) {
-                            if (!cached.first.first.starts_with(
-                                    "bds_pppb2b_") ||
-                                cached.first.second != key + "/" + fam + ":")
-                                return false;
-                            s.candidate_count -= cached.second.size();
-                            return true;
+                        !std::get<bool>(r.at("service_available")))
+                        s.invalidate([&](const auto &kind, const auto &k) {
+                            return kind.starts_with("bds_pppb2b_") &&
+                                   k == source + ":";
                         });
-                    }
                     if (entry.candidate)
                         s.remember(entry.kind,
-                                   key + "/" + fam + ":" + entry.discriminator,
-                                   r, t);
+                                   source + ":" + entry.discriminator, r, t);
                 }
                 continue;
             }
             if (gal) {
-                if (bytes.size_bytes != int64_t((gal_length + 7) / 8) ||
-                    (bytes.data.as_uint8[bytes.size_bytes - 1] &
-                     ((1u << ((8 - gal_length % 8) % 8)) - 1)))
-                    throw std::runtime_error("Invalid Galileo size/padding");
+                const auto source = key + "/" + fam;
                 bool e1 = signals.size() == 1 && signals[0] == "GAL_E1_B";
-                for (auto &entry : s.galileo.decode(
-                         {bytes.data.as_uint8, size_t(bytes.size_bytes)}, fam,
-                         key + "/" + fam, sat, e1, t, s.counts)) {
+                for (auto &entry : s.galileo.decode(body, fam, source, sat, e1,
+                                                    t, s.counts)) {
                     auto r = base;
                     r.insert(entry.fields.begin(), entry.fields.end());
                     s.emit(entry.kind, r);
-                    if (entry.kind == "gal_has_status" &&
-                        integer(r, "has_status") == 3)
-                        s.invalidate_has();
+                    // HAS status 3 (do not use) withdraws all HAS corrections.
+                    if (entry.kind == "gal_has_status")
+                        s.invalidate([](const auto &kind, const auto &) {
+                            return kind.starts_with("gal_has_");
+                        });
                     if (entry.candidate)
                         s.remember(entry.kind,
-                                   key + "/" + fam + ":" + entry.discriminator,
-                                   r, t);
+                                   source + ":" + entry.discriminator, r, t);
                 }
                 continue;
             }
@@ -892,9 +769,8 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
                 bool l5 =
                     std::find(signals.begin(), signals.end(),
                               gps ? "GPS_L5_I" : "QZS_L5_I") != signals.end();
-                for (auto &entry : s.cnav.decode(
-                         {bytes.data.as_uint8, size_t(bytes.size_bytes)}, key,
-                         gps, sat, l2, l5, t, s.counts)) {
+                for (auto &entry :
+                     s.cnav.decode(body, key, gps, sat, l2, l5, t, s.counts)) {
                     auto r = base;
                     r.insert(entry.fields.begin(), entry.fields.end());
                     s.emit(entry.kind, r);
@@ -904,11 +780,8 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
                 }
                 continue;
             }
-            if (bytes.size_bytes != 38 || (bytes.data.as_uint8[37] & 15))
-                throw std::runtime_error("Invalid LNAV size/padding");
             // Ten 30-bit words without parity: 240 LNAV data bits.
-            const auto data =
-                strip_parity({bytes.data.as_uint8, 38}, 10, 24, 24);
+            const auto data = strip_parity(body, 10, 24, 24);
             s.decode(BroadcastBits(data, 240), std::move(base), key, t);
         }
         Output out;

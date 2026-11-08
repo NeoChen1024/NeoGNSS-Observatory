@@ -2,6 +2,7 @@
 #include "arrow_batch.hpp"
 #include "broadcast_beidou.hpp"
 #include "broadcast_galileo.hpp"
+#include "raw_bits_batch.hpp"
 #include "rtklib.h"
 #include <algorithm>
 #include <array>
@@ -92,114 +93,47 @@ std::map<std::string, uint64_t> BroadcastNavigation::decoded_by_family() const {
 void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
     std::lock_guard rtklib_guard(rtklib_mutex);
     std::lock_guard guard(state_->mutex);
-    ArrowBatchView owner(schema, array);
-    auto v = &owner.value;
-    Column root{v, schema};
-    auto setup = root.child("setup_id"), family = root.child("message_family"),
-         format = root.child("body_format"),
-         system = root.child("satellite_system"),
-         completeness = root.child("completeness"),
-         content = root.child("content_kind"),
-         time = root.child("nav_epoch_gpst"),
-         list = root.child("bitstream_source");
-    auto number = root.child("satellite_number").v, body = root.child("body").v,
-         length = root.child("bit_length").v, sources = list.v;
-    auto checks = root.child("checks");
-    if (!time.decimal_seconds())
-        throw std::runtime_error("Expected decimal128(38,12) navigation time");
-    if (body->storage_type != NANOARROW_TYPE_BINARY ||
-        checks.v->storage_type != NANOARROW_TYPE_LIST ||
-        sources->storage_type != NANOARROW_TYPE_LIST ||
-        number->storage_type != NANOARROW_TYPE_UINT16 ||
-        length->storage_type != NANOARROW_TYPE_UINT32)
-        throw std::runtime_error("Invalid RawBits column types");
-    Column check{checks.v->children[0], checks.s->children[0]};
-    Column source{sources->children[0], list.s->children[0]};
-    auto result = check.child("result");
-    for (int64_t i = 0; i < v->length; ++i) {
-        auto row = i + v->offset;
-        if (setup.text(row) != state_->setup)
+    RawBitsBatch rows(schema, array);
+    for (int64_t i = 0; i < rows.size(); ++i) {
+        if (rows.setup(i) != state_->setup)
             throw std::runtime_error("RawBits Setup mismatch");
-        auto fam = family.text(row);
+        auto fam = rows.family(i);
         const bool lnav = fam == "GPS_LNAV" || fam == "QZS_LNAV";
         const bool inav = fam == "GAL_INAV", fnav = fam == "GAL_FNAV";
         const bool d1 = fam == "BDS_D1", d2 = fam == "BDS_D2";
         if (!lnav && !inav && !fnav && !d1 && !d2)
             continue;
-        auto stamp = time.seconds_ps(row);
+        auto stamp = rows.time(i);
         if (!stamp)
             continue;
         std::optional<int64_t> t = nearest_ns(*stamp);
-        auto sys = system.text(row);
-        std::string_view expected = fam == "GPS_LNAV"   ? "G"
-                                    : fam == "QZS_LNAV" ? "J"
-                                    : (inav || fnav)    ? "E"
-                                                        : "C";
-        if (sys != expected)
-            throw std::runtime_error("Broadcast satellite system mismatch");
-        int prn = int(ArrowArrayViewGetUIntUnsafe(number, row));
+        const auto identity = rows.identity(i);
+        const auto sys = identity.system;
+        int prn = int(identity.satellite);
         int native_system = sys == "G"   ? SYS_GPS
                             : sys == "J" ? SYS_QZS
                             : sys == "E" ? SYS_GAL
                                          : SYS_CMP;
         int sat = satno(native_system, sys == "J" ? prn + 192 : prn);
-        std::string_view expected_format = lnav   ? "LNAV_300_V1"
-                                           : inav ? "INAV_228_V1"
-                                           : fnav ? "FNAV_238_V1"
-                                                  : "D1D2_300_V1";
-        const unsigned bit_count = inav ? 228 : fnav ? 238 : 300;
-        if (ArrowArrayViewIsNull(number, row) ||
-            ArrowArrayViewIsNull(length, row) || !sat ||
-            completeness.text(row) != "complete" ||
-            content.text(row) != "navigation_bits" ||
-            format.text(row) != expected_format ||
-            ArrowArrayViewGetUIntUnsafe(length, row) != bit_count)
-            throw std::runtime_error(
-                "Invalid broadcast canonical identity/layout");
-        bool pass = false, fail = false;
-        auto listrow = row + checks.v->offset;
-        for (auto j = checks.v->buffer_views[1].data.as_int32[listrow];
-             j < checks.v->buffer_views[1].data.as_int32[listrow + 1]; ++j) {
-            auto status = result.text(j + check.v->offset);
-            pass |= status == "pass";
-            fail |= status == "fail";
-        }
-        if (!pass || fail)
+        if (!sat)
+            throw std::runtime_error("Satellite outside the RTKLIB range");
+        if (!rows.accepted(i))
             continue;
-        if (ArrowArrayViewIsNull(body, row))
-            throw std::runtime_error("Null broadcast body");
-        auto bits = ArrowArrayViewGetBytesUnsafe(body, row);
-        const auto *raw = bits.data.as_uint8;
-        if (bits.size_bytes != (bit_count + 7) / 8 ||
-            (raw[bits.size_bytes - 1] &
-             ((1u << ((8 - bit_count % 8) % 8)) - 1)))
-            throw std::runtime_error("Invalid broadcast body size/padding");
+        const auto body = rows.body(i, identity.layout.bit_length);
+        const auto *raw = body.data();
         if (inav || fnav || d1 || d2) {
             using namespace broadcast_detail;
-            if (ArrowArrayViewIsNull(sources, row))
-                throw std::runtime_error(
-                    "Missing broadcast signal contributors");
-            std::vector<std::string> signals;
-            for (auto j = ArrowArrayViewListChildOffset(sources,
-                                                        row + sources->offset);
-                 j < ArrowArrayViewListChildOffset(sources,
-                                                   row + sources->offset + 1);
-                 ++j)
-                signals.emplace_back(source.text(j));
-            if (signals.empty())
-                throw std::runtime_error("Empty broadcast signal contributors");
-            std::sort(signals.begin(), signals.end());
-            std::string key = std::to_string(sat) + "/" + std::string(fam);
-            for (const auto &signal : signals)
-                key += "/" + signal;
+            const auto signals = rows.signals(i);
+            const auto key = std::to_string(sat) + "/" + std::string(fam) +
+                             contributor_key(signals);
             auto decoded =
                 (d1 || d2)
-                    ? state_->beidou.decode(
-                          {raw, size_t(bits.size_bytes)}, std::string(fam), key,
-                          prn, Tick(*t) * 1000, state_->galileo_diagnostics)
+                    ? state_->beidou.decode(body, std::string(fam), key, prn,
+                                            Tick(*t) * 1000,
+                                            state_->galileo_diagnostics)
                     : state_->galileo.decode(
-                          {raw, size_t(bits.size_bytes)}, std::string(fam), key,
-                          prn, signals.size() == 1 && signals[0] == "GAL_E1_B",
+                          body, std::string(fam), key, prn,
+                          signals.size() == 1 && signals[0] == "GAL_E1_B",
                           Tick(*t) * 1000, state_->galileo_diagnostics);
             for (const auto &message : decoded) {
                 if (message.kind != "gal_inav_ephemeris" &&

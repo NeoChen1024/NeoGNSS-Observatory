@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
-#include "broadcast_fields.hpp"
+#include "broadcast_bits.hpp"
 #include <span>
 
 namespace neognss_obs::broadcast_detail {
 // GPS and QZSS CNAV parameter decoding and source-local, fresh three-part
 // assemblies.
 class CnavDecoder {
-    struct Assembly {
-        std::map<int, Row> parts;
-        std::optional<Tick> start;
-    };
-    std::map<std::string, Assembly> assemblies_;
+    std::map<std::string, PartAssembly> assemblies_;
 
   public:
     void clear() { assemblies_.clear(); }
@@ -24,5 +20,4 @@ class CnavDecoder {
 // Returns false for time-ineligible candidates, without selecting a source.
 bool cnav_snapshot(Row &row, const std::string &kind, Tick time);
 bool cnav_expired(const Row &row, const std::string &kind, Tick time);
-Tick reference(Tick now, int64_t week, int modulo, int64_t tow);
 } // namespace neognss_obs::broadcast_detail

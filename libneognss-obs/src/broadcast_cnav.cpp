@@ -18,22 +18,6 @@ struct CnavBits : BroadcastBits {
         return seconds(u(p, n) * scale);
     }
 };
-Value week_time(std::optional<Tick> now, int64_t week, Tick tow,
-                int modulo = 8192) {
-    if (!now || tow >= seconds(604800))
-        return {};
-    return reference(*now, week, modulo, int64_t(tow / ps));
-}
-Value near_time(std::optional<Tick> now, Tick tow) {
-    if (!now || tow >= seconds(604800))
-        return {};
-    Tick t = (*now / seconds(604800)) * seconds(604800) + tow;
-    if (t - *now > seconds(302400))
-        t -= seconds(604800);
-    if (*now - t > seconds(302400))
-        t += seconds(604800);
-    return t;
-}
 // IS-GPS-200N 30.3.3.1.3 and Table 30-VI; QPNT-006 section 5.4.2.
 double a_reference(bool gps) { return gps ? 26559710.0 : 42164200.0; }
 std::string orbit(bool gps, int64_t id) {
@@ -67,12 +51,10 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
                     bool gps, int64_t satellite, bool l2, bool l5,
                     std::optional<Tick> time,
                     std::map<std::string, uint64_t> &counts) {
-    if (data.size() != 38 || (data[37] & 15))
-        throw std::invalid_argument("Invalid CNAV size/padding");
     CnavBits b{data};
     std::vector<DecodedMessage> out;
     const int mt = int(b.u(14, 6));
-    if (b.u(0, 8) != 0x8b || satellite < 1 || satellite > (gps ? 63 : 10) ||
+    if (b.u(0, 8) != 0x8b || satellite > (gps ? 63 : 10) ||
         b.u(8, 6) != satellite || b.u(20, 17) >= 100800 || (!l2 && !l5)) {
         ++counts["cnav_invalid_header"];
         return out;
@@ -111,9 +93,10 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
                 {"integrity_status_flag", bool(b.u(271, 1))},
                 // GPS: L2C phasing (IS-GPS-200N 30.3.3.1.1); QZSS: ephemeris
                 // status (QPNT-006 5.4.1).
-                {"l2c_phasing", gps ? Value(bool(b.u(272, 1))) : Value{}},
+                {"l2c_phasing",
+                 gps ? Value(bool(b.u(272, 1))) : Value(Null<bool>{})},
                 {"ephemeris_status_flag",
-                 gps ? Value{} : Value(bool(b.u(272, 1)))}};
+                 gps ? Value(Null<bool>{}) : Value(bool(b.u(272, 1)))}};
         health(part, b, 51);
         add("cnav_ephemeris_1", part);
         part_id = 10;
@@ -171,8 +154,10 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
             {"ura_ned2_index", b.u(57, 3)}, {"af0_s", b.offset(71, 26, -35)},
             {"af1_s_s", b.f(97, 20, -48)},  {"af2_s_s2", b.f(117, 10, -60)}};
         Row fields = part;
-        fields["toc_gpst"] = near_time(time, std::get<Tick>(part.at("toc_s")));
-        fields["top_gpst"] = near_time(time, std::get<Tick>(part.at("top_s")));
+        fields["toc_gpst"] =
+            nearest_week(time, std::get<Tick>(part.at("toc_s")));
+        fields["top_gpst"] =
+            nearest_week(time, std::get<Tick>(part.at("top_s")));
         add("cnav_clock", std::move(fields), true);
         part_id = 30;
     }
@@ -199,7 +184,7 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
                 {{"week_raw", b.u(256, 8)},
                  {"top_s", b.tow(38, 11, 300)},
                  {"top_gpst",
-                  week_time(time, b.u(256, 8), b.tow(38, 11, 300), 256)}});
+                  week_reference(time, b.u(256, 8), 256, b.tow(38, 11, 300))}});
     }
     if (mt == 12 || mt == 31 || mt == 37) {
         const int p = mt == 12 ? 38 : 127;
@@ -225,7 +210,7 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
             Row r{{"subject_sv_id", id},
                   {"week_raw", week},
                   {"toa_s", toa},
-                  {"reference_gpst", week_time(time, week, toa)},
+                  {"reference_gpst", week_reference(time, week, 8192, toa)},
                   {"orbit_reference", orbit(gps, id)}};
             if (mt != 37) {
                 r["delta_a_m"] = b.f(pos + 6, 8, 9);
@@ -242,12 +227,13 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
                 const auto ref = orbit(gps, id);
                 const double e = b.f(157, 11, -16, false);
                 const double di = b.f(168, 11, -14, true, pi);
-                r["delta_eccentricity"] = gps ? Value{} : Value(e);
+                r["delta_eccentricity"] =
+                    gps ? Value(Null<double>{}) : Value(e);
                 r["delta_i_rad"] = di;
                 r["eccentricity"] = ref == "UNKNOWN"
-                                        ? Value{}
+                                        ? Value(Null<double>{})
                                         : Value(e + (ref == "QZO" ? 0.06 : 0));
-                r["i0_rad"] = ref == "UNKNOWN" ? Value{}
+                r["i0_rad"] = ref == "UNKNOWN" ? Value(Null<double>{})
                               : ref == "GPS"
                                   ? Value(di + 0.30 * pi)
                                   : Value(di + (ref == "QZO" ? pi * 0.25 : 0));
@@ -288,7 +274,7 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
              {"delta_tls_s", b.s(163, 8)},
              {"tot_s", ref},
              {"week_raw", b.u(187, 13)},
-             {"reference_gpst", week_time(time, b.u(187, 13), ref)},
+             {"reference_gpst", week_reference(time, b.u(187, 13), 8192, ref)},
              {"top_s", b.tow(38, 11, 300)},
              {"wn_lsf_raw", b.u(200, 13)},
              {"dn", b.u(213, 4)},
@@ -306,7 +292,7 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
         add("cnav_time_offset",
             {{"tggto_s", ref},
              {"week_raw", b.u(143, 13)},
-             {"reference_gpst", week_time(time, b.u(143, 13), ref)},
+             {"reference_gpst", week_reference(time, b.u(143, 13), 8192, ref)},
              {"gnss_id", id},
              {"source_time_system", std::string(gps ? "GPST" : "QZSST")},
              {"target_time_system", std::string(systems[id])},
@@ -348,36 +334,27 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
     ++counts["cnav_decoded"];
     if (!part_id || !time || b.u(37, 1))
         return out;
-    if (!assemblies_.contains(source) && assemblies_.size() >= 1024)
-        throw std::runtime_error("CNAV assembly capacity exceeded");
-    auto &a = assemblies_[source];
+    auto &a =
+        bounded(assemblies_, source, 1024, "CNAV assembly capacity exceeded");
     // Three maximum broadcast intervals, distinct from parameter validity.
-    if (a.start && *time - *a.start > seconds(l2 ? 144 : 72)) {
-        a = {};
-        ++counts["cnav_assembly_timeout"];
-    }
-    for (const auto &[id, old] : a.parts) {
-        bool conflict = id == part_id && old != part;
-        for (const auto *name : {"toe_s", "top_s"})
-            if (old.contains(name) && part.contains(name) &&
-                old.at(name) != part.at(name))
-                conflict = true;
-        // GPS toe equals toc within one CEI data set (IS-GPS-200N 30.3.4.4).
-        auto differs = [](const Row &x, const Row &y) {
-            return x.contains("toe_s") && y.contains("toc_s") &&
-                   x.at("toe_s") != y.at("toc_s");
-        };
-        if (gps && (differs(old, part) || differs(part, old)))
-            conflict = true;
-        if (conflict) {
-            a = {};
-            ++counts["cnav_assembly_changed"];
-            break;
-        }
-    }
-    if (!a.start)
-        a.start = time;
-    a.parts[part_id] = part;
+    a.add(
+        *time, seconds(l2 ? 144 : 72), part_id, part,
+        [&](int id, const Row &old) {
+            bool conflict = id == part_id && old != part;
+            for (const auto *name : {"toe_s", "top_s"})
+                if (old.contains(name) && part.contains(name) &&
+                    old.at(name) != part.at(name))
+                    conflict = true;
+            // GPS toe equals toc within one CEI data set (IS-GPS-200N
+            // 30.3.4.4).
+            auto differs = [](const Row &x, const Row &y) {
+                return x.contains("toe_s") && y.contains("toc_s") &&
+                       x.at("toe_s") != y.at("toc_s");
+            };
+            return conflict ||
+                   (gps && (differs(old, part) || differs(part, old)));
+        },
+        counts, "cnav_");
     if (a.parts.size() != 3)
         return out;
     Row eph;
@@ -389,8 +366,8 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
     auto week = std::get<int64_t>(eph.at("week_raw"));
     // WN denotes transmission week, not necessarily the week containing toe.
     // Resolve the reference week across Sunday using the transmitted TOW.
-    auto transmitted = reference(*time, week, 8192, b.u(20, 17) * 6);
-    auto ref = near_time(transmitted, toe);
+    auto transmitted = reference(*time, week, 8192, seconds(b.u(20, 17) * 6));
+    auto ref = nearest_week(transmitted, toe);
     const auto *toe_gpst = std::get_if<Tick>(&ref);
     if (!toe_gpst || toc >= seconds(604800) || top >= seconds(604800) ||
         std::get<double>(eph.at("eccentricity")) >= 1 ||
@@ -398,8 +375,8 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
         ++counts["cnav_invalid_ephemeris"];
     } else {
         eph["toe_gpst"] = ref;
-        eph["toc_gpst"] = near_time(*toe_gpst, toc);
-        eph["top_gpst"] = near_time(*toe_gpst, top);
+        eph["toc_gpst"] = nearest_week(*toe_gpst, toc);
+        eph["top_gpst"] = nearest_week(*toe_gpst, top);
         eph["first_received_gpst"] = *a.start;
         // IS-GPS-200N 30.3.3.2.3: the CNAV clock refers to L1/L2 P(Y).
         eph["orbit_clock_reference"] =
@@ -425,7 +402,7 @@ bool cnav_snapshot(Row &r, const std::string &kind, Tick t) {
         // IS-GPS-200 defines no EOP fit interval; the week still requires UTC.
         if (std::holds_alternative<std::monostate>(r.at("reference_gpst")))
             return false;
-        r["within_fit_interval"] = Value{};
+        r["within_fit_interval"] = Value(Null<bool>{});
     } else if (kind == "cnav_eop") {
         if (!window(r, "reference_gpst", t, 21600))
             return false;

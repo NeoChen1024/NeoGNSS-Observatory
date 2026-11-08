@@ -16,15 +16,19 @@ inline int64_t gpst_day(GpstTicks t) {
     return int64_t(t / gpst_ticks_per_second / 86400);
 }
 
+// PHASE within a PERIOD placed in the period nearest to NOW.
+inline GpstTicks nearest_period(GpstTicks now, GpstTicks phase,
+                                GpstTicks period) {
+    GpstTicks t = now / period * period + phase;
+    if (t - now > period / 2)
+        t -= period;
+    if (now - t > period / 2)
+        t += period;
+    return t;
+}
 // TOW (ticks within a week) placed in the GPST week nearest to NOW.
 inline GpstTicks nearest_week(GpstTicks now, GpstTicks tow) {
-    constexpr int64_t week = 604800 * gpst_ticks_per_second;
-    GpstTicks t = now / week * week + tow;
-    if (t - now > week / 2)
-        t -= week;
-    if (now - t > week / 2)
-        t += week;
-    return t;
+    return nearest_period(now, tow, GpstTicks(604800) * gpst_ticks_per_second);
 }
 
 // RAW * SCALE * 2^-SHIFT exactly, without an intermediate double. The

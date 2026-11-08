@@ -20,17 +20,14 @@ Row utc(const BroadcastBits &b, int p, std::optional<Tick> t) {
     auto r = fields(b, p,
                     {{"a0_s", 32, -30, 'd'},
                      {"a1_s_s", 24, -50, 'f'},
-                     {"delta_tls_s", 8, 0, 'u'},
+                     {"delta_tls_s", 8, 0, 's'},
                      {"tot_s", 8, 0, 't', 3600},
                      {"week_raw", 8},
                      {"wn_lsf_raw", 8},
                      {"dn", 3},
-                     {"delta_tlsf_s", 8}});
-    r["delta_tls_s"] = b.s(p + 56, 8);
-    r["delta_tlsf_s"] = b.s(p + 91, 8);
-    r["reference_gpst"] =
-        gst_reference(t, std::get<int64_t>(r.at("week_raw")),
-                      int64_t(std::get<Tick>(r.at("tot_s")) / ps), 256);
+                     {"delta_tlsf_s", 8, 0, 's'}});
+    r["reference_gpst"] = gst_reference(t, integer(r, "week_raw"),
+                                        std::get<Tick>(r.at("tot_s")), 256);
     return r;
 }
 Row ggto(const BroadcastBits &b, int p, bool fnav, std::optional<Tick> t) {
@@ -47,10 +44,9 @@ Row ggto(const BroadcastBits &b, int p, bool fnav, std::optional<Tick> t) {
     bool unavailable = b.u(p, 42) == ((uint64_t(1) << 42) - 1);
     r["available"] = !unavailable;
     r["reference_gpst"] =
-        unavailable
-            ? Value{}
-            : gst_reference(t, std::get<int64_t>(r.at("week_raw")),
-                            int64_t(std::get<Tick>(r.at("t0g_s")) / ps), 64);
+        unavailable ? Value{}
+                    : gst_reference(t, integer(r, "week_raw"),
+                                    std::get<Tick>(r.at("t0g_s")), 64);
     return r;
 }
 void prefix(Row &to, const Row &from, const std::string &p) {
@@ -89,7 +85,7 @@ bool in_window(const Row &r, const char *n, Tick t, int64_t before,
 }
 } // namespace
 struct GalileoDecoder::State {
-    struct Assembly {
+    struct Almanac {
         std::map<int, Row> parts;
         std::map<int, Tick> times;
         std::optional<Tick> start;
@@ -100,7 +96,13 @@ struct GalileoDecoder::State {
         bool long_message = false;
         std::optional<Tick> first, last;
     };
-    std::map<std::string, Assembly> ephemerides, almanacs;
+    std::map<std::string, PartAssembly> ephemerides;
+    std::map<std::string, Almanac> almanacs;
+    // Ephemeris and almanac assemblies share one source bound.
+    template <class Map> auto &assembly(Map &m, const std::string &source) {
+        return bounded(m, source, 2048, "Galileo assembly capacity exceeded",
+                       ephemerides.size() + almanacs.size());
+    }
     std::map<std::string, Sar> sar;
     HasDecoder has;
 };
@@ -121,7 +123,7 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
     if (family == "GAL_CNAV")
         return state_->has.decode(data, source, time, counts);
     bool f = family == "GAL_FNAV";
-    if (satellite < 1 || satellite > 36) {
+    if (satellite > 36) {
         ++counts["gal_invalid_satellite"];
         return {};
     }
@@ -156,10 +158,8 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
                                      {"long_message", long_message},
                                      {"data", int64_t(raw.u(174, 20))}});
             if (time) {
-                if (!state_->sar.contains(source) && state_->sar.size() >= 128)
-                    throw std::runtime_error(
-                        "Galileo SAR source capacity exceeded");
-                auto &s = state_->sar[source];
+                auto &s = bounded(state_->sar, source, 128,
+                                  "Galileo SAR source capacity exceeded");
                 if (start) {
                     s = {};
                     s.first = time;
@@ -192,7 +192,7 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
         } else
             add("gal_inav_auxiliary_bits", {{"payload", raw.bytes(132, 64)}});
     }
-    Row r;
+    Row r, page; // page: occurrence-only fields
     std::string name =
         (f ? "gal_fnav_page_" : "gal_inav_word_") + std::to_string(type);
     if (!f) {
@@ -235,8 +235,9 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
                         {"af1_s_s", 21, -46, 'f'},
                         {"af2_s_s2", 6, -59, 'f'}});
             break;
-        case 5:
-            r = iono(b, 6);
+        case 5: {
+            auto ionosphere = iono(b, 6);
+            r = ionosphere;
             merge(r, fields(b, 47,
                             {{"bgd_e1_e5a_s", 10, -32, 'd'},
                              {"bgd_e1_e5b_s", 10, -32, 'd'},
@@ -246,12 +247,13 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
                              {"e1b_data_invalid", 1},
                              {"week_raw", 12},
                              {"tow_s", 20, 0, 't', 1}}));
-            add("gal_ionosphere", iono(b, 6), true);
+            add("gal_ionosphere", std::move(ionosphere), true);
             break;
+        }
         case 6:
             r = utc(b, 6, time);
+            add("gal_utc", r, true);
             r["tow_s"] = seconds(int64_t(b.u(105, 20)));
-            add("gal_utc", utc(b, 6, time), true);
             break;
         case 7:
             r = fields(
@@ -352,8 +354,9 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
                                   {"bnom_index", 4},
                                   {"validity_index", 4}});
                 sl["crc_valid"] = uint64_t(crc) == b.u(96, 32);
-                sl["reference_gpst"] = gst_reference(
-                    time, int64_t(b.u(12, 12)), int64_t(b.u(24, 9)) * 1800);
+                sl["reference_gpst"] =
+                    gst_reference(time, int64_t(b.u(12, 12)),
+                                  seconds(int64_t(b.u(24, 9)) * 1800));
                 const double pconst[] = {
                     1e-8, 1e-7, 1e-6, 3e-6, 6e-6,    8e-6,   1e-5,    2e-5,
                     4e-5, 6e-5, 8e-5, 1e-4, 1.25e-4, 1.5e-4, 1.75e-4, 2e-4};
@@ -399,14 +402,17 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
                         {"af1_s_s", 21, -46, 'f'},
                         {"af2_s_s2", 6, -59, 'f'},
                         {"sisa_index", 8}});
-            merge(r, iono(b, 102));
-            merge(r, fields(b, 143,
-                            {{"bgd_e1_e5a_s", 10, -32, 'd'},
-                             {"e5a_health", 2},
-                             {"week_raw", 12},
-                             {"tow_s", 20, 0, 't', 1},
-                             {"e5a_data_invalid", 1}}));
-            add("gal_ionosphere", iono(b, 102), true);
+            {
+                auto ionosphere = iono(b, 102);
+                merge(r, ionosphere);
+                merge(r, fields(b, 143,
+                                {{"bgd_e1_e5a_s", 10, -32, 'd'},
+                                 {"e5a_health", 2},
+                                 {"week_raw", 12},
+                                 {"tow_s", 20, 0, 't', 1},
+                                 {"e5a_data_invalid", 1}}));
+                add("gal_ionosphere", std::move(ionosphere), true);
+            }
             break;
         case 2:
             r = fields(b, 6,
@@ -439,10 +445,12 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
                        {{"iod_nav", 10},
                         {"cic_rad", 16, -29, 'f'},
                         {"cis_rad", 16, -29, 'f'}});
-            add("gal_utc", utc(b, 48, time), true);
+            // UTC on this page belongs to the page occurrence, not to the
+            // ephemeris issue or clock reference.
+            page = utc(b, 48, time);
+            add("gal_utc", page, true);
             add("gal_ggto", ggto(b, 147, true, time), true);
-            merge(r, utc(b, 48, time));
-            r["tow_s"] = seconds(int64_t(b.u(189, 20)));
+            page["tow_s"] = seconds(int64_t(b.u(189, 20)));
             break;
         case 5:
             r = fields(
@@ -486,6 +494,7 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
         return {};
     }
     Row occurrence = r;
+    merge(occurrence, page);
     occurrence["message_type"] = int64_t(type);
     add(name, std::move(occurrence));
     ++counts["decoded_messages"];
@@ -493,41 +502,20 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
     if (!time)
         return out;
     if (type >= 1 && type <= (f ? 4 : 5)) {
-        if (!state_->ephemerides.contains(source) &&
-            state_->ephemerides.size() + state_->almanacs.size() >= 2048)
-            throw std::runtime_error("Galileo assembly capacity exceeded");
-        auto &a = state_->ephemerides[source];
+        auto &a = state_->assembly(state_->ephemerides, source);
         int timeout = f ? 150 : 90;
-        if (a.start && *time - *a.start > seconds(timeout)) {
-            a = {};
-            ++counts["gal_assembly_timeout"];
-        }
-        Row part = r;
-        // UTC from F/NAV page 4 is not an ephemeris issue or clock reference.
-        if (f && type == 4)
-            part = fields(b, 6,
-                          {{"iod_nav", 10},
-                           {"cic_rad", 16, -29, 'f'},
-                           {"cis_rad", 16, -29, 'f'}});
         auto content = [](Row v) {
             v.erase("tow_s");
             return v;
         };
-        for (const auto &[id, old] : a.parts) {
-            bool conflict = part.contains("iod_nav") &&
-                            old.contains("iod_nav") &&
-                            part.at("iod_nav") != old.at("iod_nav");
-            if (id == type && content(old) != content(part))
-                conflict = true;
-            if (conflict) {
-                a = {};
-                ++counts["gal_assembly_changed"];
-                break;
-            }
-        }
-        if (!a.start)
-            a.start = time;
-        a.parts[type] = part;
+        a.add(
+            *time, seconds(timeout), type, r,
+            [&](int id, const Row &old) {
+                return (r.contains("iod_nav") && old.contains("iod_nav") &&
+                        r.at("iod_nav") != old.at("iod_nav")) ||
+                       (id == type && content(old) != content(r));
+            },
+            counts, "gal_");
         if (a.parts.size() == size_t(f ? 4 : 5)) {
             Row eph;
             for (const auto &[id, p] : a.parts)
@@ -535,16 +523,15 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
                     if (k != "tow_s" && k != "week_raw")
                         eph.insert({k, v});
             const auto &clock = a.parts.at(f ? 1 : 5);
-            auto wn = std::get<int64_t>(clock.at("week_raw"));
-            auto tow = std::get<Tick>(clock.at("tow_s"));
-            auto tx = gst_reference(time, wn, int64_t(tow / ps));
+            auto wn = integer(clock, "week_raw");
+            auto tx =
+                gst_reference(time, wn, std::get<Tick>(clock.at("tow_s")));
             bool valid = std::holds_alternative<Tick>(tx);
             if (f && valid)
                 for (int i : {2, 3}) {
                     const auto &p = a.parts.at(i);
-                    auto x = gst_reference(
-                        time, std::get<int64_t>(p.at("week_raw")),
-                        int64_t(std::get<Tick>(p.at("tow_s")) / ps));
+                    auto x = gst_reference(time, integer(p, "week_raw"),
+                                           std::get<Tick>(p.at("tow_s")));
                     if (!std::holds_alternative<Tick>(x) ||
                         abs(std::get<Tick>(x) - std::get<Tick>(tx)) >
                             seconds(timeout))
@@ -574,10 +561,7 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
         }
     }
     if ((!f && type >= 7 && type <= 10) || (f && (type == 5 || type == 6))) {
-        if (!state_->almanacs.contains(source) &&
-            state_->ephemerides.size() + state_->almanacs.size() >= 2048)
-            throw std::runtime_error("Galileo assembly capacity exceeded");
-        auto &a = state_->almanacs[source];
+        auto &a = state_->assembly(state_->almanacs, source);
         if ((a.start && *time - *a.start > seconds(f ? 300 : 180)) ||
             type == (f ? 5 : 7))
             a = {};
@@ -615,8 +599,6 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
                 continue;
             auto x = strip(a.parts.at(first), "s" + std::to_string(slot) + "_");
             merge(x, strip(a.parts.at(last), "s" + std::to_string(slot) + "_"));
-            if (!x.contains("subject_sv_id"))
-                continue;
             auto id = std::get<int64_t>(x.at("subject_sv_id"));
             a.emitted.insert(slot);
             if (!id)
@@ -639,8 +621,8 @@ GalileoDecoder::decode(std::span<const uint8_t> data, const std::string &family,
             x["week_raw"] = rt.at("week_raw");
             x["toa_s"] = rt.at("toa_s");
             x["reference_gpst"] =
-                gst_reference(time, std::get<int64_t>(rt.at("week_raw")),
-                              int64_t(std::get<Tick>(rt.at("toa_s")) / ps), 4);
+                gst_reference(time, integer(rt, "week_raw"),
+                              std::get<Tick>(rt.at("toa_s")), 4);
             x["sqrt_a"] =
                 std::get<double>(x.at("delta_sqrt_a")) + std::sqrt(29600000.0);
             x["i0_rad"] =

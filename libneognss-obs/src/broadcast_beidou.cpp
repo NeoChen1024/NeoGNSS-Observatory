@@ -7,22 +7,26 @@
 namespace neognss_obs::broadcast_detail {
 namespace {
 constexpr double pi = std::numbers::pi;
-int64_t integer(const Row &r, const char *n) {
-    return std::get<int64_t>(r.at(n));
-}
-Value bdt(std::optional<Tick> now, int64_t week, int64_t tow,
-          int modulo = 8192) {
-    if (!now || tow < 0 || tow >= 604800)
+// RESOLVE applied on the BDT axis (GPST - 14 s), returned on the GPST axis.
+template <class Resolve>
+Value in_bdt(std::optional<Tick> now, Resolve resolve) {
+    if (!now)
         return {};
-    return reference(*now - seconds(14), (week + 1356) % modulo, modulo, tow) +
-           seconds(14);
-}
-Value bdt_nearest(std::optional<Tick> now, Tick tow) {
-    auto t = nearest_week(
-        now ? std::optional<Tick>(*now - seconds(14)) : std::nullopt, tow);
+    auto t = resolve(*now - seconds(14));
     if (auto p = std::get_if<Tick>(&t))
         return *p + seconds(14);
     return {};
+}
+// BDT week number and whole-second TOW; BDT week 0 is GPST week 1356.
+Value bdt(std::optional<Tick> now, int64_t week, int64_t tow_s,
+          int modulo = 8192) {
+    return in_bdt(now, [&](Tick t) {
+        return week_reference(t, (week + 1356) % modulo, modulo,
+                              seconds(tow_s));
+    });
+}
+Value bdt_nearest(std::optional<Tick> now, Tick tow) {
+    return in_bdt(now, [&](Tick t) { return nearest_week(t, tow); });
 }
 Row orbit1(const BroadcastBits &b, size_t p) {
     return fields(b, p,
@@ -164,12 +168,27 @@ Row legacy_clock(const BroadcastBits &b, size_t p) {
 }
 } // namespace
 struct BeidouDecoder::State {
-    struct Part {
-        Row row;
+    template <class Content> struct Part {
+        Content content;
         Tick received;
         int64_t sow;
     };
-    std::map<std::string, std::map<int, Part>> pending;
+    // Source-local D1/D2 parity-stripped subframes/pages and B-CNAV fields.
+    std::map<std::string, std::map<int, Part<Bytes>>> fragments;
+    std::map<std::string, std::map<int, Part<Row>>> pending;
+    // Parts of SOURCE received within 90 s before TIME; both kinds share one
+    // source bound.
+    template <class Map>
+    typename Map::mapped_type &parts(Map &m, const std::string &source,
+                                     Tick time) {
+        auto &p = bounded(m, source, 2048, "BeiDou assembly capacity exceeded",
+                          fragments.size() + pending.size());
+        std::erase_if(p, [&](const auto &x) {
+            return time < x.second.received ||
+                   time - x.second.received > seconds(90);
+        });
+        return p;
+    }
     struct AlmanacContext {
         int64_t week = 0, toa = 0;
         std::optional<Tick> reference_seen, expanded_seen;
@@ -180,6 +199,7 @@ struct BeidouDecoder::State {
 BeidouDecoder::BeidouDecoder() : state_(std::make_unique<State>()) {}
 BeidouDecoder::~BeidouDecoder() = default;
 void BeidouDecoder::clear() {
+    state_->fragments.clear();
     state_->pending.clear();
     state_->almanacs.clear();
 }
@@ -190,7 +210,7 @@ BeidouDecoder::decode(std::span<const uint8_t> body, const std::string &family,
                       std::optional<Tick> time,
                       std::map<std::string, uint64_t> &counts) {
     std::vector<DecodedMessage> out;
-    if (satellite < 1 || satellite > 63) {
+    if (satellite > 63) {
         ++counts["bds_invalid_satellite"];
         return out;
     }
@@ -234,11 +254,8 @@ BeidouDecoder::decode(std::span<const uint8_t> body, const std::string &family,
             r["sow_bdt_s"] = seconds(sow);
             emit("utc", r, true);
         }
-        if (!state_->almanacs.contains(source) &&
-            state_->almanacs.size() >= 2048)
-            throw std::runtime_error(
-                "BeiDou almanac context capacity exceeded");
-        auto &ac = state_->almanacs[source];
+        auto &ac = bounded(state_->almanacs, source, 2048,
+                           "BeiDou almanac context capacity exceeded");
         auto fresh = [&](std::optional<Tick> seen) {
             return time && seen && *time >= *seen &&
                    *time - *seen <= seconds(2250);
@@ -320,21 +337,14 @@ BeidouDecoder::decode(std::span<const uint8_t> body, const std::string &family,
         }
         if (!time)
             return out;
-        if (!state_->pending.contains(source) && state_->pending.size() >= 2048)
-            throw std::runtime_error("BeiDou assembly capacity exceeded");
-        auto &parts = state_->pending[source];
+        auto &parts = state_->parts(state_->fragments, source, *time);
         int id = d2 ? page : sf;
-        std::erase_if(parts, [&](const auto &x) {
-            return *time < x.second.received ||
-                   *time - x.second.received > seconds(90);
-        });
-        Row fragment{{"fragment", bytes}};
         const bool duplicate = parts.contains(id) && parts[id].sow == sow &&
-                               parts[id].row == fragment;
+                               parts[id].content == bytes;
         if (!duplicate) {
             if (id == 1 || (parts.contains(id) && parts[id].sow == sow))
                 parts.clear();
-            parts[id] = {fragment, *time, sow};
+            parts[id] = {bytes, *time, sow};
         }
         for (int i = 1; i <= (d2 ? 10 : 3); ++i)
             if ((!d2 || i != 2) && !parts.contains(i))
@@ -349,8 +359,7 @@ BeidouDecoder::decode(std::span<const uint8_t> body, const std::string &family,
                 }
             }
         auto get = [&](int n) {
-            return BroadcastBits(
-                std::get<Bytes>(parts.at(n).row.at("fragment")), 224);
+            return BroadcastBits(parts.at(n).content, 224);
         };
         auto b1 = get(1);
         Row r = legacy_clock(b1, d2 ? 42 : 38);
@@ -634,39 +643,33 @@ BeidouDecoder::decode(std::span<const uint8_t> body, const std::string &family,
     }
     if (!time)
         return out;
-    if (!state_->pending.contains(source) && state_->pending.size() >= 2048)
-        throw std::runtime_error("BeiDou assembly capacity exceeded");
-    auto &parts = state_->pending[source];
-    std::erase_if(parts, [&](const auto &x) {
-        return *time < x.second.received ||
-               *time - x.second.received > seconds(90);
-    });
+    auto &parts = state_->parts(state_->pending, source, *time);
     if (!first.empty()) {
         // A fresh first orbit fragment starts a new cycle, never a mixed cache.
-        if (!parts.contains(1) || parts[1].row != first ||
+        if (!parts.contains(1) || parts[1].content != first ||
             parts[1].sow != sow) {
             parts.clear();
             parts[1] = {first, *time, sow};
         }
     }
-    if (!second.empty() &&
-        (!parts.contains(2) || parts[2].row != second || parts[2].sow != sow))
+    if (!second.empty() && (!parts.contains(2) || parts[2].content != second ||
+                            parts[2].sow != sow))
         parts[2] = {second, *time, sow};
     if (!clk.empty() &&
-        (!parts.contains(3) || parts[3].row != clk || parts[3].sow != sow))
+        (!parts.contains(3) || parts[3].content != clk || parts[3].sow != sow))
         parts[3] = {clk, *time, sow};
     if (!parts.contains(1) || !parts.contains(3) || (b2 && !parts.contains(2)))
         return out;
     if (b2 && ((parts[2].sow - parts[1].sow + 604800) % 604800 != 3 ||
-               (integer(parts[3].row, "iodc") & 255) !=
-                   integer(parts[1].row, "iode"))) {
+               (integer(parts[3].content, "iodc") & 255) !=
+                   integer(parts[1].content, "iode"))) {
         ++counts["bds_issue_mismatch"];
         return out;
     }
-    Row r = parts[1].row;
+    Row r = parts[1].content;
     if (b2)
-        merge(r, parts[2].row);
-    merge(r, parts[3].row);
+        merge(r, parts[2].content);
+    merge(r, parts[3].content);
     if (r.at("toe_bdt_s") != r.at("toc_bdt_s")) {
         ++counts["bds_reference_mismatch"];
         return out;

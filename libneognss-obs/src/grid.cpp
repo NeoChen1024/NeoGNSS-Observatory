@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "broadcast_fields.hpp"
+#include "raw_bits_batch.hpp"
 #include <algorithm>
 #include <mutex>
 #include <neognss_obs/measurements.hpp>
@@ -46,9 +47,6 @@ struct SbasGridProcessor::State {
         if (n <= 0 || age <= 0 || mask <= 0)
             throw std::invalid_argument(
                 "SBAS intervals and ages must be positive");
-    }
-    static Value optional_time(std::optional<Tick> t) {
-        return t ? Value(*t) : Value{};
     }
     std::optional<Tick> expiry(const Source &s, int band, const Cell &c) const {
         auto m = s.masks.find(band);
@@ -127,25 +125,27 @@ struct SbasGridProcessor::State {
                           {"longitude", double(coordinate.second)},
                           {"iodi", int64_t(c.iodi)},
                           {"givei", int64_t(c.givei)},
-                          {"reported_gpst", optional_time(c.report)},
-                          {"expiry_gpst", optional_time(deadline)},
+                          {"reported_gpst", time_value(c.report)},
+                          {"expiry_gpst", time_value(deadline)},
                           {"status", status},
                           {"mask_set_complete", complete},
-                          {"last_mt0_gpst", optional_time(s.mt0)},
+                          {"last_mt0_gpst", time_value(s.mt0)},
                           {"mt0_restriction",
                            std::string(s.mt0_untimed ? "UNKNOWN"
                                        : mt0_active  ? "ACTIVE"
                                        : s.mt0       ? "ELAPSED"
                                                      : "NOT_OBSERVED")},
-                          {"delay_m", good ? Value(c.delay * .125) : Value{}},
-                          {"vtec_tecu",
-                           good ? Value(c.delay * .125 * tecu_per_m) : Value{}},
+                          {"delay_m", good ? Value(c.delay * .125)
+                                           : Value(Null<double>{})},
+                          {"vtec_tecu", good
+                                            ? Value(c.delay * .125 * tecu_per_m)
+                                            : Value(Null<double>{})},
                           {"valid_duration_s", c.valid},
                           {"mt0_duration_s", c.restricted},
                           {"coverage", double(c.valid) / double(interval)},
                           {"mean_vtec_tecu", c.valid > 0
                                                  ? Value(c.integral / valid_s)
-                                                 : Value{}}};
+                                                 : Value(Null<double>{})}};
                     emit("grid", std::move(r));
                     ++rows;
                     usable += good;
@@ -288,56 +288,23 @@ SbasGridProcessor::Output SbasGridProcessor::feed(ArrowSchema *schema,
             "SBAS processor failed; construct a new instance");
     try {
         s.counts["output_in_call"] = 0;
-        ArrowBatchView owner(schema, array);
-        Column root{&owner.value, schema};
-        auto time = root.child("nav_epoch_gpst"),
-             family = root.child("message_family");
-        for (int64_t i = 0; i < array->length; ++i) {
-            auto row = i + owner.value.offset;
-            if (root.child("setup_id").str(row) != s.setup)
+        RawBitsBatch rows(schema, array);
+        for (int64_t i = 0; i < rows.size(); ++i) {
+            if (rows.setup(i) != s.setup)
                 throw std::runtime_error("Mixed SBAS Setup");
-            auto t = time.seconds_ps(row);
+            auto t = rows.time(i);
             if (t)
                 s.advance(*t);
-            if (family.str(row) != "SBAS_L1")
+            if (rows.family(i) != "SBAS_L1")
                 continue;
-            auto sat = root.child("satellite_number").integer(row);
-            if (root.child("satellite_system").str(row) != "S" || sat < 1 ||
-                sat > 255 ||
-                root.child("body_format").str(row) != "SBAS_L1_250_V1" ||
-                root.child("content_kind").str(row) != "navigation_bits" ||
-                root.child("bit_length").integer(row) != 250 ||
-                root.child("completeness").str(row) != "complete")
-                throw std::runtime_error("Invalid SBAS identity/layout");
-            auto checks = root.child("checks"),
-                 signals = root.child("bitstream_source"),
-                 body = root.child("body");
-            if (checks.v->storage_type != NANOARROW_TYPE_LIST ||
-                signals.v->storage_type != NANOARROW_TYPE_LIST ||
-                body.v->storage_type != NANOARROW_TYPE_BINARY)
-                throw std::runtime_error("Invalid SBAS Arrow fields");
-            bool pass = false, fail = false;
-            Column check{checks.v->children[0], checks.s->children[0]};
-            auto result = check.child("result");
-            if (!checks.null(row))
-                for (auto j = ArrowArrayViewListChildOffset(
-                         checks.v, row + checks.v->offset);
-                     j < ArrowArrayViewListChildOffset(
-                             checks.v, row + checks.v->offset + 1);
-                     ++j) {
-                    auto value = result.str(j + check.v->offset);
-                    pass |= value == "pass";
-                    fail |= value == "fail";
-                }
-            if (!pass || fail) {
+            const auto identity = rows.identity(i);
+            if (!rows.accepted(i)) {
                 ++s.counts["rejected_checks"];
                 continue;
             }
-            if (body.null(row) || signals.null(row))
-                throw std::runtime_error("Null SBAS body/signals");
-            auto bytes = ArrowArrayViewGetBytesUnsafe(body.v, row);
-            auto decoded =
-                SBAS::parse_l1({bytes.data.as_uint8, size_t(bytes.size_bytes)});
+            const auto body = rows.body(i, identity.layout.bit_length);
+            auto names = rows.signals(i);
+            auto decoded = SBAS::parse_l1(body);
             if (decoded.status != SBAS::Status::decoded) {
                 ++s.counts["rejected_content"];
                 continue;
@@ -345,24 +312,12 @@ SbasGridProcessor::Output SbasGridProcessor::feed(ArrowSchema *schema,
             if (decoded.message->type != 0 && decoded.message->type != 18 &&
                 decoded.message->type != 26)
                 continue;
-            Column signal{signals.v->children[0], signals.s->children[0]};
-            std::vector<std::string> names;
-            for (auto j = ArrowArrayViewListChildOffset(
-                     signals.v, row + signals.v->offset);
-                 j < ArrowArrayViewListChildOffset(signals.v,
-                                                   row + signals.v->offset + 1);
-                 ++j)
-                names.push_back(signal.str(j));
-            if (names.empty())
-                throw std::runtime_error("Empty SBAS signal identity");
             std::sort(names.begin(), names.end());
-            std::string key = std::to_string(sat);
-            for (auto &v : names)
-                key += "/" + v;
-            if (!s.sources.contains(key) && s.sources.size() >= 64)
-                throw std::runtime_error("SBAS source bound exceeded");
-            auto &source = s.sources[key];
-            source.sat = sat;
+            auto &source = bounded(s.sources,
+                                   std::to_string(identity.satellite) +
+                                       contributor_key(names),
+                                   64, "SBAS source bound exceeded");
+            source.sat = identity.satellite;
             source.signals = std::move(names);
             s.accept(*decoded.message, source, t);
         }

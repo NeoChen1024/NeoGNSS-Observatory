@@ -124,7 +124,7 @@ restart Events and the group `discontinuity` flag. Inputs and outputs remain ind
 Native decoding/assembly releases the GIL; low-rate snapshot aggregation and
 JSONL presentation are Python consumers of typed results.
 
-Use bounded batches. The decoder allows 131,072 retained candidates, approximately
+Use bounded batches. The decoder allows 131,072 retained candidates,
 1,024 source assembly states each for LNAV and CNAV, 2,048 combined Galileo
 navigation/almanac states, and 100,000 emitted native rows per feed. Exceeding
 a bound fails explicitly rather than silently dropping valid output. A failed

@@ -101,6 +101,37 @@ inline Row fields(const BroadcastBits &b, size_t p,
 }
 // Adds fields of `x` not already in `r`.
 inline void merge(Row &r, const Row &x) { r.insert(x.begin(), x.end()); }
+inline int64_t integer(const Row &r, const char *name) {
+    return std::get<int64_t>(r.at(name));
+}
+// Parts of one source-local data set, collected from the first part's
+// reception time.
+struct PartAssembly {
+    std::map<int, Row> parts;
+    std::optional<Tick> start;
+    // Starts over when more than TIMEOUT has passed since the first part, or
+    // when CONFLICT(id, part) holds for a held part, counting
+    // "<prefix>assembly_timeout" or "<prefix>assembly_changed"; then holds
+    // PART as ID.
+    template <class Conflict>
+    void add(Tick t, Tick timeout, int id, const Row &part, Conflict conflict,
+             std::map<std::string, uint64_t> &counts,
+             const std::string &prefix) {
+        if (start && t - *start > timeout) {
+            *this = {};
+            ++counts[prefix + "assembly_timeout"];
+        }
+        for (const auto &[held, old] : parts)
+            if (conflict(held, old)) {
+                *this = {};
+                ++counts[prefix + "assembly_changed"];
+                break;
+            }
+        if (!start)
+            start = t;
+        parts[id] = part;
+    }
+};
 // Data bits of consecutive 30-bit navigation words with parity removed: the
 // first `first` bits of word 0 and the first `rest` bits of each later word.
 inline Bytes strip_parity(std::span<const uint8_t> body, size_t words,
@@ -113,12 +144,29 @@ inline Bytes strip_parity(std::span<const uint8_t> body, size_t words,
             out[n / 8] |= uint8_t(b.u(w * 30 + k, 1) << (7 - n % 8));
     return out;
 }
-Tick reference(Tick now, int64_t week, int modulo, int64_t tow);
-inline Value gst_reference(std::optional<Tick> now, int64_t week, int64_t tow,
-                           int modulo = 4096) {
-    if (!now || tow < 0 || tow >= 604800)
+// WEEK, a week number truncated to MODULO, completed to the full week nearest
+// the reception context NOW (never the host clock), plus TOW.
+inline Tick reference(Tick now, int64_t week, int modulo, Tick tow) {
+    auto w = int64_t(now / seconds(604800));
+    auto full = w + (week - w % modulo);
+    if (full - w > modulo / 2)
+        full -= modulo;
+    if (w - full > modulo / 2)
+        full += modulo;
+    return seconds(full * 604800) + tow;
+}
+// reference() for a broadcast week/TOW pair; null without reception context or
+// for a TOW outside the week.
+inline Value week_reference(std::optional<Tick> now, int64_t week, int modulo,
+                            Tick tow) {
+    if (!now || tow < 0 || tow >= seconds(604800))
         return {};
-    return reference(*now, (week + 1024) % modulo, modulo, tow);
+    return reference(*now, week, modulo, tow);
+}
+// GST week 0 is GPST week 1024.
+inline Value gst_reference(std::optional<Tick> now, int64_t week, Tick tow,
+                           int modulo = 4096) {
+    return week_reference(now, (week + 1024) % modulo, modulo, tow);
 }
 inline Value nearest_week(std::optional<Tick> now, Tick tow) {
     if (!now || tow < 0 || tow >= seconds(604800))

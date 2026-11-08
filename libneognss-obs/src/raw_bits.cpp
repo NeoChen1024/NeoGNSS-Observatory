@@ -58,16 +58,6 @@ std::string_view rinex_system(char system) {
     static constexpr std::string_view systems = "GECJS";
     return systems.substr(systems.find(system), 1);
 }
-// RINEX system named by a family's constellation prefix.
-std::string_view family_system(std::string_view family) {
-    const auto prefix = family.substr(0, family.find('_'));
-    return prefix == "GPS"    ? "G"
-           : prefix == "GAL"  ? "E"
-           : prefix == "BDS"  ? "C"
-           : prefix == "QZS"  ? "J"
-           : prefix == "SBAS" ? "S"
-                              : "";
-}
 void result(RawBits &r, std::string_view kind, std::string_view scope,
             bool pass) {
     r.checks.push_back(
@@ -245,7 +235,6 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         return {};
     RawBits r;
     Bits b;
-    size_t length = 0;
     unsigned width = 32;
     bool sbf = f.protocol() == cppgnss::Protocol::sbf;
     std::vector<uint8_t> navigation_bytes;
@@ -477,64 +466,13 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         navigation_words = std::move(parsed->words);
         b = {{}, navigation_words, width, navigation_words.size() * width};
     }
-    if (r.family.ends_with("_LNAV")) {
-        r.format = "LNAV_300_V1";
-        length = 300;
-        r.unit = "subframe";
-    } else if (r.family == "GPS_CNAV" || r.family == "QZS_CNAV") {
-        r.format = "CNAV_300_V1";
-        length = 300;
-    } else if (r.family == "GAL_INAV") {
-        r.format = "INAV_228_V1";
-        length = 228;
-        r.unit = "page";
-        // Packing is defined by the receiver, not potentially corrupt page
-        // discriminator bits. Preserve the supplied pair even when checks fail.
-    } else if (r.family == "GAL_FNAV") {
-        r.format = "FNAV_238_V1";
-        length = 238;
-        r.unit = "page";
-    } else if (r.family == "GAL_CNAV") {
-        r.format = "CNAV_PAGE_486_V1";
-        length = 486;
-        r.unit = "page";
-    } else if (r.family == "BDS_D1" || r.family == "BDS_D2" ||
-               r.family == "BDS_D1D2_UNCLASSIFIED") {
-        r.format = "D1D2_300_V1";
-        length = 300;
-        r.unit = "subframe";
-    } else if (r.family == "BDS_BCNAV1") {
-        r.format = "BCNAV1_1800_V1";
-        length = 1800;
-    } else if (r.family == "BDS_BCNAV2") {
-        r.format = "BCNAV2_576_V1";
-        length = 576;
-    } else if (r.family == "BDS_B2B_UNCLASSIFIED") {
-        r.format = "B2B_984_V1";
-        length = 984;
-    } else if (r.family.ends_with("_CNAV2")) {
-        r.format = "CNAV2_1800_V1";
-        length = 1800;
-    } else if (r.family == "QZS_L6_UNCLASSIFIED") {
-        r.format = "L6_2000_V1";
-        length = 2000;
-    } else if (r.family == "SBAS_L1") {
-        r.format = "SBAS_L1_250_V1";
-        length = 250;
-    } else if (r.family == "SBAS_L5") {
-        r.format = "SBAS_L5_250_V1";
-        length = 250;
-    } else if (r.family == "QZS_L1S") {
-        r.format = "QZS_L1S_250_V1";
-        length = 250;
-    } else if (r.family == "QZS_L5S") {
-        r.format = "QZS_L5S_250_V1";
-        length = 250;
-    } else {
+    const auto *layout = raw_bits_layout(r.family);
+    if (!layout)
         throw std::logic_error("RawBits family without format mapping");
-    }
-    if (length >= 576)
-        r.content = "binary_symbols";
+    r.format = layout->format;
+    r.unit = layout->unit;
+    r.content = layout->content();
+    const size_t length = layout->bit_length;
     const size_t words =
         r.format == "LNAV_300_V1" || (!sbf && r.format == "D1D2_300_V1") ? 10
         : !sbf && r.format == "INAV_228_V1" ? 8
@@ -545,10 +483,12 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         !(!sbf && (r.family == "SBAS_L1" || r.family == "QZS_L1S") &&
           actual_words == words + 1))
         return {RawBitsStatus::malformed, {}};
-    if (family_system(r.family) != r.system)
+    if (layout->system != r.system)
         return {RawBitsStatus::unsupported, {}};
     // The word count above bounds every view below; Bits throws only for
-    // internal offset errors.
+    // internal offset errors. Galileo I/NAV packing is defined by the
+    // receiver, not potentially corrupt page discriminator bits: preserve the
+    // supplied pair even when checks fail.
     b.inav_pair = !sbf && r.format == "INAV_228_V1";
     b.resize(length);
     pack(r, b);

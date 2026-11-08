@@ -164,9 +164,8 @@ HasDecoder::decode(std::span<const uint8_t> data, const std::string &source,
         ++counts["has_invalid_page"];
         return out;
     }
-    if (!state_->sources.contains(source) && state_->sources.size() >= 128)
-        throw std::runtime_error("HAS source capacity exceeded");
-    auto &s = state_->sources[source];
+    auto &s =
+        bounded(state_->sources, source, 128, "HAS source capacity exceeded");
     std::erase_if(s.masks, [&](const auto &p) {
         return *time - p.second.received >= seconds(1800);
     });

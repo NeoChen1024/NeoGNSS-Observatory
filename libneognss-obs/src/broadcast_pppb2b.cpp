@@ -45,15 +45,11 @@ decode_pppb2b(std::span<const uint8_t> body, int64_t satellite,
         r["iod_ssr"] = in.u(2);
         r["epoch_bdt_sod_s"] = seconds(sod);
         Value epoch;
-        if (time && sod < 86400) {
-            Tick t = (*time - seconds(14)) / seconds(86400) * seconds(86400) +
-                     seconds(sod + 14);
-            if (t > *time + seconds(43200))
-                t -= seconds(86400);
-            if (*time > t + seconds(43200))
-                t += seconds(86400);
-            epoch = t;
-        }
+        // BDT second of day in the BDT day nearest to reception.
+        if (time && sod < 86400)
+            epoch = nearest_period(*time - seconds(14), seconds(sod),
+                                   seconds(86400)) +
+                    seconds(14);
         r["epoch_gpst"] = epoch;
         r["valid_until_gpst"] =
             validity && std::holds_alternative<Tick>(epoch)
