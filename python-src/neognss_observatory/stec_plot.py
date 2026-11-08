@@ -74,19 +74,22 @@ def prepare_hours(root, scratch, start, end, center, selected_days=None):
         records.append((current // 10**9, path))
         pending.clear()
 
-    def tables():
+    def windows():
         if selected_days is None:
-            yield from read_fused(root, start, end)
-        else:
-            from datetime import date
+            return [(start, end)]
+        from datetime import date
 
-            from .stec_incremental import DAY_NS, EPOCH
+        from .stec_incremental import DAY_NS, EPOCH
 
-            for day in sorted(selected_days):
-                first = (date.fromisoformat(day) - EPOCH).days * DAY_NS
-                yield from read_fused(root, max(first, start or 0), min(first + DAY_NS, end or 2**63 - 1))
+        result = []
+        for day in sorted(selected_days):
+            first = (date.fromisoformat(day) - EPOCH).days * DAY_NS
+            result.append(
+                (first if start is None else max(first, start), first + DAY_NS if end is None else min(first + DAY_NS, end))
+            )
+        return result
 
-    for table in tqdm(tables(), desc="Read calibrated STEC", unit="batch"):
+    for table in tqdm(read_fused(root, windows()), desc="Read calibrated STEC", unit="batch"):
         points = {
             k: table[k].to_numpy().astype(str) if k in ("satellite_system", "fusion_group") else table[k].to_numpy() for k in FIELDS
         }

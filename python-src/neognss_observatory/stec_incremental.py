@@ -23,6 +23,32 @@ DAY_NS = 86400 * 10**9
 EPOCH = date(1980, 1, 6)
 
 
+def window_tables(paths, windows=((None, None),)):
+    """Rows of GPST-ordered Parquet files inside any half-open [start_ns, end_ns) window.
+
+    None bounds are open. Row groups outside every window are skipped using gpst_ns statistics.
+    """
+    bounds = [(-(2**63) if a is None else a, 2**63 - 1 if b is None else b) for a, b in windows]
+    for path in paths:
+        parquet = pq.ParquetFile(path)
+        column = parquet.schema_arrow.get_field_index("gpst_ns")
+        groups = []
+        for i in range(parquet.metadata.num_row_groups):
+            stats = parquet.metadata.row_group(i).column(column).statistics
+            if stats is None or not stats.has_min_max or any(stats.min < b and stats.max >= a for a, b in bounds):
+                groups.append(i)
+        for batch in parquet.iter_batches(batch_size=65536, row_groups=groups):
+            times = batch.column("gpst_ns").to_numpy()
+            keep = np.zeros(len(times), bool)
+            for a, b in bounds:
+                keep |= (times >= a) & (times < b)
+            table = pa.Table.from_batches([batch])
+            if keep.all():
+                yield table
+            elif keep.any():
+                yield table.filter(keep)
+
+
 def selection(root, start=None, end=None):
     setup = validate_setup(json.loads((root / "setup.json").read_text()))
     days = []

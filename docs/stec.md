@@ -209,8 +209,10 @@ consumers must respect those boundaries.
   scatter, datum and coverage. Failed fits retain diagnostics and null bias.
 - `fused/GPST-*.parquet`: calibrated equal-mean output, contributors, weights,
   difference, status, provisional flag and `segment_start_gpst_ns`.
-- `read_stec()` exposes finalized pair estimates using published tables only;
-  `read_fused()` reads the published fusion product.
+- `read_stec(root, start_ns, end_ns)` exposes finalized pair estimates using
+  published tables only; `read_fused(root, windows)` reads the published fusion
+  product inside a list of half-open `[start_ns, end_ns)` GPST nanosecond
+  windows (`None` is open). Both skip Parquet row groups outside the request.
 - `summary.json` and Parquet metadata carry scientific policies and quality.
   `state.json` is the incremental continuation checkpoint.
 

@@ -9,7 +9,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .stec_incremental import DAY_NS, EPOCH
+from .stec_incremental import DAY_NS, EPOCH, window_tables
 
 SCHEMA = pa.schema(
     [
@@ -193,16 +193,6 @@ def write_fused(root, metadata, from_ns=None):
     return counts
 
 
-def read_fused(root, start_ns=None, end_ns=None):
-    root = Path(root)
-    for path in sorted((root / "fused").glob("*.parquet")):
-        for batch in pq.ParquetFile(path).iter_batches():
-            t = pa.Table.from_batches([batch])
-            times = t["gpst_ns"].to_numpy()
-            keep = np.ones(len(t), bool)
-            if start_ns is not None:
-                keep &= times >= start_ns
-            if end_ns is not None:
-                keep &= times < end_ns
-            if np.any(keep):
-                yield t.filter(keep)
+def read_fused(root, windows=((None, None),)):
+    """Fused rows inside any half-open GPST nanosecond window; see window_tables."""
+    return window_tables(sorted((Path(root) / "fused").glob("*.parquet")), windows)

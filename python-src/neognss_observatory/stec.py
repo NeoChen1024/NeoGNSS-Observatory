@@ -30,6 +30,7 @@ from .stec_incremental import (
     selection,
     signature,
     validate_events,
+    window_tables,
 )
 from .stec_pairs import antenna_metadata, build_pairs
 from .stec_products import StecProducts
@@ -99,23 +100,11 @@ def leveled(table, ids, offsets):
     return (table["phase_gf_m"].to_numpy() + offsets[indices]) / table["meters_per_tecu"].to_numpy()
 
 
-def sample_batches(root, start_ns=None, end_ns=None):
+def sample_tables(root, start_ns=None, end_ns=None):
     paths = sorted((root / "samples").glob("*.parquet"))
     if not paths:
         raise ValueError("No STEC sample tables")
-    for path in paths:
-        parquet = pq.ParquetFile(path)
-        column = parquet.schema_arrow.get_field_index("gpst_ns")
-        groups = []
-        for i in range(parquet.metadata.num_row_groups):
-            stats = parquet.metadata.row_group(i).column(column).statistics
-            if stats is not None and stats.has_min_max:
-                if start_ns is not None and stats.max < start_ns:
-                    continue
-                if end_ns is not None and stats.min >= end_ns:
-                    continue
-            groups.append(i)
-        yield from parquet.iter_batches(batch_size=65536, row_groups=groups)
+    return window_tables(paths, [(start_ns, end_ns)])
 
 
 def calibrate(root, settings, metadata, from_ns=None, origin_ns=None, previous=None):
@@ -167,12 +156,7 @@ def calibrate(root, settings, metadata, from_ns=None, origin_ns=None, previous=N
             rows.append(fit)
         pieces.clear()
 
-    for batch in tqdm(sample_batches(root, from_ns), desc="Receiver DCB", unit="batch"):
-        table = pa.Table.from_batches([batch])
-        if from_ns is not None:
-            table = table.filter(pa.compute.greater_equal(table["gpst_ns"], from_ns))
-        if not len(table):
-            continue
+    for table in tqdm(sample_tables(root, from_ns), desc="Receiver DCB", unit="batch"):
         times = table["gpst_ns"].to_numpy()
         if origin is None:
             origin = int(times[0])
@@ -222,18 +206,8 @@ def read_stec(root, start_ns=None, end_ns=None):
             }
     arcs = pq.read_table(root / "arcs.parquet").sort_by("arc_id")
     provisional = arcs["provisional"].to_numpy().astype(bool)
-    for batch in sample_batches(root, start_ns, end_ns):
-        t = pa.Table.from_batches([batch])
+    for t in sample_tables(root, start_ns, end_ns):
         times = t["gpst_ns"].to_numpy()
-        keep = np.ones(len(t), bool)
-        if start_ns is not None:
-            keep &= times >= start_ns
-        if end_ns is not None:
-            keep &= times < end_ns
-        t = t.filter(keep)
-        times = times[keep]
-        if not len(t):
-            continue
         pair_ids = t["pair_id"].to_numpy()
         bias = np.full(len(t), np.nan)
         windows = np.full(len(t), -1, dtype=np.int64)
