@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Small shared publication helper for disposable research runs."""
+"""Small shared publication helpers: disposable research runs and JSON files."""
 
 import functools
 import json
+import os
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -10,9 +12,26 @@ import click
 
 
 def write_json(path, value):
+    """Exclusively create PATH; never replaces an existing file."""
     with path.open("x") as stream:
         json.dump(value, stream, indent=2)
         stream.write("\n")
+
+
+def replace_json(path, value):
+    """Durably and atomically replace PATH; readers see the old or the new document."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, indent=2, ensure_ascii=False, allow_nan=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def staged_output(function):

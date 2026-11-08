@@ -3,7 +3,7 @@
 
 import json
 from dataclasses import dataclass
-from decimal import ROUND_HALF_EVEN, Decimal
+from decimal import Decimal
 from pathlib import Path
 
 import click
@@ -12,13 +12,10 @@ import pyarrow as pa
 
 from . import _native
 from .cnex_stream import LIVE_ERRORS, live_options, live_source, write_jsonl
+from .gpst import decimal_ns
 from .setup_metadata import validate_setup
 from .stec import NATIVE_DEFAULTS, antenna_position
 from .stec_pairs import build_pairs
-
-
-def nanoseconds(t):
-    return int((t * 10**9).to_integral_value(rounding=ROUND_HALF_EVEN))
 
 
 @dataclass(frozen=True)
@@ -82,14 +79,14 @@ class RealtimeStec:
                 if row["kind"] == "RECEIVER_RESTART":
                     if row["gpst"] is None:
                         raise ValueError("Cannot place untimed restart in realtime STEC")
-                    restart.append(nanoseconds(row["gpst"]))
+                    restart.append(decimal_ns(row["gpst"]))
                 elif row["kind"] == "EPOCH_COMPLETION":
                     # INCOMPLETE groups carry no observations and do not advance the watermark.
                     if row["scope"] == "OBSERVATION" and row["payload"]["epoch_completion"]["completion"] == "COMPLETE":
                         if row["gpst"] is None:
                             raise ValueError("Expected timed complete observation epoch")
-                        complete = max(complete, nanoseconds(row["gpst"]))
-                        completed_epochs.append(nanoseconds(row["gpst"]))
+                        complete = max(complete, decimal_ns(row["gpst"]))
+                        completed_epochs.append(decimal_ns(row["gpst"]))
                 elif row["scope"] == "NAVIGATION" or row["kind"] in (
                     "OBSERVATION_GAP",
                     "EPOCH_INTERVAL_SHORT",

@@ -16,8 +16,9 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
-from .cnex_import import ORIGIN, day_directories, latest_parts
+from .cnex_import import day_directories, latest_parts
 from .cnex_stream import restart_pieces, untimed_restarts
+from .gpst import EPOCH_DATE, decimal_ticks
 from .research_output import staged_output, write_json
 
 
@@ -71,12 +72,11 @@ class SbasGridProcessor:
             stamp, reset = item
             if reset:
                 if self.progress is not None and stamp >= self.progress:
-                    collect(self.native.advance(*divmod(int(stamp * 10**12), 10**12)))
+                    collect(self.native.advance(*decimal_ticks(stamp)))
                 self.native.discontinuity()
                 self.progress = None
             if self.progress is None or stamp > self.progress:
-                ticks = int(stamp * 10**12)
-                collect(self.native.advance(*divmod(ticks, 10**12)))
+                collect(self.native.advance(*decimal_ticks(stamp)))
                 self.progress = stamp
 
         def accept(batch):
@@ -192,7 +192,7 @@ class SnapshotSink:
             if day != self.day:
                 self.close()
                 self.day = day
-            directory = self.output / (ORIGIN + timedelta(days=day)).strftime("%Y/%m/%d")
+            directory = self.output / (EPOCH_DATE + timedelta(days=day)).strftime("%Y/%m/%d")
             directory.mkdir(parents=True, exist_ok=True)
             for kind, batches in output.items():
                 for batch in batches:

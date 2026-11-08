@@ -5,6 +5,8 @@ import gzip
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
+from .gpst import EPOCH
+
 
 def label(line):
     return line[60:80].strip()
@@ -21,7 +23,7 @@ def timestamp(line):
         raise ValueError("Invalid ANTEX validity seconds") from error
     if not seconds.is_finite() or not 0 <= seconds < 60:
         raise ValueError("Invalid ANTEX validity seconds")
-    delta = dt - datetime(1980, 1, 6)
+    delta = dt - EPOCH
     return Decimal(delta.days * 86400 + delta.seconds) + seconds
 
 

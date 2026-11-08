@@ -10,9 +10,11 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 
 import numpy as np
+
+from .gpst import HOUR_NS, decimal_ns
 
 DTYPE = np.dtype(
     [
@@ -26,7 +28,6 @@ DTYPE = np.dtype(
         ("longitude", "f8"),
     ]
 )
-HOUR_NS = 3600 * 10**9
 MAX_LINE = 1024 * 1024
 
 
@@ -47,7 +48,7 @@ def parse_epoch(line):
         t = Decimal(row["gpst"])
         if not t.is_finite() or t < 0:
             raise ValueError("Invalid GPST")
-        ns = int((t * 10**9).to_integral_value(rounding=ROUND_HALF_EVEN))
+        ns = decimal_ns(t)
         if ns > np.iinfo(np.int64).max:
             raise ValueError("GPST outside viewer nanosecond range")
     except (InvalidOperation, TypeError, KeyError) as error:

@@ -24,12 +24,13 @@ from tqdm import tqdm
 
 from . import _native
 from .cnex_stream import CATALOGS, catalog_batches
+from .gpst import EPOCH_DATE
+from .research_output import replace_json
 from .setup_antex import select_antenna
 from .setup_metadata import component, epoch_period, validate_setup
 from .setup_tracking import populate_tracking
 
 PATTERN = re.compile(r"r([0-9]{2})-([a-z][a-z0-9-]*)-part([0-9]{2})\.parquet\Z")
-ORIGIN = date(1980, 1, 6)
 SBF_FILENAME = re.compile(r"[A-Za-z0-9_]{4}[0-9]{3}[A-Za-z0-9]\.[0-9]{2}_\Z")
 
 
@@ -170,7 +171,7 @@ def day_directories(station):
 
 
 def day_path(day):
-    return (ORIGIN + timedelta(days=int(day))).strftime("%Y/%m/%d")
+    return (EPOCH_DATE + timedelta(days=int(day))).strftime("%Y/%m/%d")
 
 
 def dictionary_columns(schema):
@@ -222,14 +223,6 @@ def next_name(directory, catalog, mode):
     if revision > 99 or part > 99:
         raise ValueError("Two-digit revision/part space exhausted")
     return f"r{revision:02d}-{catalog}-part{part:02d}.parquet"
-
-
-def write_json(path, value):
-    temporary = path.with_name(f".{path.name}.tmp")
-    with temporary.open("x", encoding="utf-8") as out:
-        json.dump(value, out, ensure_ascii=False, indent=2)
-        out.write("\n")
-    temporary.replace(path)
 
 
 @click.group()
@@ -286,7 +279,7 @@ def initialize(output, setup_file, vendor_config, antenna_catalogs):
             click.echo(f"Selected {count} {kind} antenna calibration record(s) from {catalog}", err=True)
         output.parent.mkdir(parents=True, exist_ok=True)
         stage = Path(tempfile.mkdtemp(prefix=".cnex-init-", dir=output.parent))
-        write_json(stage / "setup.json", setup)
+        replace_json(stage / "setup.json", setup)
         if config:
             shutil.copyfile(config_source, stage / config)
         if calibration is not None:
@@ -567,10 +560,10 @@ def run(
             }
             next_state = station / day_path(snapshot["summary"]["cursor_day"]) / "import-state.json"
             next_state.parent.mkdir(parents=True, exist_ok=True)
-            write_json(next_state, continuation)
+            replace_json(next_state, continuation)
             if current_state_path and current_state_path.resolve() != next_state:
                 previous = json.loads(current_state_path.read_text(encoding="utf-8"))
-                write_json(current_state_path, {**previous, "continued": True})
+                replace_json(current_state_path, {**previous, "continued": True})
             current_state_path = next_state
             if outputs:
                 tqdm.write(f"Published {len(outputs)} parts; continuation: {next_state}", file=sys.stderr)

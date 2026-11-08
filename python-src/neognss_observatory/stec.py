@@ -17,15 +17,14 @@ from tqdm import tqdm
 
 from . import _native
 from .antenna import ANTENNA_DEFAULTS, antenna_options
+from .gpst import DAY_NS, EPOCH_DATE
+from .research_output import replace_json
 from .stec_fusion import write_fused
 from .stec_incremental import (
-    DAY_NS,
-    EPOCH,
     DailySamples,
     native_table,
     observation_batches,
     publication,
-    replace_json,
     replace_table,
     selection,
     signature,
@@ -486,7 +485,7 @@ def cli(input_dir, config, output, start, end, rebuild):
             day_generations = old.get("day_generations", {}).copy() if old else {}
             for path in sorted((stage / "samples").glob("*.parquet")):
                 label = path.stem.removeprefix("GPST-")
-                if not old or (candidates and (date.fromisoformat(label) - EPOCH).days * DAY_NS + DAY_NS > changed_from):
+                if not old or (candidates and (date.fromisoformat(label) - EPOCH_DATE).days * DAY_NS + DAY_NS > changed_from):
                     day_generations[label] = generation
             estimated = sum(r["status"] == "estimated" for r in fits)
             summary.update(

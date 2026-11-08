@@ -18,7 +18,6 @@ import requests
 from .download_common import (
     AuthError,
     DownloadError,
-    atomic_json,
     database,
     digest_file,
     local_path,
@@ -28,6 +27,7 @@ from .download_common import (
     tool_identity,
 )
 from .download_plan import summarize
+from .research_output import replace_json
 
 
 def quarantine(path):
@@ -192,7 +192,7 @@ def download_one(root, item, http, old=None, update=lambda size, total: None):
                     "expected_digest": item.get("expected_digest"),
                     "validator": validator(response.headers),
                 }
-                atomic_json(metadata_path, metadata)
+                replace_json(metadata_path, metadata)
                 update(offset, total or remote_size)
                 with partial.open("ab" if offset else "wb") as stream:
                     for block in response.iter_content(256 * 1024):

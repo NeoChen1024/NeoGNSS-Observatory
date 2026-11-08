@@ -10,7 +10,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from .ubx_restitch import sha256, source_identity, write_json, write_plan
+from .research_output import write_json
+from .ubx_restitch import sha256, source_identity, write_plan
 
 
 def publish(plan, output):

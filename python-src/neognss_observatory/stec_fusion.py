@@ -9,7 +9,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .stec_incremental import DAY_NS, EPOCH, window_tables
+from .gpst import DAY_NS, EPOCH_DATE
+from .stec_incremental import window_tables
 
 SCHEMA = pa.schema(
     [
@@ -142,7 +143,9 @@ def write_fused(root, metadata, from_ns=None):
     start = (from_ns // DAY_NS) * DAY_NS if from_ns is not None else None
     previous = {}
     paths = sorted(destination.glob("GPST-*.parquet"))
-    earlier = [p for p in paths if start is not None and p.stem < "GPST-" + (EPOCH + timedelta(days=start // DAY_NS)).isoformat()]
+    earlier = [
+        p for p in paths if start is not None and p.stem < "GPST-" + (EPOCH_DATE + timedelta(days=start // DAY_NS)).isoformat()
+    ]
     if earlier:
         for batch in pq.ParquetFile(earlier[-1]).iter_batches():
             for row in batch.to_pylist():
@@ -163,7 +166,7 @@ def write_fused(root, metadata, from_ns=None):
                     writer.close()
                     temporary.replace(path)
                 day = int(d)
-                path = destination / f"GPST-{(EPOCH+timedelta(days=day)).isoformat()}.parquet"
+                path = destination / f"GPST-{(EPOCH_DATE + timedelta(days=day)).isoformat()}.parquet"
                 temporary = path.with_suffix(".parquet.new")
                 schema = SCHEMA.with_metadata(
                     {b"ngo": json.dumps(metadata | dict(product="fused_stec", uncertainty="not inferred from pair count")).encode()}

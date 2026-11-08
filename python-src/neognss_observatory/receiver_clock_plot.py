@@ -19,10 +19,9 @@ from .research_output import staged_output
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from .gpst import calendar, label
+from .gpst import HOUR_NS, calendar, label
 from .research_output import write_json
 
-HOUR_NS = 3600 * 10**9
 COLUMNS = (
     "gpst_ns",
     "clock_arc_id",

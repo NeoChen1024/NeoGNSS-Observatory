@@ -6,8 +6,7 @@ import os
 import shutil
 import uuid
 from contextlib import contextmanager
-from datetime import date, timedelta
-from decimal import localcontext
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -17,10 +16,8 @@ import pyarrow.parquet as pq
 
 from .batch_pipeline import prefetched
 from .cnex_import import day_directories, dictionary_columns, latest_parts
+from .gpst import DAY_NS, EPOCH_DATE, decimal_ns
 from .setup_metadata import validate_setup
-
-DAY_NS = 86400 * 10**9
-EPOCH = date(1980, 1, 6)
 
 
 def window_tables(paths, windows=((None, None),)):
@@ -171,16 +168,12 @@ def validate_events(paths, setup_id):
                         )
                     if not gpst.is_finite() or gpst < 0:
                         raise ValueError(f"Invalid RECEIVER_RESTART GPST: {path}")
-                    with localcontext() as ctx:
-                        ctx.prec = 50
-                        ticks = int(gpst * 10**12)
-                    ns, remainder = divmod(ticks, 1000)
-                    ns += int(remainder > 500 or (remainder == 500 and ns % 2))
+                    ns = decimal_ns(gpst)
                     if ns > 2**63 - 1:
                         raise ValueError(f"RECEIVER_RESTART outside native nanosecond range: {path}")
-                    if ns in restarts and restarts[ns] != ticks:
+                    if ns in restarts and restarts[ns] != gpst:
                         raise ValueError(f"Distinct restart GPST values collide at nanosecond precision: {path}")
-                    restarts[ns] = ticks
+                    restarts[ns] = gpst
     return sorted(restarts)
 
 
@@ -226,14 +219,6 @@ def publication(target, rebuild=False):
         click.echo(f"Previous output retained at {backup}", err=True)
 
 
-def replace_json(path, value):
-    temporary = path.with_suffix(path.suffix + ".new")
-    with temporary.open("x") as stream:
-        json.dump(value, stream, indent=2, allow_nan=False)
-        stream.write("\n")
-    temporary.replace(path)
-
-
 def replace_table(path, table):
     temporary = path.with_suffix(path.suffix + ".new")
     pq.write_table(table, temporary, compression="zstd", compression_level=3)
@@ -264,7 +249,7 @@ class DailySamples:
             if day != self.day:
                 self.close()
                 self.day = int(day)
-                label = (EPOCH + timedelta(days=self.day)).isoformat()
+                label = (EPOCH_DATE + timedelta(days=self.day)).isoformat()
                 self.changed.add(label)
                 self.path = self.root / "samples" / f"GPST-{label}.parquet"
                 self.path.parent.mkdir(exist_ok=True)

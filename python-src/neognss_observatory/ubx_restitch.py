@@ -6,7 +6,6 @@ import json
 import mmap
 import os
 import struct
-import sys
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,8 +17,8 @@ import click
 from tqdm import tqdm
 
 from . import _native
-from .gpst import label_ms as gpst_label
 from .protocol import ProtocolWarnings, require_ubx
+from .research_output import write_json
 
 RECORD = struct.Struct("<QQqqQIIIi")
 UNKNOWN = -(1 << 63)
@@ -30,12 +29,6 @@ RAWX = 128
 def sha256(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def write_json(path, value):
-    with path.open("x") as stream:
-        json.dump(value, stream, indent=2)
-        stream.write("\n")
 
 
 def write_plan(path, plan):

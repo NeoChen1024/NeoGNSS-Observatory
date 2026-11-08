@@ -7,8 +7,8 @@ import multiprocessing
 import os
 import tempfile
 import zipfile
-from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from datetime import date
 from pathlib import Path
 
 import click
@@ -16,8 +16,9 @@ import numpy as np
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from .gpst import calendar, label
+from .gpst import DAY_NS, EPOCH_DATE, HOUR_NS, calendar, label
 from .map_assets import coastline_sha512, with_coastline
+from .research_output import replace_json
 from .sbas_composite import (
     PRIORITY,
     grid_files,
@@ -27,9 +28,8 @@ from .sbas_composite import (
 )
 from .sbas_grid_render import coastline_parts, parse_hour
 from .stec_fusion import read_fused
-from .stec_incremental import publication, replace_json
+from .stec_incremental import publication
 
-HOUR_NS = 3_600_000_000_000
 FIELDS = (
     "gpst_ns",
     "segment_start_gpst_ns",
@@ -77,13 +77,9 @@ def prepare_hours(root, scratch, start, end, center, selected_days=None):
     def windows():
         if selected_days is None:
             return [(start, end)]
-        from datetime import date
-
-        from .stec_incremental import DAY_NS, EPOCH
-
         result = []
         for day in sorted(selected_days):
-            first = (date.fromisoformat(day) - EPOCH).days * DAY_NS
+            first = (date.fromisoformat(day) - EPOCH_DATE).days * DAY_NS
             result.append(
                 (first if start is None else max(first, start), first + DAY_NS if end is None else min(first + DAY_NS, end))
             )

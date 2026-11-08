@@ -31,11 +31,11 @@ from rich.logging import RichHandler
 
 from .download_common import (
     DownloadError,
-    atomic_json,
     json_digest,
     local_path,
     root_lock,
 )
+from .research_output import replace_json
 
 LOG = logging.getLogger("neognss_observatory.mosaic_push")
 
@@ -765,7 +765,7 @@ class Mirror:
 
     def save(self):
         with self.state_lock:
-            atomic_json(self.state_path, self.state)
+            replace_json(self.state_path, self.state)
 
     def save_record(self, relative, record):
         # Each file has one stage owner. Persist detached records so serialization

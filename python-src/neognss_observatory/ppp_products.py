@@ -13,7 +13,7 @@ from .gpst import EPOCH, calendar
 
 def bias_time(text):
     year, day, seconds = map(int, text.split(":"))
-    return int(((dt.datetime(year, 1, 1) - EPOCH).total_seconds() + (day - 1) * 86400 + seconds) * 1_000_000_000)
+    return (((dt.datetime(year, 1, 1) - EPOCH).days + day - 1) * 86400 + seconds) * 10**9
 
 
 class LocalProducts:

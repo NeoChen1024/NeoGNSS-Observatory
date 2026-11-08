@@ -13,7 +13,6 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .download_common import (
-    GPS_EPOCH,
     DownloadError,
     days,
     gps_week,
@@ -24,6 +23,7 @@ from .download_common import (
 )
 from .download_http import ARCHIVE, DEFAULT_NETWORK
 from .download_plan_io import plan_digest, read_plan
+from .gpst import EPOCH_DATE
 
 
 class DirectoryLinks(HTMLParser):
@@ -77,7 +77,7 @@ def read_config(path):
         for key in ("start", "end"):
             if key in config:
                 config[key] = dt.date.fromisoformat(str(config[key])).isoformat()
-        if "start" not in config or dt.date.fromisoformat(config["start"]) < GPS_EPOCH:
+        if "start" not in config or dt.date.fromisoformat(config["start"]) < EPOCH_DATE:
             raise ValueError("start must be on or after 1980-01-06")
         if config.get("end", config["start"]) < config["start"]:
             raise ValueError("end precedes start")
@@ -203,7 +203,7 @@ class Inventory:
         if not numbers:
             raise DownloadError(f"Cannot discover latest directory for {product['id']}")
         if product["layout"] == "week":
-            return GPS_EPOCH + dt.timedelta(days=max(numbers) * 7 + 6)
+            return EPOCH_DATE + dt.timedelta(days=max(numbers) * 7 + 6)
         year = max(numbers)
         if product["layout"] == "day":
             doy = max(self.directories(f"{base}{year}/"))
@@ -370,7 +370,7 @@ def make_plan(
     inventory_update(0)
     for index, week in enumerate(weeks, 1):
         for day in days(
-            max(first, GPS_EPOCH + dt.timedelta(days=week * 7)), min(last, GPS_EPOCH + dt.timedelta(days=week * 7 + 6))
+            max(first, EPOCH_DATE + dt.timedelta(days=week * 7)), min(last, EPOCH_DATE + dt.timedelta(days=week * 7 + 6))
         ):
             for product in config["products"]:
                 if product["layout"] == "static":

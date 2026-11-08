@@ -4,7 +4,6 @@
 import queue
 import sys
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import click
@@ -16,6 +15,7 @@ from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 from PySide6 import QtCore, QtWidgets
 
+from .gpst import calendar
 from .map_assets import coastline_parts, with_coastline
 from .stec_view_data import JsonlReader, Window
 
@@ -197,7 +197,7 @@ class Viewer(QtWidgets.QMainWindow):
         if self.pause.isChecked():
             state = "DISPLAY PAUSED | " + state
         if self.model.latest is not None:
-            date = datetime(1980, 1, 6) + timedelta(seconds=self.model.latest // 10**9)
+            date = calendar(self.model.latest // 10**9)
             state += f" | {date:%Y-%m-%d %H:%M:%S} GPST | {self.model.count:,} samples"
         if self.model.trimmed:
             state += " | capacity limit: window shortened"

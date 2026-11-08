@@ -16,7 +16,7 @@ from tqdm import tqdm
 from . import _native
 from .antenna import antenna_options, model_metadata, receiver_model
 from .dataset_inputs import recordings
-from .gpst import EPOCH, calendar
+from .gpst import EPOCH
 from .ppp_products import Products
 from .protocol import ProtocolWarnings, protocol_option
 from .research_output import staged_output, write_json
@@ -28,7 +28,8 @@ def time_ns(value):
     date = dt.datetime.fromisoformat(str(value))
     if date.tzinfo:
         raise ValueError("Observation windows are GPST calendar times without a timezone suffix")
-    return int((date - EPOCH).total_seconds() * 1e9)
+    delta = date - EPOCH
+    return (delta.days * 86400 + delta.seconds) * 10**9 + delta.microseconds * 1000
 
 
 def position_summary(final):

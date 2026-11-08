@@ -6,12 +6,10 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
-import os
 import sqlite3
-import tempfile
 from pathlib import Path, PurePosixPath
 
-GPS_EPOCH = dt.date(1980, 1, 6)
+from .gpst import EPOCH_DATE
 
 
 class DownloadError(Exception):
@@ -38,21 +36,6 @@ def json_digest(value):
     return hashlib.sha512(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def atomic_json(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(value, stream, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
-
-
 def safe_relative(value):
     path = PurePosixPath(value)
     if not value or path.is_absolute() or ".." in path.parts or "\\" in value or any(c in value for c in "?#%\x00\r\n"):
@@ -70,7 +53,7 @@ def local_path(root, relative):
 
 def gps_week(day):
     # Calendar bucketing only, NOT a conversion of UTC observation epochs to GPST.
-    return (day - GPS_EPOCH).days // 7
+    return (day - EPOCH_DATE).days // 7
 
 
 def days(start, end):
