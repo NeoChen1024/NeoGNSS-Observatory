@@ -175,7 +175,6 @@ std::shared_ptr<CnexBatch> batch(const std::vector<Row> &rows) {
     return out;
 }
 Tick seconds(int64_t s) { return Tick(s) * ps; }
-Tick duration(double s) { return Tick(std::nearbyint(s * double(ps))); }
 Value tv(std::optional<Tick> t) { return t ? Value(*t) : Value{}; }
 int64_t integer(const Row &r, const char *k) {
     return std::get<int64_t>(r.at(k));
@@ -449,11 +448,10 @@ struct BroadcastMessageDecoder::State {
             u("health_raw", 64, 6);
             fields["iodc"] = int64_t((b.u(70, 2) << 8) | b.u(168, 8));
             fields["l2_p_data_flag"] = bool(b.u(72, 1));
-            fields["tgd_s"] = b.s(160, 8) == -128
-                                  ? Value{}
-                                  : Value(duration(b.f(160, 8, -31)));
+            fields["tgd_s"] =
+                b.s(160, 8) == -128 ? Value{} : Value(b.offset(160, 8, -31));
             fields["toc_s"] = seconds(int64_t(b.u(176, 16)) * 16);
-            fields["af0_s"] = duration(b.f(216, 22, -31));
+            fields["af0_s"] = b.offset(216, 22, -31);
             f("af1_s_s", 200, 16, -43);
             f("af2_s_s2", 192, 8, -55);
             fields["tgd_reference"] =
@@ -581,9 +579,10 @@ struct BroadcastMessageDecoder::State {
             f("omega0_rad", 144, 24, -23, true, pi);
             f("omega_rad", 168, 24, -23, true, pi);
             f("m0_rad", 192, 24, -23, true, pi);
+            // IS-GPS-200 Table 20-VI: one 11-bit two's-complement af0 at
+            // 2^-20 s, split as 8 MSBs (bits 216-223) and 3 LSBs (235-237).
             fields["af0_s"] =
-                duration(double(b.s(216, 8)) * std::ldexp(1., -20) +
-                         double(b.u(235, 3)) * std::ldexp(1., -17));
+                binary_seconds(b.s(216, 8) * 8 + int64_t(b.u(235, 3)), 20);
             f("af1_s_s", 224, 11, -38);
         } else if (id == 51 && (q || sf == 5)) {
             kind = "almanac_epoch";
@@ -652,7 +651,7 @@ struct BroadcastMessageDecoder::State {
                 fields[std::string(i < 4 ? "alpha" : "beta") +
                        std::to_string(i % 4)] = b.f(56 + 8 * i, 8, exps[i]);
             f("a1_s_s", 120, 24, -50);
-            fields["a0_s"] = duration(b.f(144, 32, -30));
+            fields["a0_s"] = b.offset(144, 32, -30);
             fields["tot_s"] = seconds(int64_t(b.u(176, 8)) * 4096);
             u("week_raw", 184, 8);
             fields["delta_tls_s"] = int64_t(b.s(192, 8));

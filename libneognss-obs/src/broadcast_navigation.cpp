@@ -294,7 +294,8 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
         if (lnav) {
             for (int word = 0; word < 10; ++word)
                 setbitu(data, word * 24, 24, getbitu(raw, word * 30, 24));
-            if (data[0] != 0x8b)
+            // Like the broadcast decoder, never use HOW alert-marked subframes.
+            if (data[0] != 0x8b || getbitu(data, 41, 1))
                 continue;
             id = int(getbitu(data, 43, 3));
             count = 3;

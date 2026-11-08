@@ -42,6 +42,5 @@ struct DecodedMessage {
 };
 std::shared_ptr<CnexBatch> batch(const std::vector<Row> &rows);
 Tick seconds(int64_t s);
-Tick duration(double s);
 std::pair<std::string, Row> sbas_fields(const SBAS::Message &message);
 } // namespace neognss_obs::broadcast_detail
