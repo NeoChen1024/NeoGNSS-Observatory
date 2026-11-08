@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 from . import _native
 from .cnex_import import ORIGIN, day_directories, latest_parts
-from .cnex_stream import arrival_position, untimed_restarts
+from .cnex_stream import restart_pieces, untimed_restarts
 from .research_output import staged_output, write_json
 
 
@@ -87,19 +87,11 @@ class SbasGridProcessor:
             if len(values):
                 self.progress = values[-1].as_py()
 
-        def pieces(batch):
-            begin = 0
-            while self.restarts and (stop := arrival_position(batch, self.restarts[0])) < batch.num_rows:
-                if stop > begin:
-                    yield batch.slice(begin, stop - begin)
-                self.native.discontinuity()
-                self.progress = None
-                self.restarts.pop(0)
-                begin = stop
-            if begin < batch.num_rows or not begin:
-                yield batch.slice(begin)
+        def restart():
+            self.native.discontinuity()
+            self.progress = None
 
-        for batch in (piece for whole in batches for piece in pieces(whole)):
+        for batch in (piece for whole in batches for piece in restart_pieces(whole, self.restarts, restart)):
             # Controls are sparse epoch-level operations, not per-frame callbacks.
             stamps = batch["nav_epoch_gpst"].to_pylist()
             known = [(i, t) for i, t in enumerate(stamps) if t is not None]
@@ -127,7 +119,7 @@ class SbasGridProcessor:
         result = self.process(
             group.catalogs.get("raw-bits", ()), controls(group.catalogs), untimed_restarts(group.catalogs.get("events", ()))
         )
-        if group.notice and group.notice.startswith("discontinuity:"):
+        if group.discontinuity:
             self.native.discontinuity()
             self.progress = None
         return result

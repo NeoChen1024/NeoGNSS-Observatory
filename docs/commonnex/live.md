@@ -9,9 +9,10 @@ for component ownership and interop requirements.
 
 `neognss_observatory.cnex_stream.CnexBatchGroup` contains a session-local
 `sequence`, a mapping from catalog names to tuples of PyArrow RecordBatches,
-and an optional transport `notice`. Missing catalogs have no rows to deliver.
-Archive importing uses the same grouping helper, retaining empty schemas for
-its daily writer. A group is not an epoch or an atomic scientific transaction.
+an optional human-readable `notice` and a boolean `discontinuity`. Missing
+catalogs have no rows to deliver. Archive importing uses the same native catalog
+conversion, retaining empty schemas for its daily writer. A group is not an
+epoch or an atomic scientific transaction.
 Batch boundaries neither complete observations nor reset state.
 
 `CnexStream` is a single-owner Python producer over the native engine:
@@ -30,16 +31,19 @@ the threshold is reached. Feeding again without draining raises instead of
 growing indefinitely. Exported batches retain their buffers independently of
 the engine. Do not mutate buffers shared with other consumers.
 
-`discontinuity(reason)` drains preceding records with a boundary notice and
-creates fresh framing, epoch and receiver-time context for subsequent input.
-Consumers apply this notice **after** the group's records. It denotes possible
-transport data loss, not a receiver reboot. `finish()` reports pending frame
+`discontinuity(reason)` drains preceding records as a group with
+`discontinuity=True` and creates fresh framing, epoch and receiver-time context
+for subsequent input. Consumers reset their state **after** the group's records.
+It denotes possible transport data loss, not a receiver reboot. Only the
+`discontinuity` flag carries this boundary; `notice` text is diagnostics (for
+example partial-telemetry counts or the `finish()` tail report) and must not be
+parsed to change processing state. `finish()` reports pending frame
 bytes, measurement epoch and MeasExtra counts; it does not fabricate completion.
 Both operations emit pending telemetry with `collection_complete=false` before
 ending/resetting the engine. Ordinary file import instead checkpoints pending
 telemetry unless `--finalize-telemetry` explicitly declares a true end.
-Neither operation writes the transport notice into the CommonNEX Events table.
-Consumers must handle notices explicitly; a future persistent live sink must
+Neither operation writes the transport boundary into the CommonNEX Events table.
+Consumers must handle the flag explicitly; a future persistent live sink must
 preserve relevant boundaries rather than silently discarding them.
 
 Within a process, pass group objects directly (optionally through a bounded
@@ -59,7 +63,7 @@ Five seconds is a delivery target for completed records, not a hard real-time
 guarantee: scientific completion, scheduling and a slow consumer can add delay.
 At 1 Hz this normally groups about five measurement epochs. A slow consumer
 eventually causes an explicit input-buffer-full error; raw bytes are never
-silently dropped. TCP EOF/errors deliver a discontinuity notice, then raise.
+silently dropped. TCP EOF/errors deliver a discontinuity group, then raise.
 There is no implicit reconnect or inference that a reconnect is lossless.
 Callers may reconnect with the reset producer after handling the boundary.
 An explicit duration ends normally; closing the generator stops acquisition.
@@ -71,8 +75,9 @@ ngo-cnex-live -p sbf --host RECEIVER_IPV6 --port 2006 \
 ```
 
 `--output` exclusively creates a framed IPC capture, **not ParquetNEX**.
-Without it, the CLI prints JSON group summaries only. Summary row counts always
-list all four catalogs in canonical order, including zero counts.
+Without it, the CLI prints JSON group summaries only. Summaries contain
+`sequence`, `rows`, `notice` and `discontinuity`; row counts always list all four
+catalogs in canonical order, including zero counts.
 Setup metadata is supplied
 separately and must describe the input station; it is not bundled into each
 group. Observation input uses antenna 0 in this initial CLI. This command is
@@ -85,7 +90,8 @@ may leave an incomplete IPC tail, which the reader detects.
 
 1. Four-byte unsigned big-endian JSON-header byte length.
 2. UTF-8 header: `version`, `sequence`, `notice`, and ordered
-   `[catalog, payload_byte_length]` entries.
+   `[catalog, payload_byte_length]` entries. Writers add `"discontinuity": true`
+   only to boundary groups; readers treat an absent key as `false`.
 3. One self-contained Arrow IPC stream per listed catalog, including schema,
    any dictionaries and EOS. Each catalog may contain multiple batches.
 

@@ -80,3 +80,14 @@ def validate_setup(setup):
         if filename is not None:
             component(filename)
     return setup
+
+
+def epoch_period(setup):
+    """Native (seconds, picoseconds) of a validated Setup's twelve-digit epoch period.
+
+    Splits the decimal text exactly, without binary floats or Decimal context rounding.
+    """
+    seconds, fraction = setup["epoch_period_s"].split(".")
+    if int(seconds) > 2**63 - 1:
+        raise ValueError("epoch_period_s exceeds the native int64 seconds range")
+    return int(seconds), int(fraction)

@@ -133,8 +133,8 @@ Each input accepts a RecordBatch, Table or sequence of RecordBatches. Supply
 observation-completion Events with their observations so the last epoch can be
 released without waiting for the next epoch. The API does not mutate inputs;
 other consumers can reuse the same CommonNEX batches. It is single-owner state.
-`processor.feed(group)` accepts an existing `CnexBatchGroup`, handles preceding
-records before a transport-discontinuity notice, clears state afterward and
+`processor.feed(group)` accepts an existing `CnexBatchGroup`, handles its
+records before a transport `discontinuity` flag, clears state afterward and
 increments the output segment. Arc IDs are local to a processor segment.
 
 The underlying `_native.BroadcastNavigation(setup_id)` accepts RawBits Arrow

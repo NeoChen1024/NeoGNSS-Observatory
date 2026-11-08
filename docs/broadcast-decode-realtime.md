@@ -120,7 +120,7 @@ outputs = decoder.process(raw_bits_batch)
 
 `process` accepts a RecordBatch, Table or iterable of batches. Such callers own
 discontinuity delivery via `decoder.native.discontinuity()`; `feed` handles
-restart Events and group notices. Inputs and outputs remain independently owned.
+restart Events and the group `discontinuity` flag. Inputs and outputs remain independently owned.
 Native decoding/assembly releases the GIL; low-rate snapshot aggregation and
 JSONL presentation are Python consumers of typed results.
 

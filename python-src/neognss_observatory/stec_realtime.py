@@ -2,7 +2,6 @@
 """CommonNEX Arrow consumer and bounded live relative-STEC example."""
 
 import json
-from contextlib import nullcontext
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
@@ -12,7 +11,7 @@ import numpy as np
 import pyarrow as pa
 
 from . import _native
-from .cnex_stream import CnexStream, file_groups, tcp_groups
+from .cnex_stream import LIVE_ERRORS, live_options, live_source, write_jsonl
 from .setup_metadata import validate_setup
 from .stec import NATIVE_DEFAULTS, antenna_position
 from .stec_pairs import build_pairs
@@ -128,7 +127,7 @@ class RealtimeStec:
 
     def feed(self, group):
         result = self.process(**{k.replace("-", "_"): group.catalogs.get(k, ()) for k in ("observations", "raw-bits", "events")})
-        if group.notice and group.notice.startswith("discontinuity:"):
+        if group.discontinuity:
             self.navigation.clear()
             self._reset_processor()
             self.segment += 1
@@ -155,55 +154,23 @@ class RealtimeStec:
 
 
 @click.command()
-@click.option("--host", help="Receiver TCP hostname or IPv6 address without brackets.")
-@click.option("--port", type=click.IntRange(1, 65535), default=2006, show_default=True)
-@click.option(
-    "--input",
-    "input_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Replay UBX/SBF or XZ instead of TCP.",
-)
-@click.option("-p", "--protocol", type=click.Choice(["ubx", "sbf"]), required=True)
-@click.option("--setup", "setup_path", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
-@click.option("--max-latency", type=click.FloatRange(min=0, min_open=True), default=5.0, show_default=True)
-@click.option("--duration", type=click.FloatRange(min=0, min_open=True), help="TCP capture duration in seconds; default unlimited.")
+@live_options
 @click.option(
     "--elevation-deg", type=click.FloatRange(min=0, max=90, min_open=True, max_open=True), default=10.0, show_default=True
 )
-@click.option("--output", type=click.Path(path_type=Path), help="Exclusive-create JSONL file; default stdout.")
-def cli(host, port, input_path, protocol, setup_path, max_latency, duration, elevation_deg, output):
+def cli(host, port, input_path, protocol, setup_path, max_latency, duration, output, elevation_deg):
     """Emit per-epoch GPS/QZSS/Galileo/BeiDou IPP and relative STEC JSONL."""
-    if bool(host) == bool(input_path):
-        raise click.UsageError("Specify exactly one of --host or --input")
-    if input_path and duration is not None:
-        raise click.UsageError("--duration applies only to TCP")
     try:
-        setup = validate_setup(json.loads(setup_path.read_text()))
+        setup, groups = live_source(host, port, input_path, protocol, setup_path, max_latency, duration)
         consumer = RealtimeStec(setup, elevation_deg=elevation_deg)
-        seconds, fraction = setup["epoch_period_s"].split(".")
-        stream = CnexStream(protocol, setup["setup_id"], int(seconds), int(fraction))
-        groups = (
-            file_groups(input_path, stream)
-            if input_path
-            else tcp_groups(host, port, stream, max_latency=max_latency, duration=duration)
-        )
         click.echo("Relative phase STEC; broadcast geometry; no DCB/antenna correction. Waiting for usable ephemerides.", err=True)
-        with output.open("x") if output else nullcontext(click.get_text_stream("stdout")) as target:
-            for group in groups:
-                if group is None:
-                    continue
-                result = consumer.feed(group)
-                for row in consumer.json_epochs(result):
-                    target.write(json.dumps(row, allow_nan=False) + "\n")
-                target.flush()
-                if group.notice:
-                    click.echo(group.notice, err=True)
+        write_jsonl(groups, lambda group: consumer.json_epochs(consumer.feed(group)), output)
         click.echo(
             f"Decoded ephemerides: {consumer.navigation.decoded}; "
             f"families={json.dumps(consumer.navigation.decoded_by_family, sort_keys=True)}",
             err=True,
         )
-    except (OSError, ValueError, RuntimeError, BufferError, EOFError, OverflowError) as error:
+    except LIVE_ERRORS as error:
         raise click.ClickException(str(error)) from error
 
 

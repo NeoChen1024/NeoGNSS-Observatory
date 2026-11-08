@@ -3,9 +3,7 @@
 """Typed canonical broadcast decoding; JSONL is only the example CLI output."""
 
 import json
-from contextlib import nullcontext
 from decimal import Decimal
-from pathlib import Path
 
 import click
 import pyarrow as pa
@@ -13,13 +11,13 @@ import pyarrow.compute as pc
 
 from . import _native
 from .cnex_stream import (
-    CnexStream,
-    arrival_position,
-    file_groups,
-    tcp_groups,
+    LIVE_ERRORS,
+    live_options,
+    live_source,
+    restart_pieces,
     untimed_restarts,
+    write_jsonl,
 )
-from .setup_metadata import validate_setup
 
 
 def aggregate_almanacs(output):
@@ -165,18 +163,12 @@ class BroadcastMessageDecoder:
             for kind, values in self.process(batch).items():
                 result.setdefault(kind, []).extend(values)
 
-        def pieces(batch):
-            begin = 0
-            while self.restarts and (stop := arrival_position(batch, self.restarts[0])) < batch.num_rows:
-                if stop > begin:
-                    yield batch.slice(begin, stop - begin)
-                self.native.discontinuity()
-                self.restarts.pop(0)
-                begin = stop
-            if begin < batch.num_rows or not begin:
-                yield batch.slice(begin)
-
-        for batch in (piece for whole in group.catalogs.get("raw-bits", ()) for piece in pieces(whole)):
+        pieces = (
+            piece
+            for whole in group.catalogs.get("raw-bits", ())
+            for piece in restart_pieces(whole, self.restarts, self.native.discontinuity)
+        )
+        for batch in pieces:
             if not resets:
                 consume(batch)
                 continue
@@ -193,7 +185,7 @@ class BroadcastMessageDecoder:
                 consume(batch.slice(begin))
         for _ in resets:
             self.native.discontinuity()
-        if group.notice:
+        if group.discontinuity:
             self.native.discontinuity()
         return result
 
@@ -234,18 +226,7 @@ def json_records(outputs):
 
 
 @click.command()
-@click.option("--host", help="Receiver TCP hostname or unbracketed IPv6 address.")
-@click.option("--port", type=click.IntRange(1, 65535), default=2006, show_default=True)
-@click.option(
-    "--input",
-    "input_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Replay UBX/SBF or XZ instead of TCP.",
-)
-@click.option("-p", "--protocol", type=click.Choice(["ubx", "sbf"]), required=True)
-@click.option("--setup", "setup_path", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
-@click.option("--max-latency", type=click.FloatRange(min=0, min_open=True), default=5.0, show_default=True)
-@click.option("--duration", type=click.FloatRange(min=0, min_open=True), help="TCP capture seconds; default unlimited.")
+@live_options
 @click.option(
     "--snapshot-interval",
     type=click.IntRange(1),
@@ -253,35 +234,15 @@ def json_records(outputs):
     show_default=True,
     help="GPST-aligned snapshot interval in seconds.",
 )
-@click.option("--output", type=click.Path(path_type=Path), help="Exclusive-create JSONL file; default stdout.")
-def cli(host, port, input_path, protocol, setup_path, max_latency, duration, snapshot_interval, output):
+def cli(host, port, input_path, protocol, setup_path, max_latency, duration, output, snapshot_interval):
     """Decode GPS/QZSS, Galileo, BeiDou and SBAS L1 from CommonNEX."""
-    if bool(host) == bool(input_path):
-        raise click.UsageError("Specify exactly one of --host or --input")
-    if input_path and duration is not None:
-        raise click.UsageError("--duration applies only to TCP")
     try:
-        setup = validate_setup(json.loads(setup_path.read_text()))
-        seconds, fraction = setup["epoch_period_s"].split(".")
-        stream = CnexStream(protocol, setup["setup_id"], int(seconds), int(fraction))
+        setup, groups = live_source(host, port, input_path, protocol, setup_path, max_latency, duration)
         consumer = BroadcastMessageDecoder(setup["setup_id"], snapshot_interval)
-        groups = (
-            file_groups(input_path, stream)
-            if input_path
-            else tcp_groups(host, port, stream, max_latency=max_latency, duration=duration)
-        )
         click.echo("Decoding GPS/QZSS, Galileo, BeiDou navigation/corrections and SBAS L1.", err=True)
-        with output.open("x") if output else nullcontext(click.get_text_stream("stdout")) as target:
-            for group in groups:
-                if group is None:
-                    continue
-                for row in json_records(consumer.feed(group)):
-                    target.write(json.dumps(row, default=json_value, allow_nan=False) + "\n")
-                target.flush()
-                if group.notice:
-                    click.echo(group.notice, err=True)
+        write_jsonl(groups, lambda group: json_records(consumer.feed(group)), output, json_value)
         click.echo(json.dumps(consumer.diagnostics, sort_keys=True), err=True)
-    except (OSError, ValueError, RuntimeError, BufferError, EOFError, OverflowError) as error:
+    except LIVE_ERRORS as error:
         raise click.ClickException(str(error)) from error
 
 

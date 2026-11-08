@@ -23,9 +23,9 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from . import _native
-from .cnex_stream import CATALOGS, batch_group
+from .cnex_stream import CATALOGS, catalog_batches
 from .setup_antex import select_antenna
-from .setup_metadata import component, validate_setup
+from .setup_metadata import component, epoch_period, validate_setup
 from .setup_tracking import populate_tracking
 
 PATTERN = re.compile(r"r([0-9]{2})-([a-z][a-z0-9-]*)-part([0-9]{2})\.parquet\Z")
@@ -444,16 +444,7 @@ def run(
         stored_sizes = {str(path): path.stat().st_size for path, _, _ in segments}
         mode = "rebuild" if rebuild else "tail" if resume_from else "new"
         stage = Path(tempfile.mkdtemp(prefix=".cnex-import-", dir=station))
-        # validate_setup emits exactly twelve fractional digits; avoid both
-        # binary floats and Decimal context rounding at this native boundary.
-        seconds_text, fraction_text = setup["epoch_period_s"].split(".")
-        period_seconds = int(seconds_text)
-        if period_seconds > 2**63 - 1:
-            raise ValueError("epoch_period_s exceeds native importer range")
-        period_ps = int(fraction_text)
-        reader = _native.CnexObservationReader(
-            protocol, setup["setup_id"], source_antenna, period_seconds, period_ps, decode_workers
-        )
+        reader = _native.CnexObservationReader(protocol, setup["setup_id"], source_antenna, *epoch_period(setup), decode_workers)
         if state:
             reader.restore(state["navigation_context"])
         counts = dict.fromkeys(CATALOGS, 0)
@@ -643,7 +634,6 @@ def run(
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="cnex-parquet") as writer_pool,
             tqdm(total=total, unit="B", unit_scale=True, desc="CommonNEX", file=sys.stderr) as progress,
         ):
-            group_sequence = 0
             for path, start, size in segments:
                 with open_input(path) as source:
                     source.seek(start)
@@ -664,8 +654,7 @@ def run(
                             raise RuntimeError(f"{path}: {error}") from error
                         if not allow_time_reversal and (reversal := reader.time_error()):
                             raise ValueError(reversal_message(reversal, segments))
-                        batches = batch_group(group_sequence, native_batches, include_empty=True).ordered_batches()
-                        group_sequence += 1
+                        batches = catalog_batches(native_batches)
                         summary = reader.summary()
                         processed[str(path)] = {
                             "path": str(path),
@@ -712,7 +701,7 @@ def run(
             for future in pending_writes:
                 future.result()
             if finalize_telemetry:
-                batches = batch_group(group_sequence, reader.finish_telemetry(), include_empty=True).ordered_batches()
+                batches = catalog_batches(reader.finish_telemetry())
                 snapshot["summary"] = reader.summary()
                 snapshot["checkpoint"] = reader.checkpoint()
                 write_batches(batches, snapshot)

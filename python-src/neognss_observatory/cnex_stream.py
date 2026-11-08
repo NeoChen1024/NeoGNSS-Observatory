@@ -10,6 +10,7 @@ import struct
 import threading
 import time
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -19,6 +20,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from . import _native
+from .setup_metadata import epoch_period, validate_setup
 
 CATALOGS = ("observations", "events", "raw-bits", "receiver-telemetry")
 MAX_MESSAGE = 16 * 1024**2
@@ -42,6 +44,8 @@ class CnexBatchGroup:
     sequence: int
     catalogs: Mapping[str, tuple[pa.RecordBatch, ...]]
     notice: str | None = None
+    # Consumers reset receiver context after this group's records; notice text is diagnostics only.
+    discontinuity: bool = False
 
     def __post_init__(self):
         if self.sequence < 0 or any(k not in CATALOGS for k in self.catalogs):
@@ -51,10 +55,6 @@ class CnexBatchGroup:
     @property
     def nbytes(self):
         return sum(b.nbytes for batches in self.catalogs.values() for b in batches)
-
-    def ordered_batches(self):
-        """The stable catalog order used by the archive writer."""
-        return tuple(b for name in CATALOGS for b in self.catalogs.get(name, ()))
 
 
 def untimed_restarts(events):
@@ -79,11 +79,33 @@ def arrival_position(batch, coordinate):
     return batch.num_rows if position < 0 else position
 
 
-def batch_group(sequence, native_batches, *, include_empty=False):
+def restart_pieces(batch, restarts, reset):
+    """Split BATCH before each pending untimed restart, calling RESET at each one.
+
+    RESTARTS holds arrival coordinates from untimed_restarts; consumed entries are
+    removed. A restart later than every row seen so far waits for following batches.
+    """
+    begin = 0
+    while restarts and (stop := arrival_position(batch, restarts[0])) < batch.num_rows:
+        if stop > begin:
+            yield batch.slice(begin, stop - begin)
+        reset()
+        restarts.pop(0)
+        begin = stop
+    if begin < batch.num_rows or not begin:
+        yield batch.slice(begin)
+
+
+def catalog_batches(native_batches):
+    """Native engine output as RecordBatches in canonical CATALOGS order, empty schemas included."""
     batches = tuple(pa.record_batch(b) for b in native_batches)
     if len(batches) != len(CATALOGS):
         raise ValueError("Unexpected native catalog count")
-    return CnexBatchGroup(sequence, {k: (b,) for k, b in zip(CATALOGS, batches) if include_empty or b.num_rows})
+    return batches
+
+
+def batch_group(sequence, native_batches):
+    return CnexBatchGroup(sequence, {k: (b,) for k, b in zip(CATALOGS, catalog_batches(native_batches)) if b.num_rows})
 
 
 class CnexStream:
@@ -118,7 +140,7 @@ class CnexStream:
             self.pending.setdefault(catalog, []).extend(batches)
         self.pending_bytes += group.nbytes
 
-    def drain(self, notice=None):
+    def drain(self, notice=None, *, discontinuity=False):
         partial = self.reader.summary()["telemetry_partial_rows"]
         if partial > self.reported_partial_rows:
             warning = f"partial telemetry windows: {partial - self.reported_partial_rows}"
@@ -126,7 +148,7 @@ class CnexStream:
         self.reported_partial_rows = partial
         if not self.pending and notice is None:
             return None
-        result = CnexBatchGroup(self.sequence, self.pending, notice)
+        result = CnexBatchGroup(self.sequence, self.pending, notice, discontinuity)
         self.sequence += 1
         self.pending = {}
         self.pending_bytes = 0
@@ -141,7 +163,9 @@ class CnexStream:
         if self.closed:
             raise RuntimeError("Stream is closed")
         self._finish_telemetry()
-        result = self.drain(f"discontinuity: {reason}; pending={json.dumps(self.tail_status(), sort_keys=True)}")
+        result = self.drain(
+            f"discontinuity: {reason}; pending={json.dumps(self.tail_status(), sort_keys=True)}", discontinuity=True
+        )
         self.reader = _native.CnexObservationReader(*self.args)
         self.reported_partial_rows = 0
         return result
@@ -182,7 +206,10 @@ def encode_group(group):
         payload = sink.getvalue()
         entries.append([catalog, payload.size])
         payloads.append(payload)
-    header = json.dumps(dict(version=1, sequence=group.sequence, notice=group.notice, catalogs=entries)).encode()
+    header = dict(version=1, sequence=group.sequence, notice=group.notice, catalogs=entries)
+    if group.discontinuity:
+        header["discontinuity"] = True
+    header = json.dumps(header).encode()
     size = 4 + len(header) + sum(p.size for p in payloads)
     if size > MAX_MESSAGE:
         raise BufferError("CommonNEX IPC message exceeds 16 MiB")
@@ -211,7 +238,10 @@ def decode_group(data):
         offset += size
     if offset != len(data):
         raise ValueError("Trailing CommonNEX IPC bytes")
-    return CnexBatchGroup(header["sequence"], catalogs, header["notice"])
+    discontinuity = header.get("discontinuity", False)
+    if not isinstance(discontinuity, bool):
+        raise ValueError("Invalid CommonNEX discontinuity flag")
+    return CnexBatchGroup(header["sequence"], catalogs, header["notice"], discontinuity)
 
 
 def send_group(connection, group):
@@ -323,11 +353,61 @@ def tcp_groups(host, port, stream, *, max_latency=5.0, duration=None, buffer_byt
             worker.join()
 
 
+LIVE_ERRORS = (OSError, ValueError, RuntimeError, KeyError, BufferError, EOFError, OverflowError)
+
+
+def live_options(function):
+    """Shared source options of live JSONL consumers: one TCP receiver or one replayed recording."""
+    for option in reversed(
+        (
+            click.option("--host", help="Receiver TCP hostname or unbracketed IPv6 address."),
+            click.option("--port", type=click.IntRange(1, 65535), default=2006, show_default=True),
+            click.option(
+                "--input",
+                "input_path",
+                type=click.Path(exists=True, dir_okay=False, path_type=Path),
+                help="Replay UBX/SBF or XZ instead of TCP.",
+            ),
+            click.option("-p", "--protocol", type=click.Choice(["ubx", "sbf"]), required=True),
+            click.option("--setup", "setup_path", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True),
+            click.option("--max-latency", type=click.FloatRange(min=0, min_open=True), default=5.0, show_default=True),
+            click.option("--duration", type=click.FloatRange(min=0, min_open=True), help="TCP capture seconds; default unlimited."),
+            click.option("--output", type=click.Path(path_type=Path), help="Exclusive-create JSONL file; default stdout."),
+        )
+    ):
+        function = option(function)
+    return function
+
+
+def live_source(host, port, input_path, protocol, setup_path, max_latency, duration):
+    """Validated Setup and the lazily opened group iterator for live_options values."""
+    if bool(host) == bool(input_path):
+        raise click.UsageError("Specify exactly one of --host or --input")
+    if input_path and duration is not None:
+        raise click.UsageError("--duration applies only to TCP")
+    setup = validate_setup(json.loads(setup_path.read_text()))
+    stream = CnexStream(protocol, setup["setup_id"], *epoch_period(setup))
+    if input_path:
+        return setup, file_groups(input_path, stream)
+    return setup, tcp_groups(host, port, stream, max_latency=max_latency, duration=duration)
+
+
+def write_jsonl(groups, records, output, default=None):
+    """Write RECORDS(group) per group as flushed JSONL; group notices go to stderr."""
+    with output.open("x") if output else nullcontext(click.get_text_stream("stdout")) as target:
+        for group in groups:
+            for record in records(group):
+                target.write(json.dumps(record, default=default, allow_nan=False) + "\n")
+            target.flush()
+            if group.notice:
+                click.echo(group.notice, err=True)
+
+
 @click.command()
 @click.option("--host", required=True, help="Receiver TCP hostname or unbracketed IPv6 address.")
 @click.option("--port", type=click.IntRange(1, 65535), default=2006, show_default=True)
 @click.option("-p", "--protocol", type=click.Choice(["ubx", "sbf"]), required=True)
-@click.option("--setup", "setup_path", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--setup", "setup_path", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
 @click.option("--max-latency", type=click.FloatRange(min=0, min_open=True), default=5.0, show_default=True)
 @click.option(
     "--duration", type=click.FloatRange(min=0, min_open=True), help="Stop after this many seconds; otherwise run until interrupted."
@@ -335,16 +415,10 @@ def tcp_groups(host, port, stream, *, max_latency=5.0, duration=None, buffer_byt
 @click.option("--output", type=click.Path(path_type=Path), help="Exclusive-create framed CommonNEX IPC output, not ParquetNEX.")
 def cli(host, port, protocol, setup_path, max_latency, duration, output):
     """Normalize a live receiver stream; print machine-readable batch summaries."""
-    from contextlib import nullcontext
-
-    from .setup_metadata import validate_setup
-
     try:
-        setup = validate_setup(json.loads(setup_path.read_text()))
-        seconds, fraction = setup["epoch_period_s"].split(".")
-        stream = CnexStream(protocol, setup["setup_id"], int(seconds), int(fraction))
+        setup, groups = live_source(host, port, None, protocol, setup_path, max_latency, duration)
         with output.open("xb") if output else nullcontext() as target:
-            for group in tcp_groups(host, port, stream, max_latency=max_latency, duration=duration):
+            for group in groups:
                 if target:
                     write_group(target, group)
                 click.echo(
@@ -353,10 +427,11 @@ def cli(host, port, protocol, setup_path, max_latency, duration, output):
                             sequence=group.sequence,
                             rows={k: sum(b.num_rows for b in group.catalogs.get(k, ())) for k in CATALOGS},
                             notice=group.notice,
+                            discontinuity=group.discontinuity,
                         )
                     )
                 )
-    except (OSError, ValueError, RuntimeError, BufferError, EOFError, OverflowError) as error:
+    except LIVE_ERRORS as error:
         raise click.ClickException(str(error)) from error
 
 
