@@ -2,6 +2,7 @@
 #pragma once
 #include "broadcast_fields.hpp"
 #include <cmath>
+#include <initializer_list>
 #include <span>
 
 namespace neognss_obs::broadcast_detail {
@@ -51,6 +52,67 @@ class BroadcastBits {
         return out;
     }
 };
+// Sequential fields: each read starts where the previous one ended.
+class BitCursor {
+    const BroadcastBits &bits_;
+    size_t pos_;
+
+  public:
+    explicit BitCursor(const BroadcastBits &bits, size_t pos = 0)
+        : bits_(bits), pos_(pos) {}
+    int64_t u(size_t n) {
+        auto v = int64_t(bits_.u(pos_, n));
+        pos_ += n;
+        return v;
+    }
+    int64_t s(size_t n) {
+        auto v = bits_.s(pos_, n);
+        pos_ += n;
+        return v;
+    }
+};
+// Table-driven fields at consecutive positions. Type 'u'/'s' is an integer,
+// 't' unsigned seconds times factor, 'd' a binary time offset, 'U' an unsigned
+// and 'f' a signed float scaled by 2^exp * factor.
+struct Field {
+    const char *name;
+    int width;
+    int exp = 0;
+    char type = 'u';
+    double factor = 1;
+};
+inline Row fields(const BroadcastBits &b, size_t p,
+                  std::initializer_list<Field> list) {
+    Row r;
+    for (const auto &f : list) {
+        if (f.type == 'u')
+            r[f.name] = int64_t(b.u(p, f.width));
+        else if (f.type == 's')
+            r[f.name] = b.s(p, f.width);
+        else if (f.type == 't')
+            r[f.name] = seconds(int64_t(b.u(p, f.width)) * int64_t(f.factor));
+        else if (f.type == 'd')
+            r[f.name] = b.offset(p, f.width, f.exp);
+        else
+            r[f.name] = b.f(p, f.width, f.exp, f.type != 'U', f.factor);
+        p += f.width;
+    }
+    return r;
+}
+// Adds fields of `x` not already in `r`.
+inline void merge(Row &r, const Row &x) { r.insert(x.begin(), x.end()); }
+// Data bits of consecutive 30-bit navigation words with parity removed: the
+// first `first` bits of word 0 and the first `rest` bits of each later word.
+inline Bytes strip_parity(std::span<const uint8_t> body, size_t words,
+                          size_t first, size_t rest) {
+    const BroadcastBits b(body, words * 30);
+    Bytes out((first + (words - 1) * rest + 7) / 8, 0);
+    size_t n = 0;
+    for (size_t w = 0; w < words; ++w)
+        for (size_t k = 0; k < (w ? rest : first); ++k, ++n)
+            out[n / 8] |= uint8_t(b.u(w * 30 + k, 1) << (7 - n % 8));
+    return out;
+}
 Tick reference(Tick now, int64_t week, int modulo, int64_t tow);
 inline Value gst_reference(std::optional<Tick> now, int64_t week, int64_t tow,
                            int modulo = 4096) {

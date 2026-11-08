@@ -3,20 +3,19 @@
 #include <cppgnss/ubx_subframe.hpp>
 
 namespace UBX {
-std::optional<uint16_t> SignalKey::prn() const {
+std::optional<uint16_t> SignalKey::satellite() const {
     switch (gnssId) {
     case 0:
     case 2:
     case 3:
-    case 7:
         return svId == 0 ? std::nullopt : std::optional<uint16_t>{svId};
     case 1:
-        return svId >= 120 && svId <= 158 ? std::optional<uint16_t>{svId}
-                                          : std::nullopt;
-    case 5:
-        return svId >= 1 && svId <= 10
-                   ? std::optional<uint16_t>{uint16_t(svId + 192)}
+        return svId >= 120 && svId <= 158
+                   ? std::optional<uint16_t>{uint16_t(svId - 100)}
                    : std::nullopt;
+    case 5:
+        return svId >= 1 && svId <= 10 ? std::optional<uint16_t>{svId}
+                                       : std::nullopt;
     default:
         return std::nullopt;
     }

@@ -37,22 +37,12 @@ decode_pppb2b(std::span<const uint8_t> body, int64_t satellite,
         ++counts["decoded_messages"];
         return out;
     }
-    size_t p = 18;
-    auto u = [&](int n) {
-        auto v = int64_t(b.u(p, n));
-        p += n;
-        return v;
-    };
-    auto s = [&](int n) {
-        auto v = b.s(p, n);
-        p += n;
-        return v;
-    };
+    BitCursor in(b, 18);
     auto header = [&](int validity) {
         Row r;
-        int64_t sod = u(17);
-        u(4);
-        r["iod_ssr"] = u(2);
+        int64_t sod = in.u(17);
+        in.u(4);
+        r["iod_ssr"] = in.u(2);
         r["epoch_bdt_sod_s"] = seconds(sod);
         Value epoch;
         if (time && sod < 86400) {
@@ -85,14 +75,14 @@ decode_pppb2b(std::span<const uint8_t> body, int64_t satellite,
                      {}};
         for (int i = 0; i < n; ++i) {
             Fields x;
-            x["slot"] = u(9);
-            x["iodn"] = u(10);
-            x["iod_corr"] = u(3);
-            auto a = s(15), c = s(13), d = s(13);
+            x["slot"] = in.u(9);
+            x["iodn"] = in.u(10);
+            x["iod_corr"] = in.u(3);
+            auto a = in.s(15), c = in.s(13), d = in.s(13);
             x["radial_m"] = a == -16384 ? Scalar{} : Scalar(double(a) * 0.0016);
             x["along_m"] = c == -4096 ? Scalar{} : Scalar(double(c) * 0.0064);
             x["cross_m"] = d == -4096 ? Scalar{} : Scalar(double(d) * 0.0064);
-            x["urai"] = u(6);
+            x["urai"] = in.u(6);
             auto slot = std::get<int64_t>(x["slot"]);
             if (slot >= 1 && slot <= 137)
                 rows.rows.push_back(std::move(x));
@@ -109,11 +99,11 @@ decode_pppb2b(std::span<const uint8_t> body, int64_t satellite,
         for (int i = 0; i < n; ++i) {
             Fields x{{"slot", Scalar{}}, {"mask_ordinal", Scalar{}}};
             if (direct)
-                x["slot"] = u(9);
+                x["slot"] = in.u(9);
             else
                 x["mask_ordinal"] = start + i;
-            x["iod_corr"] = u(3);
-            auto value = s(15);
+            x["iod_corr"] = in.u(3);
+            auto value = in.s(15);
             x["c0_m"] =
                 value == -16384 ? Scalar{} : Scalar(double(value) * 0.0016);
             if (!direct || (std::get<int64_t>(x["slot"]) >= 1 &&
@@ -126,10 +116,10 @@ decode_pppb2b(std::span<const uint8_t> body, int64_t satellite,
     try {
         if (type == 1) {
             Row r = header(0);
-            r["iodp"] = u(4);
+            r["iodp"] = in.u(4);
             std::vector<int64_t> slots;
             for (int i = 1; i <= 255; ++i)
-                if (u(1))
+                if (in.u(1))
                     slots.push_back(i);
             // All mask bits remain necessary for compact-index resolution,
             // including systems excluded from scientific processing.
@@ -139,16 +129,16 @@ decode_pppb2b(std::span<const uint8_t> body, int64_t satellite,
             orbit(6, header(96));
         else if (type == 3) {
             Row r = header(86400);
-            int n = int(u(5));
+            int n = int(in.u(5));
             Records rows{{{"slot", int64_t{}},
                           {"signal_index", int64_t{}},
                           {"bias_m", double{}}},
                          {}};
             for (int i = 0; i < n; ++i) {
-                auto slot = u(9);
-                int m = int(u(4));
+                auto slot = in.u(9);
+                int m = int(in.u(4));
                 for (int j = 0; j < m; ++j) {
-                    auto signal = u(4), bias = s(12);
+                    auto signal = in.u(4), bias = in.s(12);
                     if (slot >= 1 && slot <= 137)
                         rows.rows.push_back({{"slot", slot},
                                              {"signal_index", signal},
@@ -159,34 +149,34 @@ decode_pppb2b(std::span<const uint8_t> body, int64_t satellite,
             emit("code_bias", r, true);
         } else if (type == 4) {
             Row r = header(12);
-            r["iodp"] = u(4);
-            auto sub = u(5);
+            r["iodp"] = in.u(4);
+            auto sub = in.u(5);
             if (sub > 11)
                 throw std::out_of_range("Reserved PPP subtype");
             clocks(23, r, false, sub * 23 + 1);
         } else if (type == 5) {
             Row r = header(96);
-            r["iodp"] = u(4);
-            auto sub = u(3);
+            r["iodp"] = in.u(4);
+            auto sub = in.u(3);
             if (sub > 3)
                 throw std::out_of_range("Reserved PPP subtype");
             Records rows{{{"mask_ordinal", int64_t{}}, {"urai", int64_t{}}},
                          {}};
             for (int i = 0; i < 70; ++i)
                 rows.rows.push_back(
-                    {{"mask_ordinal", sub * 70 + i + 1}, {"urai", u(6)}});
+                    {{"mask_ordinal", sub * 70 + i + 1}, {"urai", in.u(6)}});
             r["entries"] = rows;
             emit("ura", r, true);
         } else {
-            int nc = int(u(5)), no = int(u(3));
+            int nc = int(in.u(5)), no = int(in.u(3));
             if (nc > (type == 6 ? 22 : 15) || no > 6)
                 throw std::out_of_range("Invalid PPP group count");
             if (nc) {
                 Row r = header(12);
                 int64_t start = 0;
                 if (type == 6) {
-                    r["iodp"] = u(4);
-                    start = u(9);
+                    r["iodp"] = in.u(4);
+                    start = in.u(9);
                     if (start < 1 || start + nc - 1 > 255)
                         throw std::out_of_range("Invalid PPP mask ordinal");
                 }

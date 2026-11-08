@@ -51,6 +51,31 @@ struct BlockInfo {
 // caller.
 BlockInfo inspect(uint16_t id, uint8_t revision,
                   std::span<const uint8_t> payload);
+// RINEX satellite identity of an SBF SVID (SBF Reference Guide numbering):
+// G1-37, E1-36 (71-106), S20-40 (120-140) and S41-58 (198-215), C1-40
+// (141-180) and C41-63 (223-245), J1-10 (181-190). GLONASS, NavIC and L-band
+// SVIDs have no identity here.
+struct Satellite {
+    char system;
+    uint16_t number;
+};
+constexpr std::optional<Satellite> satellite(unsigned svid) {
+    if (svid >= 1 && svid <= 37)
+        return Satellite{'G', uint16_t(svid)};
+    if (svid >= 71 && svid <= 106)
+        return Satellite{'E', uint16_t(svid - 70)};
+    if (svid >= 120 && svid <= 140)
+        return Satellite{'S', uint16_t(svid - 100)};
+    if (svid >= 198 && svid <= 215)
+        return Satellite{'S', uint16_t(svid - 157)};
+    if (svid >= 141 && svid <= 180)
+        return Satellite{'C', uint16_t(svid - 140)};
+    if (svid >= 223 && svid <= 245)
+        return Satellite{'C', uint16_t(svid - 182)};
+    if (svid >= 181 && svid <= 190)
+        return Satellite{'J', uint16_t(svid - 180)};
+    return std::nullopt;
+}
 // Block-header TOW (ms) and WNc as GPST milliseconds. Do-not-use values
 // (TOW 4294967295, WNc 65535) and TOW outside the week have no time.
 constexpr std::optional<int64_t> gpst_ms(uint32_t tow_ms, uint16_t week) {

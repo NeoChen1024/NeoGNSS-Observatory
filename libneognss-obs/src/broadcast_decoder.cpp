@@ -801,12 +801,10 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
                 throw std::runtime_error("Empty bitstream source");
             auto bytes = ArrowArrayViewGetBytesUnsafe(body.v, row);
             if (sbas) {
-                if (bytes.size_bytes != 32 || (bytes.data.as_uint8[31] & 63))
-                    throw std::runtime_error("Invalid SBAS size/padding");
                 const auto profile = sat == 22 ? SBAS::L1Profile::southpan_open
                                                : SBAS::L1Profile::standard;
-                auto decoded =
-                    SBAS::parse_l1({bytes.data.as_uint8, 32}, profile);
+                auto decoded = SBAS::parse_l1(
+                    {bytes.data.as_uint8, size_t(bytes.size_bytes)}, profile);
                 ++s.counts[std::string("sbas_") +
                            SBAS::status_name(decoded.status)];
                 if (decoded.status != SBAS::Status::decoded)
@@ -909,14 +907,8 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
             if (bytes.size_bytes != 38 || (bytes.data.as_uint8[37] & 15))
                 throw std::runtime_error("Invalid LNAV size/padding");
             // Ten 30-bit words without parity: 240 LNAV data bits.
-            std::array<uint8_t, 30> data{};
-            for (int w = 0; w < 10; ++w)
-                for (int k = 0; k < 24; ++k) {
-                    int p = w * 30 + k;
-                    data[(w * 24 + k) / 8] |=
-                        ((bytes.data.as_uint8[p / 8] >> (7 - p % 8)) & 1)
-                        << (7 - k % 8);
-                }
+            const auto data =
+                strip_parity({bytes.data.as_uint8, 38}, 10, 24, 24);
             s.decode(BroadcastBits(data, 240), std::move(base), key, t);
         }
         Output out;

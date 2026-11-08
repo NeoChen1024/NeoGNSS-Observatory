@@ -91,21 +91,6 @@ Bytes recover(const std::map<int, Bytes> &pages, int k) {
         out.insert(out.end(), row.begin() + k, row.end());
     return out;
 }
-struct Cursor {
-    BroadcastBits b;
-    size_t pos = 0;
-    explicit Cursor(const Bytes &v) : b(v, v.size() * 8) {}
-    int64_t u(size_t n) {
-        auto x = b.u(pos, n);
-        pos += n;
-        return int64_t(x);
-    }
-    int64_t s(size_t n) {
-        auto x = b.s(pos, n);
-        pos += n;
-        return x;
-    }
-};
 struct Mask {
     int system = 0, navigation = 0;
     std::vector<int64_t> satellites, signals, cells;
@@ -213,7 +198,8 @@ HasDecoder::decode(std::span<const uint8_t> data, const std::string &source,
     auto issues = s.issues;
     size_t begin = out.size();
     try {
-        Cursor c(message);
+        const BroadcastBits bits(message, message.size() * 8);
+        BitCursor c(bits);
         auto toh = c.u(12), flags = c.u(6);
         c.u(4);
         auto maskid = c.u(5), iod = c.u(5);

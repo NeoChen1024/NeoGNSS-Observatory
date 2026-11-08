@@ -27,7 +27,7 @@ decode_gps_observations(const cppgnss::FrameView &frame) {
         o.prn = m.satellite;
         o.antenna = m.antenna;
         o.signal = m.signal;
-        o.frequency_hz = m.signal[0] == '1' ? 1575.42e6 : 1227.60e6;
+        o.frequency_hz = carrier_hz('G', m.signal[0]);
         o.pseudorange_m = m.code;
         o.phase_cycles = m.phase;
         o.doppler_hz = m.doppler;

@@ -9,30 +9,6 @@
 namespace neognss_obs::broadcast_detail {
 namespace {
 constexpr double pi = std::numbers::pi;
-struct Field {
-    const char *name;
-    int width;
-    int exp = 0;
-    char type = 'u';
-    double factor = 1;
-};
-Row fields(const BroadcastBits &b, int p,
-           std::initializer_list<Field> definition) {
-    Row r;
-    for (const auto &d : definition) {
-        if (d.type == 'u')
-            r[d.name] = int64_t(b.u(p, d.width));
-        else if (d.type == 't')
-            r[d.name] = seconds(int64_t(b.u(p, d.width)) * int64_t(d.factor));
-        else if (d.type == 'd')
-            r[d.name] = b.offset(p, d.width, d.exp);
-        else
-            r[d.name] = b.f(p, d.width, d.exp, d.type != 'U', d.factor);
-        p += d.width;
-    }
-    return r;
-}
-void merge(Row &r, Row x) { r.insert(x.begin(), x.end()); }
 Row iono(const BroadcastBits &b, int p) {
     return fields(b, p,
                   {{"ai0_sfu", 11, -2, 'U'},

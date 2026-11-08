@@ -2,6 +2,7 @@
 #include "broadcast_fields.hpp"
 #include <algorithm>
 #include <mutex>
+#include <neognss_obs/measurements.hpp>
 #include <neognss_obs/sbas_grid.hpp>
 #include <set>
 
@@ -37,7 +38,8 @@ struct SbasGridProcessor::State {
     std::map<std::string, std::vector<Row>> output;
     mutable std::mutex mutex;
     bool failed = false;
-    static constexpr double tecu_per_m = 1575.42e6 * 1575.42e6 / (40.3 * 1e16);
+    static constexpr double tecu_per_m =
+        carrier_hz('S', '1') * carrier_hz('S', '1') / (40.3 * 1e16);
     State(std::string id, int64_t n, int64_t age, int64_t mask)
         : setup(std::move(id)), interval(seconds(n)),
           correction_age(seconds(age)), mask_age(seconds(mask)) {
@@ -334,9 +336,8 @@ SbasGridProcessor::Output SbasGridProcessor::feed(ArrowSchema *schema,
             if (body.null(row) || signals.null(row))
                 throw std::runtime_error("Null SBAS body/signals");
             auto bytes = ArrowArrayViewGetBytesUnsafe(body.v, row);
-            if (bytes.size_bytes != 32 || (bytes.data.as_uint8[31] & 63))
-                throw std::runtime_error("Invalid SBAS body");
-            auto decoded = SBAS::parse_l1({bytes.data.as_uint8, 32});
+            auto decoded =
+                SBAS::parse_l1({bytes.data.as_uint8, size_t(bytes.size_bytes)});
             if (decoded.status != SBAS::Status::decoded) {
                 ++s.counts["rejected_content"];
                 continue;

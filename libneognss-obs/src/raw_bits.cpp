@@ -54,6 +54,20 @@ Bits unpack(std::span<const uint8_t> bytes, unsigned width = 32) {
 uint32_t value(const Bits &b, size_t begin, size_t end) {
     return b.get(begin, end);
 }
+std::string_view rinex_system(char system) {
+    static constexpr std::string_view systems = "GECJS";
+    return systems.substr(systems.find(system), 1);
+}
+// RINEX system named by a family's constellation prefix.
+std::string_view family_system(std::string_view family) {
+    const auto prefix = family.substr(0, family.find('_'));
+    return prefix == "GPS"    ? "G"
+           : prefix == "GAL"  ? "E"
+           : prefix == "BDS"  ? "C"
+           : prefix == "QZS"  ? "J"
+           : prefix == "SBAS" ? "S"
+                              : "";
+}
 void result(RawBits &r, std::string_view kind, std::string_view scope,
             bool pass) {
     r.checks.push_back(
@@ -67,29 +81,9 @@ void receiver(RawBits &r, std::string_view kind, std::string_view scope,
                                  : "unknown",
                         "source_field", field});
 }
-void crc(RawBits &r, const Bits &b, size_t begin, size_t end,
-         std::string_view scope) {
-    uint32_t c = 0;
-    static constexpr auto table = [] {
-        std::array<uint32_t, 256> out{};
-        for (unsigned i = 0; i < out.size(); ++i) {
-            uint32_t v = i << 16;
-            for (int j = 0; j < 8; ++j)
-                v = ((v << 1) & 0xffffff) ^ ((v & 0x800000) ? 0x864cfb : 0);
-            out[i] = v;
-        }
-        return out;
-    }();
-    size_t i = begin;
-    for (; i + 8 <= end; i += 8)
-        c = ((c << 8) & 0xffffff) ^ table[(c >> 16) ^ value(b, i, i + 8)];
-    for (; i < end; ++i) {
-        auto top = (c >> 23) ^ value(b, i, i + 1);
-        c = (c << 1) & 0xffffff;
-        if (top)
-            c ^= 0x864cfb;
-    }
-    result(r, "crc", scope, c == 0);
+// Over the packed body: integrity() runs after pack().
+void crc(RawBits &r, size_t begin, size_t end, std::string_view scope) {
+    result(r, "crc", scope, cppgnss::crc24q(r.body, begin, end) == 0);
 }
 void pack(RawBits &r, const Bits &b) {
     r.bit_length = b.size();
@@ -139,19 +133,19 @@ void integrity(RawBits &r, const Bits &b) {
             }
         result(r, "bch", "normalized_word_chain", pass);
     } else if (r.format == "BCNAV1_1800_V1") {
-        crc(r, b, 72, 672, "sf2");
-        crc(r, b, 1272, 1536, "sf3");
+        crc(r, 72, 672, "sf2");
+        crc(r, 1272, 1536, "sf3");
     } else if (r.format == "CNAV2_1800_V1") {
-        crc(r, b, 52, 652, "sf2");
-        crc(r, b, 1252, 1526, "sf3");
+        crc(r, 52, 652, "sf2");
+        crc(r, 1252, 1526, "sf3");
     } else if (r.format == "BCNAV2_576_V1")
-        crc(r, b, 0, 288, "message");
+        crc(r, 0, 288, "message");
     else if (r.format == "B2B_984_V1")
-        crc(r, b, 12, 498, "message");
+        crc(r, 12, 498, "message");
     else if (r.format == "INAV_228_V1")
-        crc(r, b, 0, 220, "page");
+        crc(r, 0, 220, "page");
     else if (r.format != "L6_2000_V1" && r.format != "QZS_L5S_250_V1")
-        crc(r, b, 0, b.size(), r.unit);
+        crc(r, 0, r.bit_length, r.unit);
 }
 // Normalize typed receiver headers; navigation-body decoding remains separate.
 struct NavigationPage {
@@ -313,28 +307,12 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
             std::find(it->second.begin(), it->second.end(), sig) ==
                 it->second.end())
             return {RawBitsStatus::unsupported, {}};
-        auto sv = page.satellite;
         r.gpst_ms = cppgnss::SBF::gpst_ms(page.tow, page.week);
-        if (sv >= 1 && sv <= 37) {
-            r.system = "GPS";
-            r.satellite = sv;
-        } else if (sv >= 71 && sv <= 106) {
-            r.system = "GAL";
-            r.satellite = sv - 70;
-        } else if ((sv >= 120 && sv <= 140) || (sv >= 198 && sv <= 215)) {
-            r.system = "SBAS";
-            r.satellite = sv <= 140 ? sv : sv - 57;
-        } else if (sv >= 141 && sv <= 180) {
-            r.system = "BDS";
-            r.satellite = sv - 140;
-        } else if (sv >= 223 && sv <= 245) {
-            r.system = "BDS";
-            r.satellite = sv - 182;
-        } else if (sv >= 181 && sv <= 190) {
-            r.system = "QZS";
-            r.satellite = sv + 12;
-        } else
+        const auto satellite = cppgnss::SBF::satellite(page.satellite);
+        if (!satellite)
             return {RawBitsStatus::unsupported, {}};
+        r.system = rinex_system(satellite->system);
+        r.satellite = satellite->number;
         switch (f.id()) {
         case 4017:
             r.family = "GPS_LNAV";
@@ -448,13 +426,13 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         auto g = s.signal.gnssId, sig = s.signal.sigId;
         if (g == 6 || g == 7)
             return {RawBitsStatus::excluded, {}};
-        auto satellite = s.signal.prn();
+        auto satellite = s.signal.satellite();
         if (!satellite)
             return {RawBitsStatus::unsupported, {}};
         r.satellite = *satellite;
         if (g == 0 || g == 5) {
             const bool gps = g == 0;
-            r.system = gps ? "GPS" : "QZS";
+            r.system = gps ? "G" : "J";
             if (sig == 0) {
                 r.family = gps ? "GPS_LNAV" : "QZS_LNAV";
                 r.signals = {gps ? "GPS_L1_CA" : "QZS_L1_CA"};
@@ -471,11 +449,11 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
                 r.signals = {"QZS_L1S"};
             }
         } else if (g == 1 && sig == 0) {
-            r.system = "SBAS";
+            r.system = "S";
             r.family = "SBAS_L1";
             r.signals = {"SBAS_L1"};
         } else if (g == 2) {
-            r.system = "GAL";
+            r.system = "E";
             if (sig == 1 || sig == 5) {
                 r.family = "GAL_INAV";
                 r.signals = {sig == 1 ? "GAL_E1_B" : "GAL_E5B_I"};
@@ -484,7 +462,7 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
                 r.signals = {"GAL_E5A_I"};
             }
         } else if (g == 3) {
-            r.system = "BDS";
+            r.system = "C";
             if (sig <= 4 || sig == 10) {
                 r.family =
                     (sig == 1 || sig == 3 || sig == 10) ? "BDS_D2" : "BDS_D1";
@@ -567,7 +545,7 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         !(!sbf && (r.family == "SBAS_L1" || r.family == "QZS_L1S") &&
           actual_words == words + 1))
         return {RawBitsStatus::malformed, {}};
-    if (r.family.substr(0, r.family.find('_')) != r.system)
+    if (family_system(r.family) != r.system)
         return {RawBitsStatus::unsupported, {}};
     // The word count above bounds every view below; Bits throws only for
     // internal offset errors.
@@ -602,19 +580,6 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
                      : r.format == "D1D2_300_V1" ? "bch"
                                                  : "crc",
                      r.unit, crc1, length == 2000 ? "Parity" : "CRCPassed");
-    }
-    if (r.system == "GPS")
-        r.system = "G";
-    else if (r.system == "GAL")
-        r.system = "E";
-    else if (r.system == "BDS")
-        r.system = "C";
-    else if (r.system == "QZS") {
-        r.system = "J";
-        r.satellite -= 192;
-    } else if (r.system == "SBAS") {
-        r.system = "S";
-        r.satellite -= 100;
     }
     return {RawBitsStatus::decoded, std::move(r)};
 }

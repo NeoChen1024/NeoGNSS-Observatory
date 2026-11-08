@@ -12,8 +12,10 @@ namespace UBX {
 struct SignalKey {
     uint8_t gnssId = 0, svId = 0, sigId = 0, freqId = 0;
     auto operator<=>(const SignalKey &) const = default;
-    // GLONASS uses slot/frequency identifiers, so has no PRN conversion here.
-    std::optional<uint16_t> prn() const;
+    // RINEX satellite number within the gnssId's system: svId for GPS,
+    // Galileo and BeiDou (nonzero) and QZSS (1-10); SBAS PRN 120-158 as
+    // S20-58. GLONASS (slot/frequency identifiers) and NavIC have none here.
+    std::optional<uint16_t> satellite() const;
 };
 
 struct NavigationSubframe {

@@ -7,6 +7,24 @@
 #include <string>
 
 namespace neognss_obs {
+// Carrier frequency of a RINEX system and band digit; 0 for an unknown band.
+constexpr double carrier_hz(char system, char band) {
+    switch (band) {
+    case '1':
+        return 1575.42e6;
+    case '2':
+        return system == 'C' ? 1561.098e6 : 1227.60e6;
+    case '5':
+        return 1176.45e6;
+    case '6':
+        return system == 'C' ? 1268.52e6 : 1278.75e6;
+    case '7':
+        return 1207.14e6;
+    case '8':
+        return 1191.795e6;
+    }
+    return 0;
+}
 // cppgnss::Protocol quantities retain their native time representation at this
 // boundary.
 struct Measurement {

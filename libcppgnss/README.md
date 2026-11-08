@@ -87,6 +87,16 @@ If a frame callback throws, its original exception propagates and the decoder
 becomes unusable: subsequent `feed()` and `finish()` calls throw `std::logic_error`.
 Construct a new decoder to restart; callback side effects are not rolled back,
 and pending bytes from the failed decoder must not be replayed automatically.
+`match_frame()` is the framing rule `StreamDecoder` applies at each position:
+it classifies the bytes at the start of a buffer as a frame, a noise byte, an
+invalid candidate or an incomplete candidate. Readers that hold a complete
+buffer, such as archive indexers, use it directly and decide themselves what an
+incomplete candidate at the end means. `crc24q()` computes CRC-24Q over an
+arbitrary MSB-first bit range for RTCM3 framing and GNSS navigation messages.
+
+`SBF::satellite()` and `UBX::SignalKey::satellite()` map wire satellite
+identifiers to RINEX G/E/C/J/S numbers (SBAS PRN 120-158 as S20-58, QZSS as
+J1-10). GLONASS and NavIC identifiers have no mapping there.
 
 SBF codegen covers all 125 pinned blocks plus the retained legacy QZSRawL6
 layout in 17 functional groups: 118 have payload definitions and eight explicitly

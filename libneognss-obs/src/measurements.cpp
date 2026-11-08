@@ -1,29 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include <cppgnss/sbf.hpp>
 #include <cppgnss/sbf_measurement_gen.hpp>
 #include <cppgnss/ubx_rxm_gen.hpp>
+#include <cppgnss/ubx_subframe.hpp>
 #include <map>
 #include <neognss_obs/measurements.hpp>
 #include <stdexcept>
 
 namespace neognss_obs {
 namespace {
-double freq(const std::string &sys, const std::string &sig) {
-    switch (sig[0]) {
-    case '1':
-        return 1575.42e6;
-    case '2':
-        return sys == "C" ? 1561.098e6 : 1227.60e6;
-    case '5':
-        return 1176.45e6;
-    case '6':
-        return sys == "C" ? 1268.52e6 : 1278.75e6;
-    case '7':
-        return 1207.14e6;
-    case '8':
-        return 1191.795e6;
-    }
-    return 0;
-}
 // RINEX identities, not merged pilot/data observables. See
 // receiver-profiles.md.
 const std::map<int, std::string> ubx_codes{
@@ -40,38 +25,17 @@ const std::map<int, std::string> sbf_codes{
     {24, "S1C"}, {25, "S5I"}, {26, "J5Q"}, {27, "J6L"}, {28, "C2I"},
     {29, "C7I"}, {30, "C6I"}, {32, "J1L"}, {33, "J1Z"}, {34, "C7D"},
     {38, "J1E"}};
-bool identify(Measurement &m, const std::map<int, std::string> &codes, int sig,
-              int sv, bool ubx) {
-    auto it = codes.find(sig);
-    if (it == codes.end())
-        return false;
-    m.system = it->second.substr(0, 1);
-    m.signal = it->second.substr(1);
-    if (ubx) {
-        m.satellite = m.system == "S" ? sv - 100 : sv;
-        return sv > 0 && (m.system != "S" || (sv >= 120 && sv <= 158));
-    }
-    int prn = 0;
-    if (m.system == "G" && sv >= 1 && sv <= 37)
-        prn = sv;
-    if (m.system == "E" && sv >= 71 && sv <= 106)
-        prn = sv - 70;
-    if (m.system == "C" && sv >= 141 && sv <= 180)
-        prn = sv - 140;
-    if (m.system == "C" && sv >= 223 && sv <= 245)
-        prn = sv - 182;
-    if (m.system == "J" && sv >= 181 && sv <= 190)
-        prn = sv - 180;
-    if (m.system == "S" && sv >= 120 && sv <= 140)
-        prn = sv - 100;
-    if (m.system == "S" && sv >= 198 && sv <= 215)
-        prn = sv - 157;
-    m.satellite = prn;
-    if (!prn) {
-        m.signal.clear();
-        m.system.clear();
-    }
-    return prn > 0;
+// SBF signal number: SigIdxLo, extended by SigIdxHi when SigIdxLo is 31.
+int sbf_signal(unsigned lo, unsigned hi) { return lo == 31 ? 32 + hi : lo; }
+// GLONASS and NavIC signals are outside scientific scope: excluded, not
+// unsupported.
+bool sbf_signal_excluded(int sig) {
+    return (sig >= 8 && sig <= 12) || sig == 15 || sig == 36 || sig == 37;
+}
+void identify(Measurement &m, const std::string &code, uint16_t satellite) {
+    m.system = code.substr(0, 1);
+    m.signal = code.substr(1);
+    m.satellite = satellite;
 }
 void domain(Measurement &m) {
     if (!std::isfinite(m.code) || m.code < 0)
@@ -99,14 +63,17 @@ std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
         e.rows.reserve(raw.meas_grp.size());
         for (const auto &v : raw.meas_grp) {
             Measurement m;
-            if (!identify(m, ubx_codes, v.gnssId * 100 + v.sigId, v.svId,
-                          true)) {
+            const auto code = ubx_codes.find(v.gnssId * 100 + v.sigId);
+            const auto satellite =
+                UBX::SignalKey{v.gnssId, v.svId, v.sigId}.satellite();
+            if (code == ubx_codes.end() || !satellite) {
                 if (v.gnssId == 6 || v.gnssId == 7)
                     ++e.excluded;
                 else
                     ++e.unsupported;
                 continue;
             }
+            identify(m, code->second, *satellite);
             m.code = v.prMes;
             m.phase = v.cpMes;
             m.doppler = v.doMes;
@@ -142,20 +109,22 @@ std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
         e.cumulative_adjustment_ms_mod256 = raw.CumClkJumps;
     auto make = [&](const auto &v, int sv, bool type1) {
         Measurement m;
-        int sig = v.Type.SigIdxLo;
-        if (sig == 31)
-            sig = 32 + v.ObsInfo.SigIdxHi;
+        const int sig = sbf_signal(v.Type.SigIdxLo, v.ObsInfo.SigIdxHi);
         m.antenna = v.Type.AntennaID;
         m.native_signal = sig;
         if constexpr (requires { v.RxChannel; })
             m.receiver_channel = v.RxChannel;
-        if (!identify(m, sbf_codes, sig, sv, false)) {
-            if ((sig >= 8 && sig <= 12) || sig == 15 || sig == 36 || sig == 37)
+        const auto code = sbf_codes.find(sig);
+        const auto satellite = cppgnss::SBF::satellite(sv);
+        if (code == sbf_codes.end() || !satellite ||
+            satellite->system != code->second[0]) {
+            if (sbf_signal_excluded(sig))
                 ++e.excluded;
             else
                 ++e.unsupported;
             return m;
         }
+        identify(m, code->second, satellite->number);
         if (m.system == "E" && m.signal == "6C" && raw.CommonFlags.E6BUsed)
             m.signal = "6B";
         if (v.CN0 != 255)
@@ -172,7 +141,7 @@ std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
         auto m = make(v, v.SVID, true);
         double pr = (v.Misc.CodeMSB * 4294967296.0 + v.CodeLSB) * .001;
         double d = v.Doppler == INT32_MIN ? NAN : v.Doppler * .0001;
-        double f1 = m.signal.empty() ? 0 : freq(m.system, m.signal);
+        double f1 = m.signal.empty() ? 0 : carrier_hz(m.system[0], m.signal[0]);
         m.code = pr == 0 ? NAN : pr;
         m.doppler = d;
         if (f1 && m.lock_ms && !(v.CarrierMSB == -128 && v.CarrierLSB == 0))
@@ -193,7 +162,8 @@ std::optional<Measurements> decode_measurements(const cppgnss::FrameView &f) {
                 dm -= 32;
             if (pr != 0 && !(cm == -4 && w.CodeOffsetLSB == 0))
                 a.code = pr + (cm * 65536 + int64_t(w.CodeOffsetLSB)) * .001;
-            double f2 = a.signal.empty() ? 0 : freq(a.system, a.signal);
+            double f2 =
+                a.signal.empty() ? 0 : carrier_hz(a.system[0], a.signal[0]);
             if (f2 && a.lock_ms && !(w.CarrierMSB == -128 && w.CarrierLSB == 0))
                 a.phase = a.code * f2 / 299792458.0 +
                           (w.CarrierMSB * 65536 + int64_t(w.CarrierLSB)) * .001;
@@ -225,18 +195,15 @@ decode_measurement_extras(const cppgnss::FrameView &f) {
     e.rows.reserve(raw.group.size());
     for (const auto &v : raw.group) {
         Measurement m;
-        m.has_extra = true;
         m.receiver_channel = v.RxChannel;
         m.antenna = v.Type.AntennaID;
-        int sig = v.Type.SigIdxLo;
-        if (sig == 31) {
-            if (!v.revision3)
-                throw std::runtime_error(
-                    "Extended MeasExtra signal before revision 3");
-            sig = 32 + v.revision3->Misc.SigIdxHi;
-        }
+        if (v.Type.SigIdxLo == 31 && !v.revision3)
+            throw std::runtime_error(
+                "Extended MeasExtra signal before revision 3");
+        const int sig = sbf_signal(
+            v.Type.SigIdxLo, v.revision3 ? v.revision3->Misc.SigIdxHi : 0);
         m.native_signal = sig;
-        if ((sig >= 8 && sig <= 12) || sig == 15 || sig == 36 || sig == 37) {
+        if (sbf_signal_excluded(sig)) {
             ++e.excluded;
             continue;
         }

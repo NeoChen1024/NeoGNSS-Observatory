@@ -10,32 +10,6 @@ constexpr double pi = std::numbers::pi;
 int64_t integer(const Row &r, const char *n) {
     return std::get<int64_t>(r.at(n));
 }
-struct Field {
-    const char *name;
-    int width;
-    int exp = 0;
-    char type = 'u';
-    double factor = 1;
-};
-Row fields(const BroadcastBits &b, size_t p,
-           std::initializer_list<Field> list) {
-    Row r;
-    for (const auto &f : list) {
-        if (f.type == 'u')
-            r[f.name] = int64_t(b.u(p, f.width));
-        else if (f.type == 's')
-            r[f.name] = b.s(p, f.width);
-        else if (f.type == 't')
-            r[f.name] = seconds(int64_t(b.u(p, f.width)) * int64_t(f.factor));
-        else if (f.type == 'd')
-            r[f.name] = b.offset(p, f.width, f.exp);
-        else
-            r[f.name] = b.f(p, f.width, f.exp, f.type != 'U', f.factor);
-        p += f.width;
-    }
-    return r;
-}
-void merge(Row &a, const Row &b) { a.insert(b.begin(), b.end()); }
 Value bdt(std::optional<Tick> now, int64_t week, int64_t tow,
           int modulo = 8192) {
     if (!now || tow < 0 || tow >= 604800)
@@ -168,15 +142,6 @@ Row reduced(const BroadcastBits &b, size_t p, int64_t week, int64_t tow,
     r["reference_gpst"] = bdt(time, week, tow);
     return r;
 }
-Bytes legacy_data(std::span<const uint8_t> data) {
-    BroadcastBits b(data, 300);
-    Bytes out(28);
-    size_t n = 0;
-    for (size_t w = 0; w < 10; ++w)
-        for (size_t k = 0; k < (w ? 22 : 26); ++k, ++n)
-            out[n / 8] |= uint8_t(b.u(w * 30 + k, 1) << (7 - n % 8));
-    return out;
-}
 Row klobuchar(const BroadcastBits &b, size_t p) {
     std::vector<double> alpha, beta;
     const int ae[] = {-30, -27, -24, -24}, be[] = {11, 14, 16, 16};
@@ -235,7 +200,7 @@ BeidouDecoder::decode(std::span<const uint8_t> body, const std::string &family,
                b3 = family == "BDS_BCNAV3";
     if (family == "BDS_D1" || family == "BDS_D2") {
         const bool d2 = family == "BDS_D2";
-        auto bytes = legacy_data(body);
+        auto bytes = strip_parity(body, 10, 26, 22);
         BroadcastBits b(bytes, 224);
         const std::string pre = d2 ? "bds_d2_" : "bds_d1_";
         auto emit = [&](std::string kind, Row r, bool candidate = false) {

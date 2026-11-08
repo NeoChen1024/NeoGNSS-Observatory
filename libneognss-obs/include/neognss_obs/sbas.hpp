@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include <array>
-#include <bit>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -11,19 +10,6 @@
 #include <vector>
 
 namespace neognss_obs::SBAS {
-// Offsets are zero-based, most-significant-bit first, in the over-air message.
-class BitView {
-  public:
-    BitView(std::span<const uint8_t> bytes, size_t bit_count);
-    uint64_t unsigned_at(size_t offset, size_t width) const;
-    int64_t signed_at(size_t offset, size_t width) const;
-
-  private:
-    std::span<const uint8_t> bytes_;
-    size_t bit_count_;
-};
-uint32_t crc24q(std::span<const uint8_t> bytes, size_t bit_count);
-
 struct NullMessage {}; // MT63.
 struct PrnMask {
     uint8_t iodp = 0;
@@ -148,16 +134,11 @@ using Content =
                  GeoAlmanac, LongTermCorrections, MixedCorrections,
                  ServiceMessage, Covariance>;
 struct Message {
-    std::array<uint8_t, 32>
-        bytes{}; // 250 over-air bits; bottom 6 bits cleared.
-    uint8_t padding_bits = 0, preamble = 0, type = 0;
-    uint32_t received_crc = 0, computed_crc = 0;
-    bool preamble_valid = false, crc_valid = false;
+    uint8_t type = 0;
     Content content;
 };
 enum class Status {
     decoded,
-    invalid_word_count,
     invalid_preamble,
     invalid_crc,
     unsupported_message,
@@ -167,7 +148,9 @@ struct Result {
     Status status;
     std::optional<Message> message;
 };
-// Receiver-independent 250-bit SBAS L1 message in 32 MSB-first bytes.
+// Receiver-independent 250-bit SBAS L1 message in 32 MSB-first bytes with
+// zero padding bits; any other body throws std::runtime_error. Preamble and
+// CRC-24Q are checked independently of upstream receiver checks.
 Result parse_l1(std::span<const uint8_t> bytes,
                 L1Profile profile = L1Profile::standard);
 std::optional<std::pair<int, int>> igp_coordinate(unsigned band,
