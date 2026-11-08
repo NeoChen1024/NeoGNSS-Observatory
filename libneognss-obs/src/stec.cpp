@@ -34,6 +34,13 @@ double positive(const Json &s, const char *key) {
         throw std::invalid_argument(std::string("Invalid ") + key);
     return v;
 }
+size_t positive_count(const Json &s, const char *key) {
+    double v = positive(s, key);
+    if (v != std::floor(v) || v > 1e9)
+        throw std::invalid_argument(std::string(key) +
+                                    " must be a positive integer");
+    return size_t(v);
+}
 double median(std::vector<double> x) {
     if (x.empty())
         return NAN;
@@ -159,7 +166,8 @@ struct StecProcessor::State {
     std::map<std::pair<int, int>, std::vector<Bias>> biases;
     std::map<int, Track> tracks;
     double rr[3], pos[3], elevation, level_elevation, mapping_height;
-    double gf_jump, gf_rate;
+    double gf_jump, gf_rate, min_arc_seconds;
+    size_t min_level_samples;
     int64_t previous = -1, last_emit = -1, next_arc = 0, interval, gap;
     std::vector<int64_t> restart_boundaries;
     size_t next_restart = 0;
@@ -218,8 +226,8 @@ struct StecProcessor::State {
         mapping_height = positive(s, "mapping_height_km");
         gf_jump = positive(s, "gf_jump_m");
         gf_rate = positive(s, "gf_rate_m_s");
-        positive(s, "min_arc_seconds");
-        positive(s, "min_level_samples");
+        min_arc_seconds = positive(s, "min_arc_seconds");
+        min_level_samples = positive_count(s, "min_level_samples");
         for (int i = 0; i < 3; ++i)
             rr[i] = s.at("position_ecef_m").at(i);
         if (!std::isfinite(norm(rr, 3)) || norm(rr, 3) < 6e6 ||
@@ -239,10 +247,9 @@ struct StecProcessor::State {
     StecArc estimate(int prn, const Track &a, int reason,
                      bool provisional) const {
         auto fit = robust(a.offsets, a.weights, 0.1);
-        bool valid = a.offsets.size() >=
-                         settings.at("min_level_samples").get<size_t>() &&
-                     double(a.last_level - a.first_level) / second >=
-                         settings.at("min_arc_seconds").get<double>();
+        bool valid =
+            a.offsets.size() >= min_level_samples &&
+            double(a.last_level - a.first_level) / second >= min_arc_seconds;
         return {a.start,
                 a.last,
                 a.id,
@@ -330,27 +337,9 @@ struct StecProcessor::State {
             return true;
         for (int k = 0; k < 3; ++k) {
             auto tx = timeadd(t, -tau);
-            if (timediff(tx, nav->peph[0].time) < 0 ||
-                timediff(tx, nav->peph[nav->ne - 1].time) > 0) {
+            if (!orbit_stencil_contiguous(*nav, tx)) {
                 issues |= 1;
                 return true;
-            }
-            // Match RTKLIB's 11-point orbit stencil. Do not interpolate across
-            // a missing day merely because two distant products bracket the
-            // epoch.
-            auto orbit = std::lower_bound(nav->peph, nav->peph + nav->ne, tx,
-                                          [](const peph_t &a, gtime_t b) {
-                                              return timediff(a.time, b) < 0;
-                                          });
-            int index = std::max(0, int(orbit - nav->peph) - 1);
-            int first = std::clamp(index - 5, 0, nav->ne - 11);
-            for (int j = first + 1; j < first + 11; ++j) {
-                double separation =
-                    timediff(nav->peph[j].time, nav->peph[j - 1].time);
-                if (separation <= 0 || separation > 301) {
-                    issues |= 1;
-                    return true;
-                }
             }
             auto upper = std::lower_bound(nav->pclk, nav->pclk + nav->nc, tx,
                                           [](const pclk_t &a, gtime_t b) {
@@ -710,13 +699,11 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
                 if (old != s.tracks.end()) {
                     auto &t = old->second;
                     double dt = double(epoch.gpst_ns - t.last) / second;
-                    if (epoch.gpst_ns - t.last > s.gap)
-                        reason = 1;
-                    else if (a->loss_of_lock || b->loss_of_lock ||
-                             (a->lock_valid && t.a.lock_valid &&
-                              a->lock_seconds < t.a.lock_seconds) ||
-                             (b->lock_valid && t.b.lock_valid &&
-                              b->lock_seconds < t.b.lock_seconds))
+                    // Tracks past the gap timeout were closed at epoch start.
+                    if ((a->lock_valid && t.a.lock_valid &&
+                         a->lock_seconds < t.a.lock_seconds) ||
+                        (b->lock_valid && t.b.lock_valid &&
+                         b->lock_seconds < t.b.lock_seconds))
                         reason = 2;
                     else if ((a->continuity_counter && t.a.continuity_counter &&
                               a->continuity_counter !=
@@ -732,8 +719,6 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
 
                     if (p.id != t.pair_id)
                         reason = 9;
-                    if (epoch.clock_reset)
-                        reason = 10;
                     if (antenna_record(t.last) != antenna_record(epoch.gpst_ns))
                         reason = 8;
                     if (reason)
@@ -855,7 +840,6 @@ Json StecProcessor::summary() const {
               {"7", "open_incremental_tail"},
               {"8", "receiver_antenna_calibration_change"},
               {"9", "exact_signal_pair_change"},
-              {"10", "receiver_clock_reset"},
               {"11", "receiver_restart"}}}};
 }
 
@@ -997,8 +981,8 @@ Json fit_receiver_dcb(std::span<const DcbSample> rows, const Json &settings) {
     double cutoff = positive(settings, "elevation_deg"),
            rms_floor = positive(settings, "gim_rms_floor_tecu");
     double max_scatter = positive(settings, "max_scatter_tecu");
-    int min_sat = positive(settings, "min_satellites"),
-        min_arcs = positive(settings, "min_arcs");
+    size_t min_sat = positive_count(settings, "min_satellites"),
+           min_arcs = positive_count(settings, "min_arcs");
     std::map<std::pair<int64_t, int64_t>, std::vector<const DcbSample *>> bins;
     for (const auto &r : rows)
         if (std::isfinite(r.residual_tecu) && std::isfinite(r.gim_rms_tecu) &&
@@ -1041,10 +1025,9 @@ Json fit_receiver_dcb(std::span<const DcbSample> rows, const Json &settings) {
             high = std::max(high, r->elevation_deg);
         }
     double coverage = time_bins.size() * bin_seconds / 3600;
-    bool valid = satellites.size() >= size_t(min_sat) &&
-                 arcs.size() >= size_t(min_arcs) && quadrants.size() >= 3 &&
-                 high - low >= 20 && coverage >= min_hours &&
-                 fit.scatter <= max_scatter;
+    bool valid = satellites.size() >= min_sat && arcs.size() >= min_arcs &&
+                 quadrants.size() >= 3 && high - low >= 20 &&
+                 coverage >= min_hours && fit.scatter <= max_scatter;
     return {{"status", valid ? "estimated" : "insufficient_or_inconsistent"},
             {"receiver_bias_tecu", valid ? Json(fit.value) : Json(nullptr)},
             {"receiver_dcb_ns",

@@ -277,9 +277,14 @@ PppResult PppFloat::process(const ObservationBatch &batch) {
                 (upper - 1)->clk[sat - 1][0] == 0)
                 throw std::runtime_error("Missing bracketing 30-second CLK "
                                          "samples; no SP3-clock fallback");
-            if (!peph2pos(o.time, sat, &nav, 1, rs, dts, &var) || dts[0] == 0)
+            // RTKLIB evaluates the orbit at transmit time shifted by the
+            // broadcast clock (|dt| < 1 ms) and again 1 ms later; both bounds
+            // of that span must use a stencil without missing SP3 epochs.
+            if (!orbit_stencil_contiguous(nav, timeadd(transmit, -1E-3)) ||
+                !orbit_stencil_contiguous(nav, timeadd(transmit, 2E-3)))
                 throw std::runtime_error(
-                    "Missing precise orbit/clock for GPS satellite");
+                    "Precise orbit gap around transmit time; no interpolation "
+                    "across missing SP3 epochs");
             // Apply receiver phase PCO/PCV once, outside RTKLIB's GPS-only
             // ANTEX slot mapping. Keep its marker-to-ARP correction enabled.
             // Use transmit-time geometry and the prior static position;

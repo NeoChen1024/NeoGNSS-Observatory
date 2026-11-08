@@ -45,6 +45,26 @@ void append_product_records(T *&dest, int &count, int &capacity,
     count = capacity = int(size);
 }
 
+// Whether T lies inside the loaded SP3 epochs and RTKLIB's 11-point orbit
+// stencil around it has no gap above 301 s. Two distant products must not be
+// interpolated across a missing day merely because they bracket T.
+inline bool orbit_stencil_contiguous(const nav_t &nav, gtime_t t) {
+    if (nav.ne < 11 || timediff(t, nav.peph[0].time) < 0 ||
+        timediff(t, nav.peph[nav.ne - 1].time) > 0)
+        return false;
+    auto orbit = std::lower_bound(
+        nav.peph, nav.peph + nav.ne, t,
+        [](const peph_t &a, gtime_t b) { return timediff(a.time, b) < 0; });
+    int index = std::max(0, int(orbit - nav.peph) - 1);
+    int first = std::clamp(index - 5, 0, nav.ne - 11);
+    for (int j = first + 1; j < first + 11; ++j) {
+        double separation = timediff(nav.peph[j].time, nav.peph[j - 1].time);
+        if (separation <= 0 || separation > 301)
+            return false;
+    }
+    return true;
+}
+
 class ProductFileCache {
     std::map<std::string, ProductNav> files_;
 
@@ -111,7 +131,11 @@ class PppProductCache {
         orbits_.retain(paths);
         for (const auto &path : paths) {
             const auto &data = orbits_.get(path, [](const auto &p, nav_t &v) {
+                // readsp3 reports no failure; an empty result is the only
+                // signal.
                 readsp3(p.c_str(), &v, 0);
+                if (v.ne <= 0)
+                    throw std::runtime_error("Cannot read nonempty SP3: " + p);
             });
             append_product_records(nav.peph, nav.ne, nav.nemax, data.peph,
                                    data.ne);

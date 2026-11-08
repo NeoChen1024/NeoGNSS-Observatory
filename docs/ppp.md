@@ -58,7 +58,10 @@ Exact product files must be unique. Code OSBs are selected by GPS satellite,
 exact observable and validity interval, converted from ns to meters and applied
 once. Phase OSBs are not used by this Float solver. No missing code bias is
 replaced with zero. Precise orbit/clock coverage is checked, including bracketing
-CLK values; there is no intentional broadcast-orbit or SP3-clock fallback.
+CLK values; there is no intentional broadcast-orbit or SP3-clock fallback. An SP3
+file without epochs is an error, and the 11-point orbit interpolation stencil
+around the transmit time must not span a missing 5-minute epoch: a gap stops the
+run instead of being interpolated.
 
 `antenna_catalogs` lists local ANTEX files in precedence order. The first must be
 the IGS20 satellite calibration catalog compatible with the precise products.

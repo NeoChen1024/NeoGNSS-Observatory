@@ -204,7 +204,8 @@ consumers must respect those boundaries.
 - `samples/GPST-*.parquet`: per-pair raw/receiver-corrected phase GF, relative TEC,
   corrected code GF, canonical satellite identity, geometry and GIM.
 - `arcs.parquet`: pair-specific leveling, validity and reasons (8 calibration
-  change, 9 exact signal switch, 10 receiver clock reset, 11 receiver restart).
+  change, 9 exact signal switch, 11 receiver restart). Code 10 is unused:
+  CommonNEX does not infer loss of lock or a reset from clock adjustments.
 - `receiver_bias.parquet`: exact-pair window fits, candidate/accepted biases,
   scatter, datum and coverage. Failed fits retain diagnostics and null bias.
 - `fused/GPST-*.parquet`: calibrated equal-mean output, contributors, weights,
