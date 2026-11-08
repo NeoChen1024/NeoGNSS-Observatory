@@ -14,12 +14,16 @@ namespace neognss_obs {
 struct CnexDecodedFrame {
     cppgnss::FrameView frame;
     std::optional<neognss_obs::Measurements> measurements, extras;
+    // measurement_gpst of measurements; nullopt also for an untimed epoch.
+    std::optional<GpstTicks> measurement_time;
     neognss_obs::RawBitsResult bits;
     std::exception_ptr error;
 
     void decode() noexcept {
         try {
             measurements = neognss_obs::decode_measurements(frame);
+            if (measurements)
+                measurement_time = neognss_obs::measurement_gpst(*measurements);
             bits = neognss_obs::decode_raw_bits(frame);
             extras = neognss_obs::decode_measurement_extras(frame);
         } catch (...) {

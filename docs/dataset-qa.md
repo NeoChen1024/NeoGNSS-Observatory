@@ -82,6 +82,9 @@ profile does not create this cache.
   round NAV time. RAWX-only runs retain their measurement time rounded to
   milliseconds and are excluded from NAV time-reversal checks. Empty RAWX
   reports cannot split or anchor epochs. Week carry is handled explicitly.
+  NAV iTOW must lie in 0..604799999 ms; an out-of-range value neither splits
+  nor anchors an epoch. NAV-TIMEGPS anchors only with both TOW and week valid
+  and a non-negative week, the same rule CommonNEX import applies.
 - A known NAV timestamp may inherit GPST from a GPS anchor within 60 seconds.
   Unanchored time and conflicting timestamps are not silently promoted to
   authoritative GPST. NAV-PVT calendar fields never anchor this time axis.

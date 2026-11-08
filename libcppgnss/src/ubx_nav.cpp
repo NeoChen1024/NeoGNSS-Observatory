@@ -3,6 +3,7 @@
 
 #include <cppgnss/ubx_nav.hpp>
 
+#include <cppgnss/ubx_def.hpp>
 #include <cppgnss/ubx_ids_gen.hpp>
 
 #include <format>
@@ -26,14 +27,11 @@ bool ubx_nav_pvt_semantically_valid(const ubx_nav_pvt &pvt) {
 }
 
 bool ubx_nav_pvt_fix_ok(const ubx_nav_pvt &pvt) {
-    return ubx_nav_pvt_semantically_valid(pvt) && (pvt.data.flags_bit & 1) &&
-           pvt.data.fixType >= 2 && pvt.data.fixType <= 5;
+    return (pvt.data.flags_bit & 1) && pvt.data.fixType >= 2 &&
+           pvt.data.fixType <= 5;
 }
 
 std::string ubx_nav_pvt_fix_type(const ubx_nav_pvt &pvt) {
-    if (!ubx_nav_pvt_semantically_valid(pvt))
-        return "INVALID";
-
     std::string fix_type;
     switch (pvt.data.fixType) {
     case 0:
@@ -61,6 +59,22 @@ std::string ubx_nav_pvt_fix_type(const ubx_nav_pvt &pvt) {
     if (pvt.data.flags_bit & 0x02)
         fix_type += "/DGNSS";
     return fix_type;
+}
+
+std::optional<NavTimeGps>
+ubx_nav_timegps_time(const cppgnss::FrameView &frame) {
+    const auto p = frame.payload;
+    if (frame.protocol() != cppgnss::Protocol::ubx ||
+        frame.id() !=
+            static_cast<uint16_t>(cppgnss::UbxMessageId::NAV_TIMEGPS) ||
+        p.size() != 16)
+        return std::nullopt;
+    const auto tow = read_le<uint32_t>(p, 0);
+    const auto week = read_le<int16_t>(p, 8);
+    // Valid bits 0 and 1: towValid and weekValid.
+    if ((p[11] & 3) != 3 || week < 0 || tow >= 604800000)
+        return std::nullopt;
+    return NavTimeGps{int64_t(week) * 604800000 + tow, read_le<int32_t>(p, 4)};
 }
 
 } // namespace UBX

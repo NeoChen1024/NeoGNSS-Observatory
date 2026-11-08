@@ -66,13 +66,12 @@ struct DatasetScan::State {
             }
             if (!block.tow_ms || !block.week)
                 return;
-            const auto tow = *block.tow_ms;
-            const auto week = *block.week;
-            if (tow >= 604800000 || week == 65535) {
+            const auto time = cppgnss::SBF::gpst_ms(*block.tow_ms, *block.week);
+            if (!time) {
                 count("invalid_times");
                 return;
             }
-            const int64_t now = int64_t(week) * 604800000 + tow;
+            const int64_t now = *time;
             count("timestamped_blocks");
             if (sbf_times.contains(f.id()) && now < sbf_times[f.id()])
                 count("time_reversals");

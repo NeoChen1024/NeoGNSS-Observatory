@@ -99,16 +99,7 @@ inline uint64_t bits(std::span<const uint8_t> data, size_t first,
 struct NoFields {
     static constexpr bool enabled = false, hierarchical = false;
 };
-inline std::string hex(std::span<const uint8_t> bytes) {
-    constexpr char digits[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(bytes.size() * 2);
-    for (auto byte : bytes) {
-        out.push_back(digits[byte >> 4]);
-        out.push_back(digits[byte & 15]);
-    }
-    return out;
-}
+using cppgnss::detail::hex;
 using cppgnss::detail::TextDump;
 template <class Sink> struct Group {
     Sink &sink;

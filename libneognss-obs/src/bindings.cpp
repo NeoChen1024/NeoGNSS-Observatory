@@ -192,7 +192,7 @@ PYBIND11_MODULE(_native, m) {
         });
     m.doc() =
         "Batched native GNSS processing; file/Parquet I/O belongs to Python.";
-    m.attr("archive_schema") = "UBXIDX04-native-2-protocol-filter";
+    m.attr("archive_schema") = "UBXIDX04-native-3-timegps-range";
     m.def("archive_index", [](py::buffer data) {
         auto info = data.request();
         auto input = view(info);

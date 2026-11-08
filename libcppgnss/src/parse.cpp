@@ -22,13 +22,7 @@ std::string dump_raw(const FrameView &frame, const ParseError *error) {
             text += std::format(" at payload byte {}", *error->offset);
     } else
         text += ", status=unknown_block";
-    text += ", payload=hex:";
-    constexpr char digits[] = "0123456789abcdef";
-    for (auto b : frame.payload) {
-        text += digits[b >> 4];
-        text += digits[b & 15];
-    }
-    return text + ")\n";
+    return text + ", payload=hex:" + detail::hex(frame.payload) + ")\n";
 }
 std::string dump(const FrameView &frame) {
     if (frame.protocol() == Protocol::rtcm3)

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0-only
-#include <bit>
 #include <cppgnss/sbf_measurement_gen.hpp>
 #include <cppgnss/ubx_rxm_gen.hpp>
 #include <map>
@@ -277,34 +276,14 @@ decode_measurement_extras(const cppgnss::FrameView &f) {
     return e;
 }
 std::optional<GpstTicks> measurement_gpst(const Measurements &e) {
-    using Tick = GpstTicks;
-    constexpr int64_t ps = 1000000000000;
     if (e.week == 0 || e.week == 65535 || !std::isfinite(e.tow_seconds) ||
         e.tow_seconds < 0 || e.tow_seconds >= 604800)
         return {};
-    Tick tow = 0;
-    if (e.tow_ms)
-        tow = Tick(*e.tow_ms) * 1000000000;
-    else {
-        // Exact binary64 rational -> integer picoseconds, ties to even.
-        auto bits = std::bit_cast<uint64_t>(e.tow_seconds);
-        int exponent = int((bits >> 52) & 2047);
-        uint64_t mantissa = bits & ((uint64_t(1) << 52) - 1);
-        if (exponent)
-            mantissa |= uint64_t(1) << 52;
-        int shift = (exponent ? exponent - 1023 : -1022) - 52;
-        Tick n = Tick(mantissa) * ps;
-        if (shift >= 0)
-            tow = n << shift;
-        else if (-shift < 127) {
-            int k = -shift;
-            tow = n >> k;
-            Tick rem = n - (tow << k), half = Tick(1) << (k - 1);
-            if (rem > half || (rem == half && (tow & 1) != 0))
-                ++tow;
-        }
-    }
-    return Tick(e.week) * 604800 * ps + tow;
+    // Exact binary64 rcvTow -> integer picoseconds, ties to even.
+    const GpstTicks tow =
+        e.tow_ms ? GpstTicks(*e.tow_ms) * 1000000000
+                 : binary_scaled(e.tow_seconds, gpst_ticks_per_second);
+    return GpstTicks(e.week) * 604800 * gpst_ticks_per_second + tow;
 }
 GpstTicks measurement_time(const Measurements &e) {
     if (auto t = measurement_gpst(e))

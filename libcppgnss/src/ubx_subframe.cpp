@@ -21,32 +21,22 @@ std::optional<uint16_t> SignalKey::prn() const {
         return std::nullopt;
     }
 }
-SubframeResult parse_subframe(const cppgnss::FrameView &frame) {
-    if (frame.protocol() != cppgnss::Protocol::ubx)
-        return {SubframeStatus::invalid_frame, std::nullopt};
-    if (frame.id() != static_cast<uint16_t>(cppgnss::UbxMessageId::RXM_SFRBX))
-        return {SubframeStatus::not_sfrbx, std::nullopt};
-    if (frame.payload.size() < 8)
-        return {SubframeStatus::invalid_length, std::nullopt};
-    if (frame.payload[6] != 2)
-        return {SubframeStatus::unsupported_version, std::nullopt};
-    const size_t n = frame.payload[4];
-    if (n == 0 || n > 16 || frame.payload.size() != 8 + 4 * n)
-        return {SubframeStatus::invalid_length, std::nullopt};
+std::optional<NavigationSubframe>
+parse_subframe(const cppgnss::FrameView &frame) {
+    // The generated decoder checks identity and the numWords-derived length.
     auto parsed = cppgnss::parse<ubx_rxm_sfrbx>(frame);
     if (!parsed)
-        return {SubframeStatus::invalid_frame, std::nullopt};
+        return std::nullopt;
     const auto &decoded = parsed.value();
+    if (decoded.version != 2 || decoded.numWords == 0 || decoded.numWords > 16)
+        return std::nullopt;
     NavigationSubframe result;
     result.signal = {decoded.gnssId, decoded.svId, decoded.sigId,
                      uint8_t(decoded.gnssId == 6 ? decoded.freqId : 0)};
-    result.version = decoded.version;
     result.chn = decoded.chn;
-    result.raw_freqId = decoded.freqId;
-    result.reserved0 = decoded.reserved0;
-    result.words.reserve(n);
+    result.words.reserve(decoded.numWords);
     for (const auto &word : decoded.navdata_grp)
         result.words.push_back(word.dwrd);
-    return {SubframeStatus::decoded, std::move(result)};
+    return result;
 }
 } // namespace UBX

@@ -83,15 +83,6 @@ struct Stats {
         last = now;
     }
 };
-static std::optional<int64_t> sbf_time(std::span<const uint8_t> p) {
-    if (p.size() < 6)
-        return {};
-    auto tow = read_le<uint32_t>(p, 0);
-    auto week = read_le<uint16_t>(p, 4);
-    if (tow >= 604800000 || week == 65535)
-        return {};
-    return int64_t(week) * 604800000 + tow;
-}
 static void usage(const char *name) {
     fprintf(
         stderr,
@@ -291,7 +282,7 @@ int main(int argc, char **argv) try {
             using enum cppgnss::SbfMessageId;
             if (debug)
                 fputs(cppgnss::dump(f).c_str(), stderr);
-            auto time = sbf_time(f.payload);
+            auto time = cppgnss::SBF::header_gpst_ms(f.payload);
             if ((id == PVT_CARTESIAN || id == PVT_GEODETIC) &&
                 f.payload.size() >= 77) {
                 const auto mode = f.payload[6] & 15;
@@ -348,17 +339,14 @@ int main(int argc, char **argv) try {
             }
         }
         if (id == NAV_TIMEGPS) {
-            auto p = f.payload;
-            if (p.size() != 16 || (p[11] & 3) != 3 ||
-                read_le<int16_t>(p, 8) < 0 ||
-                read_le<uint32_t>(p, 0) >= 604800000) {
+            auto valid = ubx_nav_timegps_time(f);
+            if (!valid) {
                 if (!no_write)
                     fail("Invalid NAV-TIMEGPS");
                 timegps.reset();
                 return;
             }
-            auto time = int64_t(read_le<int16_t>(p, 8)) * 604800000 +
-                        read_le<uint32_t>(p, 0);
+            auto time = valid->gpst_ms;
             if (timegps && *timegps != time && !no_write)
                 fail("Conflicting NAV-TIMEGPS before EOE");
             timegps = time;

@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <cppgnss/stream.hpp>
+#include <cppgnss/ubx_nav.hpp>
 #include <neognss_obs/ubx_archive.hpp>
 
 namespace neognss_obs {
@@ -37,6 +38,14 @@ int64_t nav_tow(uint8_t id, std::span<const uint8_t> p) {
     }
     return -1;
 }
+// A TOW difference folded into [-half week, +half week].
+int64_t wrap_week_ms(int64_t delta) {
+    if (delta < -week_ms / 2)
+        delta += week_ms;
+    if (delta > week_ms / 2)
+        delta -= week_ms;
+    return delta;
+}
 } // namespace
 void EpochAssembler::finish(
     uint32_t extra, const std::function<void(const ArchiveEpoch &)> &emit) {
@@ -45,11 +54,7 @@ void EpochAssembler::finish(
     auto mapped = [&](int64_t tow) {
         if (tow < 0 || anchor_gpst_ == unknown_gpst)
             return unknown_gpst;
-        int64_t delta = tow - anchor_tow_;
-        if (delta < -week_ms / 2)
-            delta += week_ms;
-        if (delta > week_ms / 2)
-            delta -= week_ms;
+        const int64_t delta = wrap_week_ms(tow - anchor_tow_);
         if (std::abs(delta) > 60000)
             return unknown_gpst;
         return anchor_gpst_ + delta;
@@ -58,14 +63,10 @@ void EpochAssembler::finish(
     // the steered receiver clock and need not have an identical TOW.
     if (epoch_.gpst_ms == unknown_gpst && rawx_gpst_ != unknown_gpst) {
         epoch_.gpst_ms = rawx_gpst_;
-        if (epoch_.tow_ms >= 0) {
-            int64_t delta = epoch_.tow_ms - rawx_gpst_ % week_ms;
-            if (delta < -week_ms / 2)
-                delta += week_ms;
-            if (delta > week_ms / 2)
-                delta -= week_ms;
-            epoch_.gpst_ms += delta;
-        } else
+        if (epoch_.tow_ms >= 0)
+            epoch_.gpst_ms +=
+                wrap_week_ms(epoch_.tow_ms - rawx_gpst_ % week_ms);
+        else
             epoch_.tow_ms = rawx_gpst_ % week_ms;
     }
     if (epoch_.gpst_ms == unknown_gpst && epoch_.tow_ms >= 0) {
@@ -100,7 +101,7 @@ void EpochAssembler::accept(
     const auto length = frame.wire.size();
     const int64_t raw_nav_tow = cls == 1 ? nav_tow(id, p) : -1;
     const int64_t tow =
-        raw_nav_tow >= 0 && raw_nav_tow <= week_ms ? raw_nav_tow % week_ms : -1;
+        raw_nav_tow >= 0 && raw_nav_tow < week_ms ? raw_nav_tow : -1;
     // Empty measurement reports can carry startup week/TOW placeholders.
     // Preserve their bytes, but never use them to split or anchor epochs.
     const bool timed_rawx = cls == 2 && id == 0x15 && p.size() >= 16 &&
@@ -113,22 +114,12 @@ void EpochAssembler::accept(
             measurement = int64_t(read_le<uint16_t>(p, 8)) * week_ms +
                           std::llround(t * 1000);
     }
-    int64_t gpst = unknown_gpst;
-    int32_t full_week = -1;
-    if (cls == 1 && id == 0x20 && p.size() == 16 && (p[11] & 3) == 3 &&
-        tow >= 0) {
-        full_week = read_le<int16_t>(p, 8);
-        if (full_week >= 0) {
-            gpst = int64_t(full_week) * week_ms + raw_nav_tow;
-        }
-    }
-    int64_t measurement_delta = measurement == unknown_gpst || epoch_.tow_ms < 0
-                                    ? 0
-                                    : measurement % week_ms - epoch_.tow_ms;
-    if (measurement_delta < -week_ms / 2)
-        measurement_delta += week_ms;
-    if (measurement_delta > week_ms / 2)
-        measurement_delta -= week_ms;
+    const auto timegps = ubx_nav_timegps_time(frame);
+    const int64_t gpst = timegps ? timegps->gpst_ms : unknown_gpst;
+    const int64_t measurement_delta =
+        measurement == unknown_gpst || epoch_.tow_ms < 0
+            ? 0
+            : wrap_week_ms(measurement % week_ms - epoch_.tow_ms);
     if (active_ &&
         ((epoch_.tow_ms >= 0 && tow >= 0 && epoch_.tow_ms != tow) ||
          (measurement != unknown_gpst &&
@@ -150,7 +141,7 @@ void EpochAssembler::accept(
         ++epoch_.nav_frames;
     if (tow >= 0)
         epoch_.tow_ms = tow;
-    if (gpst != unknown_gpst && tow >= 0) {
+    if (gpst != unknown_gpst) {
         if (epoch_.gpst_ms != unknown_gpst && epoch_.gpst_ms != gpst)
             epoch_.flags |= archive_time_conflict;
         epoch_.gpst_ms = gpst;

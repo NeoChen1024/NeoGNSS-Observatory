@@ -113,7 +113,7 @@ if (result) {
 `ParseResult<T>` holds either owned decoded data or a `ParseError`, never a
 partially decoded message. `value()` supports move extraction;
 `consumed()` is available on success. Accessing the wrong result branch throws
-`std::logic_error`. Parsing checks protocol, message ID, variant and payload
+`std::bad_variant_access`. Parsing checks protocol, message ID, variant and payload
 bounds, but relies on the caller's framing/checksum validation. `StreamDecoder`
 provides that validation; fabricating a `FrameView` does not validate its CRC.
 No raw-payload copy or second checksum pass is required. Allocation failures
@@ -144,7 +144,13 @@ fields and wide integers own their bytes. No field-name map is constructed.
 
 `SBF::inspect(id, revision, payload)` provides layout status, consumed length
 and optional native TOW/WNc for generic QA. That time is not necessarily a
-receiver-navigation anchor. Each message owns a `std::string dump() const`
+receiver-navigation anchor. `SBF::gpst_ms(tow, wnc)` and
+`SBF::header_gpst_ms(payload)` convert block-header time to GPST milliseconds,
+with none for do-not-use TOW/WNc or TOW outside the week;
+`UBX::ubx_nav_timegps_time(frame)` gives NAV-TIMEGPS GPST milliseconds and fTOW
+only when TOW and week are flagged valid, the week is non-negative and iTOW
+lies inside the week. Callers keep their own policy for frames without time.
+Each message owns a `std::string dump() const`
 method that formats its stored fields, preserving nested groups and allowing
 message-specific formatting. `cppgnss::dump(frame)` dispatches to these methods
 for all protocols, includes raw bytes and errors for failures, and preserves

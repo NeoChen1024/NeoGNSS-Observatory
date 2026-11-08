@@ -373,6 +373,7 @@ TelemetryRow telemetry_row(const Json &r) {
 }
 
 struct TelemetryAssembler {
+    explicit TelemetryAssembler(bool ubx) : ubx(ubx) {}
     TelemetryRow current, before;
     std::map<int64_t, TelemetryRow> future;
     std::vector<TelemetryRow> ready;
@@ -383,7 +384,7 @@ struct TelemetryAssembler {
     uint8_t untimed = 0;
     int64_t archive_day = 0;
     uint64_t partial_rows = 0, updates = 0;
-    bool ubx = false;
+    const bool ubx; // Reader protocol
     std::optional<Tick> order_anchor;
     uint64_t order_index = 0;
     void locate(const Position &position) {
@@ -414,23 +415,17 @@ struct TelemetryAssembler {
     void publish(bool complete) { publish(current, complete); }
     void frame(const cppgnss::FrameView &f, std::optional<Tick> navigation,
                int64_t day) {
-        ubx = f.protocol() == cppgnss::Protocol::ubx;
         bool trigger =
             ubx ? f.id() == 0x0107 : (f.id() == 4006 || f.id() == 4007);
         if (trigger && f.payload.size() >= (ubx ? 4u : 6u)) {
-            std::optional<int64_t> next = UBX::read_le<uint32_t>(f.payload, 0);
+            std::optional<int64_t> next;
             uint8_t block = 0;
-            if (!ubx) {
-                auto week = UBX::read_le<uint16_t>(f.payload, 4);
-                if (*next >= 604800000 || week == 65535) {
-                    // Do-not-use time cannot identify the epoch; each enabled
-                    // PVT block type occurs once per epoch instead.
-                    next.reset();
-                    block = f.id() == 4006 ? 1 : 2;
-                } else {
-                    *next += int64_t(week) * 604800000;
-                }
-            }
+            if (ubx)
+                next = UBX::read_le<uint32_t>(f.payload, 0);
+            else if (!(next = cppgnss::SBF::header_gpst_ms(f.payload)))
+                // Do-not-use time cannot identify the epoch; each enabled
+                // PVT block type occurs once per epoch instead.
+                block = f.id() == 4006 ? 1 : 2;
             if (next ? untimed || !key || *key != *next
                      : key || !untimed || (untimed & block)) {
                 // Earlier source-stamped reports belong to the closing window;
@@ -469,7 +464,7 @@ struct TelemetryAssembler {
             if ((ubx ? int64_t(UBX::read_le<uint32_t>(f.payload, 0))
                      : millis) == *key) {
                 current.gpst = navigation;
-                archive_day = int64_t(*navigation / ps / 86400);
+                archive_day = neognss_obs::gpst_day(*navigation);
             }
         }
     }
@@ -483,12 +478,12 @@ struct TelemetryAssembler {
             return {};
         return int64_t(*t / 1000000000);
     }
-    void status(const TelemetryStatus &report, bool is_ubx) {
+    void status(const TelemetryStatus &report) {
         TelemetryRow fields;
         fields.receiver_uptime_s = report.receiver_uptime_s;
         fields.receiver_temperature_c = report.receiver_temperature_c;
         fields.cpu_load_percent = report.cpu_load_percent;
-        if (is_ubx && before.receiver_uptime_s &&
+        if (ubx && before.receiver_uptime_s &&
             *before.receiver_uptime_s != report.receiver_uptime_s) {
             touch(before);
             before.collection_complete = false;
@@ -497,19 +492,17 @@ struct TelemetryAssembler {
             before = TelemetryRow{};
             ++partial_rows;
         }
-        telemetry_merge(touch(is_ubx ? before : target(stamp(report.gpst))),
+        telemetry_merge(touch(ubx ? before : target(stamp(report.gpst))),
                         fields);
         ++updates;
     }
-    void measurement(const neognss_obs::Measurements &e) {
-        if (!e.adjustment_reported && !e.cumulative_adjustment_ms_mod256)
+    // TIME: measurement_gpst(e); an untimed epoch has no clock item.
+    void measurement(const neognss_obs::Measurements &e,
+                     std::optional<Tick> time) {
+        if (!time ||
+            (!e.adjustment_reported && !e.cumulative_adjustment_ms_mod256))
             return;
-        Tick t;
-        try {
-            t = neognss_obs::measurement_time(e);
-        } catch (const std::runtime_error &) {
-            return;
-        }
+        const Tick t = *time;
         TelemetryClockItem item{t, e.adjustment_reported, {}, {}};
         if (e.cumulative_adjustment_ms_mod256) {
             item.cumulative_adjustment_ms = *e.cumulative_adjustment_ms_mod256;
@@ -583,7 +576,6 @@ struct TelemetryAssembler {
                 {"key", key ? Json(*key) : Json(nullptr)},
                 {"untimed_triggers", untimed},
                 {"archive_day", archive_day},
-                {"ubx", ubx},
                 {"partial_rows", partial_rows}};
     }
     void restore(const Json &v) {
@@ -597,7 +589,6 @@ struct TelemetryAssembler {
         // Checkpoints written before untimed windows existed have none open.
         untimed = v.value("untimed_triggers", uint8_t{0});
         archive_day = v.at("archive_day");
-        ubx = v.at("ubx");
         partial_rows = v.at("partial_rows");
     }
 };

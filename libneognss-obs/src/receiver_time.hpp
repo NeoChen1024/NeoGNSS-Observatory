@@ -2,6 +2,7 @@
 #pragma once
 #include <algorithm>
 #include <boost/int128/int128.hpp>
+#include <neognss_obs/gpst.hpp>
 #include <optional>
 
 namespace neognss_obs {
@@ -21,7 +22,7 @@ struct ReceiverTime {
     void advance(Tick t) {
         if (!progress || t > *progress)
             progress = t;
-        archive_day = int64_t(t / second / 86400);
+        archive_day = gpst_day(t);
     }
     std::optional<Tick> anchor() const {
         if (!navigation || (progress && *progress - *navigation > timeout) ||

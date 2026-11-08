@@ -89,8 +89,6 @@ int main() {
     pvt.data.fixType = 5;
     pvt.data.flags_bit = 1;
     assert(ubx_nav_pvt_fix_type(pvt) == "TIME");
-    pvt.data.valid_bit = 0;
-    assert(!ubx_nav_pvt_fix_ok(pvt));
 
     // A real NAV-PVT wire payload exercises generated decoding and the renamed
     // pyubx2 bitfields. Scaled fields must remain raw integers in this API.

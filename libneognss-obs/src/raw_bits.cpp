@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cppgnss/sbf.hpp>
 #include <cppgnss/sbf_navigation_page_gen.hpp>
 #include <cppgnss/ubx_subframe.hpp>
 #include <map>
@@ -313,10 +314,7 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
                 it->second.end())
             return {RawBitsStatus::unsupported, {}};
         auto sv = page.satellite;
-        auto tow = page.tow;
-        auto week = page.week;
-        if (tow < 604800000 && week != 65535)
-            r.gpst_ms = int64_t(week) * 604800000 + tow;
+        r.gpst_ms = cppgnss::SBF::gpst_ms(page.tow, page.week);
         if (sv >= 1 && sv <= 37) {
             r.system = "GPS";
             r.satellite = sv;
@@ -443,9 +441,9 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         if (f.id() != 0x0213)
             return {};
         auto parsed = UBX::parse_subframe(f);
-        if (!parsed.subframe)
+        if (!parsed)
             return {RawBitsStatus::malformed, {}};
-        const auto &s = *parsed.subframe;
+        const auto &s = *parsed;
         r.receiver_channel = s.chn;
         auto g = s.signal.gnssId, sig = s.signal.sigId;
         if (g == 6 || g == 7)
@@ -498,7 +496,7 @@ RawBitsResult decode(const cppgnss::FrameView &f) {
         }
         if (r.family.empty())
             return {RawBitsStatus::unsupported, {}};
-        navigation_words = std::move(parsed.subframe->words);
+        navigation_words = std::move(parsed->words);
         b = {{}, navigation_words, width, navigation_words.size() * width};
     }
     if (r.family.ends_with("_LNAV")) {

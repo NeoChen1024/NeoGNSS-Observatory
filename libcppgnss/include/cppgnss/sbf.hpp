@@ -51,4 +51,19 @@ struct BlockInfo {
 // caller.
 BlockInfo inspect(uint16_t id, uint8_t revision,
                   std::span<const uint8_t> payload);
+// Block-header TOW (ms) and WNc as GPST milliseconds. Do-not-use values
+// (TOW 4294967295, WNc 65535) and TOW outside the week have no time.
+constexpr std::optional<int64_t> gpst_ms(uint32_t tow_ms, uint16_t week) {
+    if (tow_ms >= 604800000 || week == 65535)
+        return std::nullopt;
+    return int64_t(week) * 604800000 + tow_ms;
+}
+// gpst_ms of the TOW/WNc header fields that begin every SBF block payload.
+inline std::optional<int64_t> header_gpst_ms(std::span<const uint8_t> payload) {
+    if (payload.size() < 6)
+        return std::nullopt;
+    return gpst_ms(uint32_t(payload[0]) | uint32_t(payload[1]) << 8 |
+                       uint32_t(payload[2]) << 16 | uint32_t(payload[3]) << 24,
+                   uint16_t(payload[4] | payload[5] << 8));
+}
 } // namespace cppgnss::SBF

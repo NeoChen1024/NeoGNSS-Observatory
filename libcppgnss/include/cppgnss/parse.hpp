@@ -3,7 +3,6 @@
 #include <cppgnss/dump.hpp>
 #include <cppgnss/stream.hpp>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
@@ -26,15 +25,8 @@ template <class T> struct ParsedMessage {
     size_t consumed;
 };
 template <class T> class ParseResult {
+    // Accessing the wrong branch throws std::bad_variant_access.
     std::variant<ParsedMessage<T>, ParseError> result_;
-    void require_value() const {
-        if (!*this)
-            throw std::logic_error("ParseResult has no value");
-    }
-    void require_error() const {
-        if (*this)
-            throw std::logic_error("ParseResult has no error");
-    }
 
   public:
     ParseResult(ParsedMessage<T> value) : result_(std::move(value)) {}
@@ -42,27 +34,16 @@ template <class T> class ParseResult {
     explicit operator bool() const noexcept {
         return std::holds_alternative<ParsedMessage<T>>(result_);
     }
-    T &value() & {
-        require_value();
-        return std::get<ParsedMessage<T>>(result_).message;
-    }
+    T &value() & { return std::get<ParsedMessage<T>>(result_).message; }
     const T &value() const & {
         return std::get<ParsedMessage<T>>(result_).message;
     }
     T &&value() && {
-        require_value();
         return std::move(std::get<ParsedMessage<T>>(result_).message);
     }
-    const ParseError &error() const & {
-        require_error();
-        return std::get<ParseError>(result_);
-    }
-    ParseError error() && {
-        require_error();
-        return std::move(std::get<ParseError>(result_));
-    }
+    const ParseError &error() const & { return std::get<ParseError>(result_); }
+    ParseError error() && { return std::move(std::get<ParseError>(result_)); }
     size_t consumed() const {
-        require_value();
         return std::get<ParsedMessage<T>>(result_).consumed;
     }
 };
@@ -88,12 +69,8 @@ std::string dump_parsed(const FrameView &frame, const ParseResult<T> &result) {
         if (frame.protocol() == Protocol::sbf)
             text += ", revision=" + std::to_string(frame.revision());
         if (result.consumed() < frame.payload.size()) {
-            text += ", trailing=hex:";
-            constexpr char digits[] = "0123456789abcdef";
-            for (auto b : frame.payload.subspan(result.consumed())) {
-                text += digits[b >> 4];
-                text += digits[b & 15];
-            }
+            text += ", trailing=hex:" +
+                    hex(frame.payload.subspan(result.consumed()));
         }
         text += ")\n";
     }

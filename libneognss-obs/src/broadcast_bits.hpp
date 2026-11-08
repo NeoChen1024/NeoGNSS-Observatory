@@ -8,14 +8,7 @@ namespace neognss_obs::broadcast_detail {
 // RAW * 2^-FRACTIONAL_BITS seconds as picoseconds, rounded half to even
 // without an intermediate double.
 inline Tick binary_seconds(int64_t raw, unsigned fractional_bits) {
-    Tick x = Tick(raw) * ps, d = Tick(1) << fractional_bits;
-    bool neg = x < 0;
-    if (neg)
-        x = -x;
-    Tick q = x / d, r = x % d;
-    if (r * 2 > d || (r * 2 == d && (q & 1) != 0))
-        ++q;
-    return neg ? -q : q;
+    return binary_scaled(Tick(raw), int(fractional_bits), Tick(ps));
 }
 class BroadcastBits {
     std::span<const uint8_t> data_;
@@ -68,11 +61,6 @@ inline Value gst_reference(std::optional<Tick> now, int64_t week, int64_t tow,
 inline Value nearest_week(std::optional<Tick> now, Tick tow) {
     if (!now || tow < 0 || tow >= seconds(604800))
         return {};
-    Tick t = (*now / seconds(604800)) * seconds(604800) + tow;
-    if (t - *now > seconds(302400))
-        t -= seconds(604800);
-    if (*now - t > seconds(302400))
-        t += seconds(604800);
-    return t;
+    return neognss_obs::nearest_week(*now, tow);
 }
 } // namespace neognss_obs::broadcast_detail

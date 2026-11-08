@@ -18,21 +18,12 @@ struct SignalKey {
 
 struct NavigationSubframe {
     SignalKey signal;
-    uint8_t version = 0, chn = 0, raw_freqId = 0, reserved0 = 0;
+    uint8_t chn = 0;
     std::vector<uint32_t> words;
     // No timestamp: RXM-SFRBX does not provide one. Applications may attach
     // reception-context timestamps with explicitly recorded provenance.
 };
-enum class SubframeStatus {
-    decoded,
-    not_sfrbx,
-    invalid_frame,
-    invalid_length,
-    unsupported_version
-};
-struct SubframeResult {
-    SubframeStatus status;
-    std::optional<NavigationSubframe> subframe;
-};
-SubframeResult parse_subframe(const cppgnss::FrameView &frame);
+// RXM-SFRBX version 2 with 1..16 data words; other frames have none.
+std::optional<NavigationSubframe>
+parse_subframe(const cppgnss::FrameView &frame);
 } // namespace UBX
