@@ -5,6 +5,7 @@
 #include <cmath>
 #include <neognss_obs/processing.hpp>
 #include <numbers>
+#include <optional>
 
 namespace neognss_obs {
 // Receiver phase range error in meters: -PCO dot LOS + PCV. Subtract from
@@ -143,30 +144,26 @@ class ReceiverAntenna {
             throw std::invalid_argument("Empty receiver antenna model");
     }
     bool enabled() const { return !records_.empty(); }
-    bool covers(int64_t ns, double elevation) const {
-        if (!enabled())
-            return true;
+    // Validity record covering NS; none for a disabled model.
+    std::optional<size_t> record_index(int64_t ns) const {
+        for (size_t i = 0; i < records_.size(); ++i)
+            if (records_[i].start <= ns && ns <= records_[i].end)
+                return i;
+        return {};
+    }
+    bool covers(size_t record, double elevation) const {
         if (!std::isfinite(elevation))
             return false;
         double zenith = 90 - elevation;
-        for (const auto &terms : records_[record_index(ns)].frequencies)
+        for (const auto &terms : records_.at(record).frequencies)
             for (const auto &term : terms)
                 if (zenith < term.pattern.first - 1e-8 ||
                     zenith > term.pattern.last + 1e-8)
                     return false;
         return true;
     }
-    size_t record_index(int64_t ns) const {
-        for (size_t i = 0; i < records_.size(); ++i)
-            if (records_[i].start <= ns && ns <= records_[i].end)
-                return i;
-        throw std::runtime_error(
-            "No receiver antenna calibration valid at observation epoch");
-    }
-    double correction(size_t slot, int64_t ns, double az, double el) const {
-        if (!enabled())
-            return 0;
-        const auto &terms = records_[record_index(ns)].frequencies.at(slot);
+    double correction(size_t record, size_t slot, double az, double el) const {
+        const auto &terms = records_.at(record).frequencies.at(slot);
         if (!std::isfinite(az) || !std::isfinite(el))
             return NAN;
         az = std::fmod(std::fmod(az - orientation_, 360) + 360, 360);

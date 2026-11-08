@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "python_bindings.hpp"
 #include <algorithm>
 #include <cppgnss/sbf.hpp>
 #include <cppgnss/ubx_names.hpp>
 #include <map>
-#include <mutex>
 #include <neognss_obs/processing.hpp>
 #include <neognss_obs/ubx_archive.hpp>
-#include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 namespace py = pybind11;
@@ -16,88 +15,7 @@ void bind_grid(py::module_ &);
 void bind_cnex(py::module_ &);
 void bind_broadcast(py::module_ &);
 using neognss_obs::Json;
-// pybind11/libc++ compares RTTI names: bound helpers need component-qualified
-// identities, not same-named anonymous-namespace types in separate TUs.
 namespace neognss_obs::python_bindings::core {
-py::object to_python(const Json &value) {
-    if (value.is_null())
-        return py::none();
-    if (value.is_boolean())
-        return py::bool_(value.get<bool>());
-    if (value.is_number_unsigned())
-        return py::int_(value.get<uint64_t>());
-    if (value.is_number_integer())
-        return py::int_(value.get<int64_t>());
-    if (value.is_number_float())
-        return py::float_(value.get<double>());
-    if (value.is_string())
-        return py::str(value.get_ref<const std::string &>());
-    if (value.is_array()) {
-        py::list out;
-        for (auto &v : value)
-            out.append(to_python(v));
-        return out;
-    }
-    py::dict out;
-    for (auto it = value.begin(); it != value.end(); ++it)
-        out[py::str(it.key())] = to_python(it.value());
-    return out;
-}
-Json from_python(py::handle value) {
-    if (py::isinstance<py::bytes>(value)) {
-        const auto bytes = value.cast<std::string>();
-        return Json::binary(std::vector<uint8_t>(bytes.begin(), bytes.end()));
-    }
-    if (value.is_none())
-        return nullptr;
-    if (py::isinstance<py::bool_>(value))
-        return value.cast<bool>();
-    if (py::isinstance<py::int_>(value))
-        return value.cast<int64_t>();
-    if (py::isinstance<py::float_>(value))
-        return value.cast<double>();
-    if (py::isinstance<py::str>(value))
-        return value.cast<std::string>();
-    if (py::isinstance<py::dict>(value)) {
-        Json out = Json::object();
-        for (auto pair : py::reinterpret_borrow<py::dict>(value))
-            out[pair.first.cast<std::string>()] = from_python(pair.second);
-        return out;
-    }
-    if (py::isinstance<py::list>(value) || py::isinstance<py::tuple>(value)) {
-        Json out = Json::array();
-        for (auto item : py::reinterpret_borrow<py::iterable>(value))
-            out.push_back(from_python(item));
-        return out;
-    }
-    throw py::type_error("Expected numeric/string/list/dict batch values");
-}
-std::span<const uint8_t> view(const py::buffer_info &b) {
-    if (b.ndim != 1 || b.itemsize != 1 || b.strides[0] != 1 || !b.readonly)
-        throw py::value_error("Expected a contiguous read-only byte buffer");
-    return {static_cast<const uint8_t *>(b.ptr), size_t(b.size)};
-}
-template <class T> struct Guarded {
-    T value;
-    std::mutex mutex;
-    template <class... A>
-    explicit Guarded(A &&...a) : value(std::forward<A>(a)...) {}
-    template <class F> auto run(F &&f) {
-        std::unique_lock lock(mutex, std::try_to_lock);
-        if (!lock.owns_lock())
-            throw std::runtime_error(
-                "Concurrent use of the same processing state");
-        return f(value);
-    }
-};
-template <class T, class F> py::object run(Guarded<T> &self, F &&f) {
-    Json result;
-    {
-        py::gil_scoped_release release;
-        result = self.run(std::forward<F>(f));
-    }
-    return to_python(result);
-}
 struct RxMessageRatio {
     bool sbf;
     cppgnss::StreamDecoder reader;
@@ -157,7 +75,8 @@ struct RxMessageRatio {
 };
 } // namespace neognss_obs::python_bindings::core
 PYBIND11_MODULE(_native, m) {
-    using namespace neognss_obs::python_bindings::core;
+    using namespace neognss_obs::python_bindings;
+    using core::RxMessageRatio;
     bind_ppp(m);
     bind_stec(m);
     bind_grid(m);
@@ -169,12 +88,11 @@ PYBIND11_MODULE(_native, m) {
         .def("feed",
              [](Ratio &s, py::buffer data) {
                  auto info = data.request();
-                 auto bytes = view(info);
-                 py::gil_scoped_release release;
+                 auto bytes = byte_view(info);
                  s.run([&](auto &p) { p.feed(bytes); });
              })
         .def("summary", [](Ratio &s) {
-            return run(s, [](auto &p) { return p.summary(); });
+            return to_python(s.run([](auto &p) { return p.summary(); }));
         });
     using Scan = Guarded<neognss_obs::DatasetScan>;
     py::class_<Scan>(m, "DatasetScan")
@@ -183,17 +101,12 @@ PYBIND11_MODULE(_native, m) {
         .def("feed",
              [](Scan &s, py::buffer data) {
                  auto info = data.request();
-                 auto b = view(info);
-                 py::gil_scoped_release release;
+                 auto b = byte_view(info);
                  s.run([&](auto &p) { p.feed(b); });
              })
-        .def("finish",
-             [](Scan &s) {
-                 py::gil_scoped_release release;
-                 s.run([](auto &p) { p.finish(); });
-             })
+        .def("finish", [](Scan &s) { s.run([](auto &p) { p.finish(); }); })
         .def("summary", [](Scan &s) {
-            return run(s, [](auto &p) { return p.summary(); });
+            return to_python(s.run([](auto &p) { return p.summary(); }));
         });
     m.doc() =
         "Batched native GNSS processing; file/Parquet I/O belongs to Python.";
@@ -202,7 +115,7 @@ PYBIND11_MODULE(_native, m) {
     m.attr("archive_record_format") = neognss_obs::archive_record_format;
     m.def("archive_index", [](py::buffer data) {
         auto info = data.request();
-        auto input = view(info);
+        auto input = byte_view(info);
         std::vector<uint8_t> result;
         {
             py::gil_scoped_release release;
@@ -220,14 +133,10 @@ PYBIND11_MODULE(_native, m) {
              [](Planner &s, py::object source, py::buffer data) {
                  auto description = from_python(source);
                  auto info = data.request();
-                 auto b = view(info);
-                 py::gil_scoped_release release;
-                 s.run([&](auto &p) {
-                     p.feed(description, b);
-                     return 0;
-                 });
+                 auto b = byte_view(info);
+                 s.run([&](auto &p) { p.feed(description, b); });
              })
         .def("finish", [](Planner &s) {
-            return run(s, [](auto &p) { return p.finish(); });
+            return to_python(s.run([](auto &p) { return p.finish(); }));
         });
 }

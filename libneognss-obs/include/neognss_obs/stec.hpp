@@ -47,5 +47,16 @@ struct DcbSample {
     int32_t prn;
     double residual_tecu, elevation_deg, azimuth_deg, gim_rms_tecu;
 };
-Json fit_receiver_dcb(std::span<const DcbSample>, const Json &settings);
+// Receiver DCB estimator with settings validated once at construction.
+// meters_per_tecu is the signal pair's ionospheric scale (pair contract).
+class ReceiverDcbFit {
+  public:
+    explicit ReceiverDcbFit(const Json &settings);
+    Json fit(std::span<const DcbSample>, double meters_per_tecu) const;
+
+  private:
+    double bin_seconds_, min_hours_, cutoff_, rms_floor_, max_scatter_;
+    int64_t bin_ns_;
+    size_t min_satellites_, min_arcs_;
+};
 } // namespace neognss_obs

@@ -199,15 +199,12 @@ struct StecProcessor::State {
                 !obs2code(pair.first.c_str()) ||
                 !obs2code(pair.second.c_str()) || !std::isfinite(pair.f1) ||
                 !std::isfinite(pair.f2) || pair.f1 <= pair.f2 || pair.f2 <= 0 ||
-                !std::isfinite(pair.k) ||
-                std::abs(pair.k - 40.3e16 * (1 / (pair.f2 * pair.f2) -
-                                             1 / (pair.f1 * pair.f1))) > 1e-12)
+                !std::isfinite(pair.k) || pair.k <= 0)
                 throw std::invalid_argument(
                     "Invalid automatic STEC pair contract");
+            // RTKLIB observation codes are digit-letter pairs.
             pair.first_slot = signal_slot(pair.first);
             pair.second_slot = signal_slot(pair.second);
-            if (!pair.first_slot || !pair.second_slot)
-                throw std::invalid_argument("Invalid STEC signal code");
             pairs.push_back(std::move(pair));
         }
         if (pairs.empty())
@@ -244,8 +241,7 @@ struct StecProcessor::State {
                     return b.meters;
         return NAN;
     }
-    StecArc estimate(int prn, const Track &a, int reason,
-                     bool provisional) const {
+    StecArc estimate(const Track &a, int reason, bool provisional) const {
         auto fit = robust(a.offsets, a.weights, 0.1);
         bool valid =
             a.offsets.size() >= min_level_samples &&
@@ -266,11 +262,11 @@ struct StecProcessor::State {
                 valid ? fit.value : NAN,
                 fit.scatter};
     }
-    void close(int prn, int reason, std::vector<StecArc> &out) {
-        auto found = tracks.find(prn);
+    void close(int key, int reason, std::vector<StecArc> &out) {
+        auto found = tracks.find(key);
         if (found == tracks.end())
             return;
-        auto value = estimate(prn, found->second, reason, false);
+        auto value = estimate(found->second, reason, false);
         out.push_back(value);
         ++arcs;
         valid_arcs += value.valid;
@@ -686,16 +682,8 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
                 double gf = CLIGHT / p.f1 * a->phase_cycles -
                             CLIGHT / p.f2 * b->phase_cycles;
                 int reason = restarted ? 11 : timed_out.contains(key) ? 1 : 0;
-                auto &antenna = s.antennas.at(family);
-                auto antenna_record = [&](int64_t ns) -> int64_t {
-                    if (!antenna.enabled())
-                        return -1;
-                    try {
-                        return antenna.record_index(ns);
-                    } catch (const std::runtime_error &) {
-                        return -1;
-                    }
-                };
+                const auto &antenna = s.antennas.at(family);
+                const auto record = antenna.record_index(epoch.gpst_ns);
                 if (old != s.tracks.end()) {
                     auto &t = old->second;
                     double dt = double(epoch.gpst_ns - t.last) / second;
@@ -719,7 +707,7 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
 
                     if (p.id != t.pair_id)
                         reason = 9;
-                    if (antenna_record(t.last) != antenna_record(epoch.gpst_ns))
+                    if (antenna.record_index(t.last) != record)
                         reason = 8;
                     if (reason)
                         s.close(key, reason, out.arcs);
@@ -762,17 +750,20 @@ StecResult StecProcessor::process(const ObservationBatch &batch) {
                     continue;
                 double raw = gf;
                 int32_t issues = geometry_issues;
-                if (s.antenna_required &&
-                    (!antenna.enabled() || antenna_record(epoch.gpst_ns) < 0)) {
-                    gf = NAN;
-                    issues |= 32;
-                } else if (!antenna.covers(epoch.gpst_ns, el)) {
+                if (!record) {
+                    // A missing required model or an epoch outside every
+                    // validity record leaves the sample uncalibrated.
+                    if (s.antenna_required || antenna.enabled()) {
+                        gf = NAN;
+                        issues |= 32;
+                    }
+                } else if (!antenna.covers(*record, el)) {
                     gf = NAN;
                     if (std::isfinite(el))
                         issues |= 32;
                 } else
-                    gf -= antenna.correction(0, epoch.gpst_ns, az, el) -
-                          antenna.correction(1, epoch.gpst_ns, az, el);
+                    gf -= antenna.correction(*record, 0, az, el) -
+                          antenna.correction(*record, 1, az, el);
                 double code = NAN;
                 if (a->code_valid && b->code_valid)
                     code =
@@ -845,8 +836,8 @@ Json StecProcessor::summary() const {
 
 std::vector<StecArc> StecProcessor::preview() const {
     std::vector<StecArc> out;
-    for (const auto &[prn, track] : state_->tracks)
-        out.push_back(state_->estimate(prn, track, 7, true));
+    for (const auto &[key, track] : state_->tracks)
+        out.push_back(state_->estimate(track, 7, true));
     return out;
 }
 Json StecProcessor::checkpoint() const {
@@ -971,24 +962,28 @@ void StecProcessor::restore(const Json &j) {
     }
 }
 
-Json fit_receiver_dcb(std::span<const DcbSample> rows, const Json &settings) {
-    double K = positive(settings, "meters_per_tecu");
-    double bin_seconds = positive(settings, "bin_seconds"),
-           min_hours = positive(settings, "min_hours");
-    auto bin_ns = std::llround(bin_seconds * second);
-    if (bin_ns < 1)
+ReceiverDcbFit::ReceiverDcbFit(const Json &settings)
+    : bin_seconds_(positive(settings, "bin_seconds")),
+      min_hours_(positive(settings, "min_hours")),
+      cutoff_(positive(settings, "elevation_deg")),
+      rms_floor_(positive(settings, "gim_rms_floor_tecu")),
+      max_scatter_(positive(settings, "max_scatter_tecu")),
+      bin_ns_(std::llround(bin_seconds_ * second)),
+      min_satellites_(positive_count(settings, "min_satellites")),
+      min_arcs_(positive_count(settings, "min_arcs")) {
+    if (bin_ns_ < 1)
         throw std::invalid_argument("Invalid DCB bin interval");
-    double cutoff = positive(settings, "elevation_deg"),
-           rms_floor = positive(settings, "gim_rms_floor_tecu");
-    double max_scatter = positive(settings, "max_scatter_tecu");
-    size_t min_sat = positive_count(settings, "min_satellites"),
-           min_arcs = positive_count(settings, "min_arcs");
+}
+Json ReceiverDcbFit::fit(std::span<const DcbSample> rows,
+                         double meters_per_tecu) const {
+    if (!std::isfinite(meters_per_tecu) || meters_per_tecu <= 0)
+        throw std::invalid_argument("Invalid meters_per_tecu");
     std::map<std::pair<int64_t, int64_t>, std::vector<const DcbSample *>> bins;
     for (const auto &r : rows)
         if (std::isfinite(r.residual_tecu) && std::isfinite(r.gim_rms_tecu) &&
-            r.gim_rms_tecu > 0 && r.elevation_deg >= cutoff &&
+            r.gim_rms_tecu > 0 && r.elevation_deg >= cutoff_ &&
             r.elevation_deg < 90 && std::isfinite(r.azimuth_deg))
-            bins[{r.arc_id, r.gpst_ns / bin_ns}].push_back(&r);
+            bins[{r.arc_id, r.gpst_ns / bin_ns_}].push_back(&r);
     std::vector<double> x, w;
     std::vector<const DcbSample *> representatives;
     std::map<int64_t, double> arc_weight;
@@ -998,7 +993,7 @@ Json fit_receiver_dcb(std::span<const DcbSample> rows, const Json &settings) {
         for (auto r : bin) {
             v.push_back(r->residual_tecu);
             weight += std::pow(std::sin(r->elevation_deg * D2R), 2) /
-                      std::pow(std::max(rms_floor, r->gim_rms_tecu), 2);
+                      std::pow(std::max(rms_floor_, r->gim_rms_tecu), 2);
         }
         weight /= bin.size();
         x.push_back(median(v));
@@ -1019,19 +1014,21 @@ Json fit_receiver_dcb(std::span<const DcbSample> rows, const Json &settings) {
             auto r = representatives[i];
             satellites.insert(r->prn);
             arcs.insert(r->arc_id);
-            time_bins.insert(r->gpst_ns / bin_ns);
+            time_bins.insert(r->gpst_ns / bin_ns_);
             quadrants.insert(int(r->azimuth_deg / 90) % 4);
             low = std::min(low, r->elevation_deg);
             high = std::max(high, r->elevation_deg);
         }
-    double coverage = time_bins.size() * bin_seconds / 3600;
-    bool valid = satellites.size() >= min_sat && arcs.size() >= min_arcs &&
-                 quadrants.size() >= 3 && high - low >= 20 &&
-                 coverage >= min_hours && fit.scatter <= max_scatter;
+    double coverage = time_bins.size() * bin_seconds_ / 3600;
+    bool valid = satellites.size() >= min_satellites_ &&
+                 arcs.size() >= min_arcs_ && quadrants.size() >= 3 &&
+                 high - low >= 20 && coverage >= min_hours_ &&
+                 fit.scatter <= max_scatter_;
     return {{"status", valid ? "estimated" : "insufficient_or_inconsistent"},
             {"receiver_bias_tecu", valid ? Json(fit.value) : Json(nullptr)},
             {"receiver_dcb_ns",
-             valid ? Json(fit.value * K / CLIGHT * 1e9) : Json(nullptr)},
+             valid ? Json(fit.value * meters_per_tecu / CLIGHT * 1e9)
+                   : Json(nullptr)},
             {"candidate_bias_tecu",
              std::isfinite(fit.value) ? Json(fit.value) : Json(nullptr)},
             {"residual_scatter_tecu",

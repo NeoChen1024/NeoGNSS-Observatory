@@ -5,7 +5,6 @@
 #include <boost/int128/int128.hpp>
 #include <cstring>
 #include <limits>
-#include <mutex>
 #include <nanoarrow/nanoarrow.h>
 #include <neognss_obs/ppp.hpp>
 #include <unordered_map>
@@ -46,7 +45,6 @@ class StecCnexReader {
     }
 
   public:
-    std::mutex mutex;
     StecCnexReader(std::string setup, const Json &pairs)
         : setup_(std::move(setup)) {
         for (const auto &p : pairs) {

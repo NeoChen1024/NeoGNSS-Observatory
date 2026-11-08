@@ -106,7 +106,17 @@ def sample_tables(root, start_ns=None, end_ns=None):
     return window_tables(paths, [(start_ns, end_ns)])
 
 
-def calibrate(root, settings, metadata, from_ns=None, origin_ns=None, previous=None):
+def receiver_dcb_fit(dcb, interval):
+    """Native DCB estimator; it validates the fit settings, Python the windowing."""
+    if dcb.keys() - DCB_DEFAULTS.keys():
+        raise ValueError("Invalid receiver DCB settings")
+    fit = _native.ReceiverDcbFit(dcb)
+    if not np.isfinite(dcb["window_hours"]) or dcb["window_hours"] < dcb["min_hours"] or dcb["bin_seconds"] < interval:
+        raise ValueError("DCB window must cover min_hours; bin_seconds must cover sample interval")
+    return fit
+
+
+def calibrate(root, settings, estimator, metadata, from_ns=None, origin_ns=None, previous=None):
     """Fit independent exact-code receiver biases in one bounded time window."""
     ids, offsets = arc_levels(root)
     window_ns = round(settings["window_hours"] * 3600e9)
@@ -128,7 +138,7 @@ def calibrate(root, settings, metadata, from_ns=None, origin_ns=None, previous=N
         for pair_id, parts in pieces.items():
             pair = metadata["pairs"][pair_id]
             data = np.concatenate(parts)
-            fit = _native.fit_receiver_dcb(data, settings | dict(meters_per_tecu=pair["meters_per_tecu"]))
+            fit = estimator.fit(data, pair["meters_per_tecu"])
             selected = arcs.filter(
                 pa.compute.and_(
                     pa.compute.equal(arcs["pair_id"], pair_id),
@@ -305,10 +315,7 @@ def cli(input_dir, config, output, start, end, rebuild):
             )
         native.update(pairs=pairs, antennas=antennas, antenna_required=antenna_mode == "required")
         dcb = DCB_DEFAULTS | settings.get("dcb", {})
-        if dcb.keys() - DCB_DEFAULTS.keys() or not all(np.isfinite(v) and v > 0 for v in dcb.values()):
-            raise ValueError("Invalid receiver DCB settings")
-        if dcb["window_hours"] < dcb["min_hours"] or dcb["bin_seconds"] < native["interval"]:
-            raise ValueError("DCB window must cover min_hours; bin_seconds must cover sample interval")
+        dcb_fit = receiver_dcb_fit(dcb, native["interval"])
         products_root = Path(settings["products_root"]).expanduser()
         if not products_root.is_absolute():
             products_root = config.resolve().parent / products_root
@@ -477,7 +484,9 @@ def cli(input_dir, config, output, start, end, rebuild):
                 width = round(dcb["window_hours"] * 3600e9)
                 from_ns = origin + max(0, (min(candidates) - origin) // width) * width
             previous_fits = pq.read_table(stage / "receiver_bias.parquet").to_pylist() if old else None
-            fits = calibrate(stage, dcb, metadata, from_ns, origin, previous_fits) if candidates or not old else previous_fits
+            fits = (
+                calibrate(stage, dcb, dcb_fit, metadata, from_ns, origin, previous_fits) if candidates or not old else previous_fits
+            )
             fusion_counts = write_fused(stage, metadata, from_ns)
             generation = old["generation"] + 1 if old else 1
             lineage = old["lineage"] if old else uuid.uuid4().hex

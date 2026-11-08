@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "python_bindings.hpp"
 #include <neognss_obs/cnex_engine.hpp>
-#include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 namespace py = pybind11;
 namespace neognss_obs::python_bindings::cnex {
-py::object to_python(const nlohmann::json &j) {
-    return py::module_::import("json").attr("loads")(j.dump());
-}
 py::tuple export_array(neognss_obs::CnexBatch &batch, py::object requested) {
     if (!requested.is_none())
         throw py::value_error("Requested schema conversion is unsupported");
@@ -44,20 +41,19 @@ py::tuple export_array(neognss_obs::CnexBatch &batch, py::object requested) {
 }
 } // namespace neognss_obs::python_bindings::cnex
 void bind_cnex(py::module_ &m) {
-    using namespace neognss_obs::python_bindings::cnex;
+    using namespace neognss_obs::python_bindings;
+    using cnex::export_array;
     using Probe = neognss_obs::CnexTimeProbe;
     using Batch = neognss_obs::CnexBatch;
     using Reader = neognss_obs::CnexEngine;
     py::class_<Probe>(m, "CnexTimeProbe")
         .def(py::init<const std::string &>(), py::arg("protocol"))
         .def("feed",
-             [](Probe &r, py::bytes bytes) {
-                 char *p;
-                 Py_ssize_t n;
-                 if (PyBytes_AsStringAndSize(bytes.ptr(), &p, &n))
-                     throw py::error_already_set();
+             [](Probe &r, py::buffer data) {
+                 auto info = data.request();
+                 auto bytes = byte_view(info);
                  py::gil_scoped_release release;
-                 r.feed({reinterpret_cast<const uint8_t *>(p), size_t(n)});
+                 r.feed(bytes);
              })
         .def("result", [](Probe &r) { return to_python(r.result()); });
     py::class_<Batch, std::shared_ptr<Batch>>(m, "CnexArrowBatch")
@@ -70,14 +66,11 @@ void bind_cnex(py::module_ &m) {
              py::arg("period_seconds"), py::arg("period_ps"),
              py::arg("decode_workers") = 4)
         .def("feed",
-             [](Reader &r, py::bytes bytes) {
-                 char *p;
-                 Py_ssize_t n;
-                 if (PyBytes_AsStringAndSize(bytes.ptr(), &p, &n))
-                     throw py::error_already_set();
+             [](Reader &r, py::buffer data) {
+                 auto info = data.request();
+                 auto bytes = byte_view(info);
                  py::gil_scoped_release release;
-                 return r.feed(
-                     {reinterpret_cast<const uint8_t *>(p), size_t(n)});
+                 return r.feed(bytes);
              })
         .def("finish_telemetry",
              [](Reader &r) {
@@ -87,9 +80,6 @@ void bind_cnex(py::module_ &m) {
         .def("summary", [](Reader &r) { return to_python(r.summary()); })
         .def("time_error", [](Reader &r) { return to_python(r.time_error()); })
         .def("checkpoint", [](Reader &r) { return to_python(r.checkpoint()); })
-        .def("restore", [](Reader &r, py::dict state) {
-            r.restore(nlohmann::json::parse(py::module_::import("json")
-                                                .attr("dumps")(state)
-                                                .cast<std::string>()));
-        });
+        .def("restore",
+             [](Reader &r, py::dict state) { r.restore(from_python(state)); });
 }

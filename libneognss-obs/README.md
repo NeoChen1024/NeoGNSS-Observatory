@@ -111,7 +111,8 @@ arcs before the first epoch at or after each boundary.
 `preview()` estimates open arcs without closing them, and `checkpoint()`/`restore()`
 preserve scientific state, pending restart boundaries and their cursor across
 daily invocations. `finish()` is reserved for
-explicit scientific stream termination. `fit_receiver_dcb()` fits one
+explicit scientific stream termination. `ReceiverDcbFit(settings)` validates
+the DCB fit settings once; its `fit(rows, meters_per_tecu)` fits one
 receiver-segment/signal-pair window from leveled residual batches, with coverage gates.
 RTKLIB adapters share the same process-wide lock. See [STEC conventions and
 limits](../docs/stec.md); GIM-constrained estimates are not independent calibration.

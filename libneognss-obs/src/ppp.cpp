@@ -69,12 +69,19 @@ struct PppFloat::State {
         bool lock_valid, half, sub_half;
     };
     std::map<std::pair<int, std::string>, Track> tracks;
-    std::unique_ptr<nav_t> nav = std::make_unique<nav_t>();
-    std::unique_ptr<rtk_t> rtk = std::make_unique<rtk_t>();
+    // rtkfree accepts a zeroed rtk_t, so no initialization flag is needed.
+    struct RtkDelete {
+        void operator()(rtk_t *rtk) const {
+            rtkfree(rtk);
+            delete rtk;
+        }
+    };
+    ProductNav nav{new nav_t{}};
+    std::unique_ptr<rtk_t, RtkDelete> rtk{new rtk_t{}};
     Json settings, metadata;
     PppProductCache product_cache;
     ReceiverAntenna receiver_antenna;
-    bool initialized = false, ready = false;
+    bool ready = false;
     int64_t previous = -1, solved_time = -1, step_ns, gap_ns;
     uint64_t attempted = 0, solved = 0, skipped = 0;
     uint64_t antenna_masked = 0;
@@ -129,15 +136,8 @@ struct PppFloat::State {
             norm(opt.ru, 3) > 7e6)
             throw std::invalid_argument("Invalid station marker ECEF position");
         rtkinit(rtk.get(), &opt);
-        initialized = true;
         for (int i = 0; i < 3; ++i)
             rtk->sol.rr[i] = opt.ru[i];
-    }
-    ~State() {
-        if (initialized)
-            rtkfree(rtk.get());
-        freenav(nav.get(), 0x7f);
-        free(nav->erp.data);
     }
     double bias(int sat, const std::string &code, int64_t time) {
         auto it = biases.find({sat, code});
@@ -161,9 +161,7 @@ void PppFloat::products(const Json &p) {
     std::lock_guard guard(rtklib_mutex);
     auto &s = *state_;
     s.ready = false;
-    freenav(s.nav.get(), 0x7f);
-    free(s.nav->erp.data);
-    *s.nav = nav_t{};
+    s.nav = ProductNav(new nav_t{});
     s.product_cache.orbits(*s.nav, p.at("sp3").get<std::vector<std::string>>());
     s.product_cache.clocks.load(*s.nav,
                                 p.at("clk").get<std::vector<std::string>>());
@@ -194,11 +192,14 @@ PppResult PppFloat::process(const ObservationBatch &batch) {
         if (e.gpst_ns <= s.previous)
             throw std::runtime_error(
                 "Non-increasing measurement time in PPP input");
+        const auto record = s.receiver_antenna.record_index(e.gpst_ns);
+        if (!record)
+            throw std::runtime_error(
+                "No receiver antenna calibration valid at observation epoch");
         bool calibration_changed =
-            s.previous >= 0 && s.receiver_antenna.record_index(s.previous) !=
-                                   s.receiver_antenna.record_index(e.gpst_ns);
+            s.previous >= 0 &&
+            s.receiver_antenna.record_index(s.previous) != record;
         s.previous = e.gpst_ns;
-        s.receiver_antenna.record_index(e.gpst_ns);
         std::map<int, obsd_t> rows;
         for (const auto &m : e.signals) {
             int slot = m.signal == s.code1 ? 0 : (m.signal == s.code2 ? 1 : -1);
@@ -307,13 +308,13 @@ PppResult PppFloat::process(const ObservationBatch &batch) {
             satazel(pos, direction, azel);
             if (azel[1] < r.opt.elmin)
                 continue;
-            if (!s.receiver_antenna.covers(e.gpst_ns, azel[1] * R2D)) {
+            if (!s.receiver_antenna.covers(*record, azel[1] * R2D)) {
                 ++s.antenna_masked;
                 continue;
             }
             for (size_t k = 0; k < 2; ++k)
                 o.L[k] -= s.receiver_antenna.correction(
-                              k, e.gpst_ns, azel[0] * R2D, azel[1] * R2D) *
+                              *record, k, azel[0] * R2D, azel[1] * R2D) *
                           sat2freq(sat, o.code[k], &nav) / CLIGHT;
             observations.push_back(o);
         }

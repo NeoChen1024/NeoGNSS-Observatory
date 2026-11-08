@@ -40,7 +40,6 @@ struct BroadcastNavigation::State {
     std::map<std::pair<int, std::string>, Assembly> pending;
     broadcast_detail::GalileoDecoder galileo;
     broadcast_detail::BeidouDecoder beidou;
-    std::map<std::string, uint64_t> galileo_diagnostics;
     std::map<int, std::deque<Entry>> ephemerides;
     uint64_t count = 0;
     std::map<std::string, uint64_t> family_counts;
@@ -126,15 +125,17 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
             const auto signals = rows.signals(i);
             const auto key = std::to_string(sat) + "/" + std::string(fam) +
                              contributor_key(signals);
+            // Decoder diagnostics belong to BroadcastMessageDecoder; this
+            // ephemeris cache does not report them.
+            std::map<std::string, uint64_t> diagnostics;
             auto decoded =
                 (d1 || d2)
                     ? state_->beidou.decode(body, std::string(fam), key, prn,
-                                            Tick(*t) * 1000,
-                                            state_->galileo_diagnostics)
-                    : state_->galileo.decode(
-                          body, std::string(fam), key, prn,
-                          signals.size() == 1 && signals[0] == "GAL_E1_B",
-                          Tick(*t) * 1000, state_->galileo_diagnostics);
+                                            Tick(*t) * 1000, diagnostics)
+                    : state_->galileo.decode(body, std::string(fam), key, prn,
+                                             signals.size() == 1 &&
+                                                 signals[0] == "GAL_E1_B",
+                                             Tick(*t) * 1000, diagnostics);
             for (const auto &message : decoded) {
                 if (message.kind != "gal_inav_ephemeris" &&
                     message.kind != "gal_fnav_ephemeris" &&
