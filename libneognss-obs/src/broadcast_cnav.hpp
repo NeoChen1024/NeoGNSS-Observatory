@@ -4,13 +4,6 @@
 #include <span>
 
 namespace neognss_obs::broadcast_detail {
-struct CnavOutput {
-    std::string kind;
-    Row fields;
-    bool candidate = false;
-    std::string discriminator;
-};
-
 // GPS and QZSS CNAV parameter decoding and source-local, fresh three-part
 // assemblies.
 class CnavDecoder {
@@ -22,11 +15,11 @@ class CnavDecoder {
 
   public:
     void clear() { assemblies_.clear(); }
-    std::vector<CnavOutput> decode(std::span<const uint8_t> body,
-                                   const std::string &source, bool gps,
-                                   int64_t satellite, bool l2, bool l5,
-                                   std::optional<Tick> time,
-                                   std::map<std::string, uint64_t> &counts);
+    std::vector<DecodedMessage> decode(std::span<const uint8_t> body,
+                                       const std::string &source, bool gps,
+                                       int64_t satellite, bool l2, bool l5,
+                                       std::optional<Tick> time,
+                                       std::map<std::string, uint64_t> &counts);
 };
 // Returns false for time-ineligible candidates, without selecting a source.
 bool cnav_snapshot(Row &row, const std::string &kind, Tick time);

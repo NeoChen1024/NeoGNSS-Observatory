@@ -5,6 +5,18 @@
 #include <span>
 
 namespace neognss_obs::broadcast_detail {
+// RAW * 2^-FRACTIONAL_BITS seconds as picoseconds, rounded half to even
+// without an intermediate double.
+inline Tick binary_seconds(int64_t raw, unsigned fractional_bits) {
+    Tick x = Tick(raw) * ps, d = Tick(1) << fractional_bits;
+    bool neg = x < 0;
+    if (neg)
+        x = -x;
+    Tick q = x / d, r = x % d;
+    if (r * 2 > d || (r * 2 == d && (q & 1) != 0))
+        ++q;
+    return neg ? -q : q;
+}
 class BroadcastBits {
     std::span<const uint8_t> data_;
     size_t size_;
@@ -37,14 +49,7 @@ class BroadcastBits {
                factor;
     }
     Tick offset(size_t p, size_t n, int exp) const {
-        Tick x = Tick(s(p, n)) * ps, d = Tick(1) << -exp;
-        bool neg = x < 0;
-        if (neg)
-            x = -x;
-        Tick q = x / d, r = x % d;
-        if (r * 2 > d || (r * 2 == d && (q & 1) != 0))
-            ++q;
-        return neg ? -q : q;
+        return binary_seconds(s(p, n), unsigned(-exp));
     }
     Bytes bytes(size_t p, size_t n) const {
         Bytes out((n + 7) / 8, 0);

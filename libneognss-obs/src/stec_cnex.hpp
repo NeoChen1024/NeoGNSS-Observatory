@@ -31,32 +31,6 @@ class StecCnexReader {
     std::optional<Tick> last_;
     std::optional<neognss_obs::ObservationEpoch> pending_;
     uint64_t rounded_ = 0, smoothed_ = 0;
-    using View = ArrowBatchView;
-    static ArrowArrayView *child(ArrowArrayView *v, const ArrowSchema *s,
-                                 const char *name) {
-        for (int64_t k = 0; k < s->n_children; ++k)
-            if (s->children[k]->name &&
-                std::strcmp(s->children[k]->name, name) == 0)
-                return v->children[k];
-        throw std::runtime_error(std::string("Missing CommonNEX field: ") +
-                                 name);
-    }
-    static const ArrowSchema *schema_child(const ArrowSchema *s,
-                                           const char *name) {
-        for (int64_t k = 0; k < s->n_children; ++k)
-            if (s->children[k]->name &&
-                std::strcmp(s->children[k]->name, name) == 0)
-                return s->children[k];
-        throw std::runtime_error(std::string("Missing CommonNEX field: ") +
-                                 name);
-    }
-    static std::string_view text(ArrowArrayView *v, int64_t i) {
-        if (v->storage_type != NANOARROW_TYPE_STRING ||
-            ArrowArrayViewIsNull(v, i))
-            throw std::runtime_error("Expected non-null CommonNEX string");
-        auto x = ArrowArrayViewGetStringUnsafe(v, i);
-        return {x.data, size_t(x.size_bytes)};
-    }
     static double number(ArrowArrayView *v, int64_t i) {
         if (v->storage_type != NANOARROW_TYPE_DOUBLE)
             throw std::runtime_error("Expected float64 observation");
@@ -69,18 +43,6 @@ class StecCnexReader {
         return ArrowArrayViewIsNull(v, i)
                    ? missing
                    : ArrowArrayViewGetIntUnsafe(v, i) != 0;
-    }
-    static Tick ticks(ArrowArrayView *v, int64_t i) {
-        if (v->storage_type != NANOARROW_TYPE_DECIMAL128 ||
-            ArrowArrayViewIsNull(v, i))
-            throw std::runtime_error("Expected non-null decimal GPST");
-        ArrowDecimal d;
-        ArrowDecimalInit(&d, 128, 38, 12);
-        ArrowArrayViewGetDecimalUnsafe(v, i, &d);
-        if (d.words[d.high_word_index] >> 63)
-            throw std::runtime_error("Negative GPST");
-        return (Tick(d.words[d.high_word_index]) << 64) +
-               d.words[d.low_word_index];
     }
 
   public:
@@ -103,39 +65,33 @@ class StecCnexReader {
         seen_.resize(signals_.size());
     }
     ObservationBatch feed(ArrowSchema *schema, ArrowArray *array) {
-        View owner(schema, array);
+        ArrowBatchView owner(schema, array);
         auto *v = &owner.value;
         if (v->storage_type != NANOARROW_TYPE_STRUCT)
             throw std::runtime_error("Expected Arrow RecordBatch");
-        auto field = [&](const char *n) { return child(v, schema, n); };
-        auto time = field("gpst"), system = field("satellite_system"),
-             sat = field("satellite_number"), signal = field("signal");
-        auto gpst_schema = schema_child(schema, "gpst");
-        if (std::strcmp(gpst_schema->format, "d:38,12") != 0 &&
-            std::strcmp(gpst_schema->format, "d:38,12,128") != 0)
+        Column root{v, schema};
+        auto time = root.child("gpst"), system = root.child("satellite_system"),
+             signal = root.child("signal"), setup = root.child("setup_id");
+        if (!time.decimal_seconds())
             throw std::runtime_error("Expected GPST decimal128(38,12) seconds");
-        auto tracking = field("tracking");
-        auto ts = schema_child(schema, "tracking");
-        auto setup = field("setup_id"), code_value = field("pseudorange_m"),
-             phase_value = field("carrier_phase_cycles");
-        auto quality = field("quality");
-        auto qs = schema_child(schema, "quality");
-        auto code_valid = child(quality, qs, "code_valid");
-        auto phase_valid = child(quality, qs, "phase_valid");
-        auto half = child(tracking, ts, "half_cycle_ambiguity"),
-             sub_half = child(tracking, ts, "half_cycle_subtracted"),
-             counter = child(tracking, ts, "continuity_counter"),
-             modulus = child(tracking, ts, "continuity_counter_modulus"),
-             lock = child(tracking, ts, "lock_duration_s"),
-             lock_bound = child(tracking, ts, "lock_duration_is_lower_bound");
-        auto lower_schema = schema_child(ts, "lock_duration_s");
-        const bool valid_lock_type =
-            std::strcmp(lower_schema->format, "d:38,12") == 0 ||
-            std::strcmp(lower_schema->format, "d:38,12,128") == 0;
-        auto corrections = field("receiver_corrections");
-        auto smoothed =
-            child(corrections, schema_child(schema, "receiver_corrections"),
-                  "code_smoothing_applied");
+        auto tracking_column = root.child("tracking"),
+             quality_column = root.child("quality"),
+             corrections_column = root.child("receiver_corrections");
+        auto lock = tracking_column.child("lock_duration_s");
+        auto sat = root.child("satellite_number").v,
+             code_value = root.child("pseudorange_m").v,
+             phase_value = root.child("carrier_phase_cycles").v,
+             tracking = tracking_column.v, quality = quality_column.v,
+             corrections = corrections_column.v;
+        auto code_valid = quality_column.child("code_valid").v,
+             phase_valid = quality_column.child("phase_valid").v,
+             half = tracking_column.child("half_cycle_ambiguity").v,
+             sub_half = tracking_column.child("half_cycle_subtracted").v,
+             counter = tracking_column.child("continuity_counter").v,
+             modulus = tracking_column.child("continuity_counter_modulus").v,
+             lock_bound =
+                 tracking_column.child("lock_duration_is_lower_bound").v;
+        auto smoothed = corrections_column.child("code_smoothing_applied").v;
         auto invalid = [&](ArrowArrayView *valid, int64_t row) {
             if (ArrowArrayViewIsNull(quality, row))
                 return false;
@@ -146,21 +102,19 @@ class StecCnexReader {
         ObservationBatch out;
         for (int64_t i = 0; i < v->length; ++i) {
             int64_t row = i + v->offset;
-            if (text(setup, row) != setup_)
+            if (setup.text(row) != setup_)
                 throw std::runtime_error("Mixed CommonNEX Setup");
-            Tick t = ticks(time, row);
+            auto stamp = time.seconds_ps(row);
+            if (!stamp)
+                throw std::runtime_error("Expected non-null CommonNEX GPST");
+            Tick t = *stamp;
             if (last_ && t < *last_)
                 throw std::runtime_error("CommonNEX observation time reversal");
             if (last_ && t == *last_ && !pending_)
                 throw std::runtime_error(
                     "Repeated already-closed CommonNEX epoch");
             if (!last_ || t != *last_) {
-                Tick ns = t / 1000, remainder = t % 1000;
-                if (remainder > 500 || (remainder == 500 && (ns & 1) != 0))
-                    ++ns;
-                if (ns > std::numeric_limits<int64_t>::max())
-                    throw std::runtime_error(
-                        "STEC epoch outside int64 nanoseconds");
+                int64_t ns = nearest_ns(t);
                 if (pending_) {
                     if (ns <= pending_->gpst_ns)
                         throw std::runtime_error(
@@ -171,12 +125,12 @@ class StecCnexReader {
                 pending_ = neognss_obs::ObservationEpoch{};
                 for (auto &seen : seen_)
                     seen.reset();
-                pending_->gpst_ns = int64_t(ns);
+                pending_->gpst_ns = ns;
                 last_ = t;
-                rounded_ += remainder != 0;
+                rounded_ += t % 1000 != 0;
             }
-            auto code = text(signal, row);
-            auto sys = text(system, row);
+            auto code = signal.text(row);
+            auto sys = system.text(row);
             auto frequency = signals_.find(signal_key(sys, code));
             if (frequency == signals_.end())
                 continue;
@@ -215,17 +169,12 @@ class StecCnexReader {
                         throw std::runtime_error(
                             "Continuity counter outside modulus");
                 }
-                if (ArrowArrayViewIsNull(lock, r) !=
-                    ArrowArrayViewIsNull(lock_bound, r))
+                if (lock.null(r) != ArrowArrayViewIsNull(lock_bound, r))
                     throw std::runtime_error(
                         "Incomplete lock duration/bound flag");
-                if (!ArrowArrayViewIsNull(lock, r)) {
-                    if (!valid_lock_type)
-                        throw std::runtime_error(
-                            "Expected decimal128(38,12) lock duration");
+                if (!lock.null(r)) {
                     (void)boolean(lock_bound, r);
-                    auto tick = ticks(lock, r);
-                    m.lock_seconds = double(tick) / 1e12;
+                    m.lock_seconds = double(*lock.seconds_ps(r)) / 1e12;
                     m.lock_valid = true;
                 }
             }

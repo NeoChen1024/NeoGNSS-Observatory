@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "arrow_batch.hpp"
 #include "broadcast_beidou.hpp"
+#include "broadcast_bits.hpp"
 #include "broadcast_cnav.hpp"
 #include "broadcast_fields.hpp"
 #include "broadcast_galileo.hpp"
@@ -173,28 +174,6 @@ std::shared_ptr<CnexBatch> batch(const std::vector<Row> &rows) {
     ok(ArrowArrayFinishBuildingDefault(&out->array, &e));
     return out;
 }
-struct Bits {
-    std::array<uint8_t, 30> data{};
-    uint64_t u(int start, int n) const {
-        uint64_t x = 0;
-        for (int k = 0; k < n; ++k)
-            x = (x << 1) |
-                ((data[(start + k) / 8] >> (7 - (start + k) % 8)) & 1);
-        return x;
-    }
-    int64_t s(int start, int n) const {
-        auto x = u(start, n);
-        return (x & (uint64_t(1) << (n - 1)))
-                   ? int64_t(x) - int64_t(uint64_t(1) << n)
-                   : int64_t(x);
-    }
-    double scaled(int start, int n, int exp, bool sign = true,
-                  double factor = 1) const {
-        return std::ldexp(sign ? double(s(start, n)) : double(u(start, n)),
-                          exp) *
-               factor;
-    }
-};
 Tick seconds(int64_t s) { return Tick(s) * ps; }
 Tick duration(double s) { return Tick(std::nearbyint(s * double(ps))); }
 Value tv(std::optional<Tick> t) { return t ? Value(*t) : Value{}; }
@@ -439,7 +418,7 @@ struct BroadcastMessageDecoder::State {
         progress = t;
         prune(t);
     }
-    void decode(const Bits &b, Row base, const std::string &key,
+    void decode(const BroadcastBits &b, Row base, const std::string &key,
                 std::optional<Tick> t) {
         const int sf = int(b.u(43, 3));
         const bool q =
@@ -459,7 +438,7 @@ struct BroadcastMessageDecoder::State {
         };
         auto f = [&](const char *n, int p, int len, int exp, bool sign = true,
                      double factor = 1) {
-            fields[n] = b.scaled(p, len, exp, sign, factor);
+            fields[n] = b.f(p, len, exp, sign, factor);
         };
         if (sf == 1) {
             u("week_raw", 48, 10);
@@ -472,9 +451,9 @@ struct BroadcastMessageDecoder::State {
             fields["l2_p_data_flag"] = bool(b.u(72, 1));
             fields["tgd_s"] = b.s(160, 8) == -128
                                   ? Value{}
-                                  : Value(duration(b.scaled(160, 8, -31)));
+                                  : Value(duration(b.f(160, 8, -31)));
             fields["toc_s"] = seconds(int64_t(b.u(176, 16)) * 16);
-            fields["af0_s"] = duration(b.scaled(216, 22, -31));
+            fields["af0_s"] = duration(b.f(216, 22, -31));
             f("af1_s_s", 200, 16, -43);
             f("af2_s_s2", 192, 8, -55);
             fields["tgd_reference"] =
@@ -586,12 +565,12 @@ struct BroadcastMessageDecoder::State {
             // lack a defined reference orbit in this edition.
             bool mapped = !q || (id >= 2 && id <= 5) || (id >= 7 && id <= 9);
             fields["orbit_reference_known"] = mapped;
-            fields["eccentricity"] = mapped
-                                         ? Value(b.scaled(56, 16, -21, false) +
-                                                 (q && id <= 5 ? 0.06 : 0))
-                                         : Value{};
+            fields["eccentricity"] =
+                mapped
+                    ? Value(b.f(56, 16, -21, false) + (q && id <= 5 ? 0.06 : 0))
+                    : Value{};
             fields["i0_rad"] = mapped
-                                   ? Value((b.scaled(80, 16, -19) +
+                                   ? Value((b.f(80, 16, -19) +
                                             (q ? (id <= 5 ? 0.25 : 0) : 0.3)) *
                                            pi)
                                    : Value{};
@@ -629,7 +608,7 @@ struct BroadcastMessageDecoder::State {
             fields["health_slots_25_32"] = health;
         } else if (id == 55 && (q || sf == 4)) {
             kind = "special_message";
-            Bytes bytes(b.data.begin() + 7, b.data.begin() + 29);
+            Bytes bytes = b.bytes(56, 176);
             fields["payload"] = bytes;
             bool charset = true;
             std::string display;
@@ -653,10 +632,7 @@ struct BroadcastMessageDecoder::State {
         } else if (id == 52 && !q && sf == 4) {
             kind = "nmct";
             u("availability_indicator", 56, 2);
-            Bytes payload(23, 0);
-            for (int i = 0; i < 180; ++i)
-                payload[i / 8] |= uint8_t(b.u(58 + i, 1) << (7 - i % 8));
-            fields["erd_payload"] = payload;
+            fields["erd_payload"] = b.bytes(58, 180);
             fields["erd_payload_bit_length"] = int64_t(180);
             std::vector<int64_t> codes;
             if (b.u(56, 2) == 0)
@@ -665,10 +641,7 @@ struct BroadcastMessageDecoder::State {
             fields["unencrypted_erd_codes"] = codes;
         } else if (id == 60 && q) {
             kind = "qznma_payload";
-            Bytes payload(23, 0);
-            for (int i = 0; i < 182; ++i)
-                payload[i / 8] |= uint8_t(b.u(56 + i, 1) << (7 - i % 8));
-            fields["payload"] = payload;
+            fields["payload"] = b.bytes(56, 182);
             fields["payload_bit_length"] = int64_t(182);
         } else if ((id == 56 && (q || sf == 4)) || (q && id == 61)) {
             kind = "ionosphere_utc";
@@ -677,10 +650,9 @@ struct BroadcastMessageDecoder::State {
             const int exps[] = {-30, -27, -24, -24, 11, 14, 16, 16};
             for (int i = 0; i < 8; ++i)
                 fields[std::string(i < 4 ? "alpha" : "beta") +
-                       std::to_string(i % 4)] =
-                    b.scaled(56 + 8 * i, 8, exps[i]);
+                       std::to_string(i % 4)] = b.f(56 + 8 * i, 8, exps[i]);
             f("a1_s_s", 120, 24, -50);
-            fields["a0_s"] = duration(b.scaled(144, 32, -30));
+            fields["a0_s"] = duration(b.f(144, 32, -30));
             fields["tot_s"] = seconds(int64_t(b.u(176, 8)) * 4096);
             u("week_raw", 184, 8);
             fields["delta_tls_s"] = int64_t(b.s(192, 8));
@@ -747,7 +719,7 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
             auto row = i + owner.value.offset;
             if (root.child("setup_id").str(row) != s.setup)
                 throw std::runtime_error("Mixed broadcast Setup");
-            auto t = time.time(row);
+            auto t = time.seconds_ps(row);
             if (t)
                 s.advance(*t);
             auto fam = family.str(row);
@@ -937,15 +909,16 @@ BroadcastMessageDecoder::feed(ArrowSchema *schema, ArrowArray *array) {
             }
             if (bytes.size_bytes != 38 || (bytes.data.as_uint8[37] & 15))
                 throw std::runtime_error("Invalid LNAV size/padding");
-            Bits b;
+            // Ten 30-bit words without parity: 240 LNAV data bits.
+            std::array<uint8_t, 30> data{};
             for (int w = 0; w < 10; ++w)
                 for (int k = 0; k < 24; ++k) {
                     int p = w * 30 + k;
-                    b.data[(w * 24 + k) / 8] |=
+                    data[(w * 24 + k) / 8] |=
                         ((bytes.data.as_uint8[p / 8] >> (7 - p % 8)) & 1)
                         << (7 - k % 8);
                 }
-            s.decode(b, std::move(base), key, t);
+            s.decode(BroadcastBits(data, 240), std::move(base), key, t);
         }
         Output out;
         for (auto &[kind, rows] : s.output)

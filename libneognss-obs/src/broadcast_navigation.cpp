@@ -18,41 +18,6 @@
 namespace neognss_obs {
 namespace {
 constexpr int64_t second = 1000000000;
-ArrowArrayView *field(ArrowArrayView *v, const ArrowSchema *s,
-                      const char *name) {
-    for (int64_t i = 0; i < s->n_children; ++i)
-        if (s->children[i]->name &&
-            std::strcmp(s->children[i]->name, name) == 0)
-            return v->children[i];
-    throw std::runtime_error(std::string("Missing RawBits field: ") + name);
-}
-std::string_view text(ArrowArrayView *v, int64_t row) {
-    if (v->storage_type != NANOARROW_TYPE_STRING ||
-        ArrowArrayViewIsNull(v, row))
-        throw std::runtime_error("Expected RawBits string");
-    auto x = ArrowArrayViewGetStringUnsafe(v, row);
-    return {x.data, size_t(x.size_bytes)};
-}
-std::optional<int64_t> timestamp(ArrowArrayView *v, int64_t row) {
-    if (v->storage_type != NANOARROW_TYPE_DECIMAL128)
-        throw std::runtime_error("Expected RawBits decimal128(38,12) GPST");
-    if (ArrowArrayViewIsNull(v, row))
-        return {};
-    ArrowDecimal d;
-    ArrowDecimalInit(&d, 128, 38, 12);
-    ArrowArrayViewGetDecimalUnsafe(v, row, &d);
-    using Tick = boost::int128::int128;
-    Tick ticks =
-        (Tick(d.words[d.high_word_index]) << 64) + d.words[d.low_word_index];
-    if (ticks < 0 || ticks / 1000 > INT64_MAX)
-        throw std::runtime_error("RawBits time outside processing range");
-    auto ns = ticks / 1000, rem = ticks % 1000;
-    if (rem > 500 || (rem == 500 && (ns & 1) != 0))
-        ++ns;
-    if (ns > INT64_MAX)
-        throw std::runtime_error("RawBits time overflow");
-    return int64_t(ns);
-}
 gtime_t time_of(int64_t ns) {
     return gpst2time(int(ns / (604800 * second)),
                      double(ns % (604800 * second)) / second);
@@ -128,45 +93,44 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
     std::lock_guard rtklib_guard(rtklib_mutex);
     std::lock_guard guard(state_->mutex);
     ArrowBatchView owner(schema, array);
-    for (int64_t i = 0; i < schema->n_children; ++i)
-        if (schema->children[i]->name &&
-            std::strcmp(schema->children[i]->name, "nav_epoch_gpst") == 0 &&
-            std::strcmp(schema->children[i]->format, "d:38,12") != 0 &&
-            std::strcmp(schema->children[i]->format, "d:38,12,128") != 0)
-            throw std::runtime_error(
-                "Expected decimal128(38,12) navigation time");
     auto v = &owner.value;
-    auto f = [&](const char *n) { return field(v, schema, n); };
-    auto setup = f("setup_id"), family = f("message_family"),
-         format = f("body_format"), system = f("satellite_system"),
-         number = f("satellite_number"), time = f("nav_epoch_gpst"),
-         body = f("body"), length = f("bit_length"), checks = f("checks");
+    Column root{v, schema};
+    auto setup = root.child("setup_id"), family = root.child("message_family"),
+         format = root.child("body_format"),
+         system = root.child("satellite_system"),
+         completeness = root.child("completeness"),
+         content = root.child("content_kind"),
+         time = root.child("nav_epoch_gpst"),
+         list = root.child("bitstream_source");
+    auto number = root.child("satellite_number").v, body = root.child("body").v,
+         length = root.child("bit_length").v, sources = list.v;
+    auto checks = root.child("checks");
+    if (!time.decimal_seconds())
+        throw std::runtime_error("Expected decimal128(38,12) navigation time");
     if (body->storage_type != NANOARROW_TYPE_BINARY ||
-        checks->storage_type != NANOARROW_TYPE_LIST ||
+        checks.v->storage_type != NANOARROW_TYPE_LIST ||
+        sources->storage_type != NANOARROW_TYPE_LIST ||
         number->storage_type != NANOARROW_TYPE_UINT16 ||
         length->storage_type != NANOARROW_TYPE_UINT32)
         throw std::runtime_error("Invalid RawBits column types");
-    const ArrowSchema *cs = nullptr;
-    for (int64_t i = 0; i < schema->n_children; ++i)
-        if (schema->children[i]->name &&
-            std::strcmp(schema->children[i]->name, "checks") == 0)
-            cs = schema->children[i]->children[0];
-    auto check = checks->children[0];
-    auto result = field(check, cs, "result");
+    Column check{checks.v->children[0], checks.s->children[0]};
+    Column source{sources->children[0], list.s->children[0]};
+    auto result = check.child("result");
     for (int64_t i = 0; i < v->length; ++i) {
         auto row = i + v->offset;
-        if (text(setup, row) != state_->setup)
+        if (setup.text(row) != state_->setup)
             throw std::runtime_error("RawBits Setup mismatch");
-        auto fam = text(family, row);
+        auto fam = family.text(row);
         const bool lnav = fam == "GPS_LNAV" || fam == "QZS_LNAV";
         const bool inav = fam == "GAL_INAV", fnav = fam == "GAL_FNAV";
         const bool d1 = fam == "BDS_D1", d2 = fam == "BDS_D2";
         if (!lnav && !inav && !fnav && !d1 && !d2)
             continue;
-        auto t = timestamp(time, row);
-        if (!t)
+        auto stamp = time.seconds_ps(row);
+        if (!stamp)
             continue;
-        auto sys = text(system, row);
+        std::optional<int64_t> t = nearest_ns(*stamp);
+        auto sys = system.text(row);
         std::string_view expected = fam == "GPS_LNAV"   ? "G"
                                     : fam == "QZS_LNAV" ? "J"
                                     : (inav || fnav)    ? "E"
@@ -186,17 +150,17 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
         const unsigned bit_count = inav ? 228 : fnav ? 238 : 300;
         if (ArrowArrayViewIsNull(number, row) ||
             ArrowArrayViewIsNull(length, row) || !sat ||
-            text(f("completeness"), row) != "complete" ||
-            text(f("content_kind"), row) != "navigation_bits" ||
-            text(format, row) != expected_format ||
+            completeness.text(row) != "complete" ||
+            content.text(row) != "navigation_bits" ||
+            format.text(row) != expected_format ||
             ArrowArrayViewGetUIntUnsafe(length, row) != bit_count)
             throw std::runtime_error(
                 "Invalid broadcast canonical identity/layout");
         bool pass = false, fail = false;
-        auto listrow = row + checks->offset;
-        for (auto j = checks->buffer_views[1].data.as_int32[listrow];
-             j < checks->buffer_views[1].data.as_int32[listrow + 1]; ++j) {
-            auto status = text(result, j + check->offset);
+        auto listrow = row + checks.v->offset;
+        for (auto j = checks.v->buffer_views[1].data.as_int32[listrow];
+             j < checks.v->buffer_views[1].data.as_int32[listrow + 1]; ++j) {
+            auto status = result.text(j + check.v->offset);
             pass |= status == "pass";
             fail |= status == "fail";
         }
@@ -212,9 +176,7 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
             throw std::runtime_error("Invalid broadcast body size/padding");
         if (inav || fnav || d1 || d2) {
             using namespace broadcast_detail;
-            auto sources = f("bitstream_source");
-            if (sources->storage_type != NANOARROW_TYPE_LIST ||
-                ArrowArrayViewIsNull(sources, row))
+            if (ArrowArrayViewIsNull(sources, row))
                 throw std::runtime_error(
                     "Missing broadcast signal contributors");
             std::vector<std::string> signals;
@@ -223,7 +185,7 @@ void BroadcastNavigation::feed(ArrowSchema *schema, ArrowArray *array) {
                  j < ArrowArrayViewListChildOffset(sources,
                                                    row + sources->offset + 1);
                  ++j)
-                signals.emplace_back(text(sources->children[0], j));
+                signals.emplace_back(source.text(j));
             if (signals.empty())
                 throw std::runtime_error("Empty broadcast signal contributors");
             std::sort(signals.begin(), signals.end());

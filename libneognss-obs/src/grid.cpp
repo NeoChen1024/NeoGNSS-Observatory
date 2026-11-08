@@ -294,7 +294,7 @@ SbasGridProcessor::Output SbasGridProcessor::feed(ArrowSchema *schema,
             auto row = i + owner.value.offset;
             if (root.child("setup_id").str(row) != s.setup)
                 throw std::runtime_error("Mixed SBAS Setup");
-            auto t = time.time(row);
+            auto t = time.seconds_ps(row);
             if (t)
                 s.advance(*t);
             if (family.str(row) != "SBAS_L1")

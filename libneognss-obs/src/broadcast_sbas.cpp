@@ -1,25 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-#include "broadcast_fields.hpp"
+#include "broadcast_bits.hpp"
 #include <cmath>
 #include <stdexcept>
 
 namespace neognss_obs::broadcast_detail {
 namespace {
 using namespace SBAS;
-Tick binary_seconds(int64_t raw, unsigned fractional_bits) {
-    // Integer-to-picosecond round-half-to-even without an intermediate double.
-    Tick scaled = Tick(raw) * ps;
-    const bool negative = scaled < 0;
-    if (negative)
-        scaled = -scaled;
-    const Tick divisor = Tick(1) << fractional_bits;
-    Tick rounded = scaled / divisor;
-    const Tick remainder = scaled % divisor;
-    if (remainder * 2 > divisor ||
-        (remainder * 2 == divisor && (rounded & 1) != 0))
-        ++rounded;
-    return negative ? -rounded : rounded;
-}
 const char *udre_status(uint8_t index) {
     return index < 14 ? "USABLE" : index == 14 ? "NOT_MONITORED" : "DO_NOT_USE";
 }

@@ -1,46 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "broadcast_cnav.hpp"
+#include "broadcast_bits.hpp"
 #include <cmath>
 #include <numbers>
 
 namespace neognss_obs::broadcast_detail {
 namespace {
 constexpr double pi = std::numbers::pi;
-struct CnavBits {
-    std::span<const uint8_t> data;
-    int64_t u(int p, int n) const {
-        if (p < 0 || n <= 0 || n > 63 || p + n > 300)
-            throw std::out_of_range("CNAV bit range");
-        uint64_t v = 0;
-        for (int i = p; i < p + n; ++i)
-            v = (v << 1) | ((data[i / 8] >> (7 - i % 8)) & 1);
-        return int64_t(v);
+// One 300-bit CNAV message. Unsigned fields are int64 Row values.
+struct CnavBits : BroadcastBits {
+    explicit CnavBits(std::span<const uint8_t> data)
+        : BroadcastBits(data, 300) {}
+    int64_t u(size_t p, size_t n) const {
+        return int64_t(BroadcastBits::u(p, n));
     }
-    int64_t s(int p, int n) const {
-        auto v = u(p, n);
-        return v & (int64_t(1) << (n - 1)) ? v - (int64_t(1) << n) : v;
-    }
-    double f(int p, int n, int exp, bool sign = true, double unit = 1) const {
-        return std::ldexp(double(sign ? s(p, n) : u(p, n)), exp) * unit;
-    }
-    Tick offset(int p, int n, int exp) const {
-        // Exact binary rational to decimal seconds, round half to even.
-        Tick x = Tick(s(p, n)) * ps;
-        Tick divisor = Tick(1) << -exp;
-        bool negative = x < 0;
-        if (negative)
-            x = -x;
-        Tick q = x / divisor, r = x % divisor;
-        if (r * 2 > divisor || (r * 2 == divisor && (q & 1) != 0))
-            ++q;
-        return negative ? -q : q;
-    }
-    Tick tow(int p, int n, int scale) const { return seconds(u(p, n) * scale); }
-    Bytes bytes(int p, int n) const {
-        Bytes out((n + 7) / 8, 0);
-        for (int i = 0; i < n; ++i)
-            out[i / 8] |= uint8_t(u(p + i, 1) << (7 - i % 8));
-        return out;
+    Tick tow(size_t p, size_t n, int scale) const {
+        return seconds(u(p, n) * scale);
     }
 };
 Value week_time(std::optional<Tick> now, int64_t week, Tick tow,
@@ -87,7 +62,7 @@ bool window(const Row &r, const char *field, Tick time, int64_t half) {
 int64_t fit_half(const Row &r) { return gps_row(r) ? 5400 : 3600; }
 } // namespace
 
-std::vector<CnavOutput>
+std::vector<DecodedMessage>
 CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
                     bool gps, int64_t satellite, bool l2, bool l5,
                     std::optional<Tick> time,
@@ -95,7 +70,7 @@ CnavDecoder::decode(std::span<const uint8_t> data, const std::string &source,
     if (data.size() != 38 || (data[37] & 15))
         throw std::invalid_argument("Invalid CNAV size/padding");
     CnavBits b{data};
-    std::vector<CnavOutput> out;
+    std::vector<DecodedMessage> out;
     const int mt = int(b.u(14, 6));
     if (b.u(0, 8) != 0x8b || satellite < 1 || satellite > (gps ? 63 : 10) ||
         b.u(8, 6) != satellite || b.u(20, 17) >= 100800 || (!l2 && !l5)) {
